@@ -1,0 +1,59 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Flutter: Build Web",
+      "type": "shell",
+      "command": "flutter build web",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Serve: npx live-server (build/web)",
+      "type": "shell",
+      "command": "npx live-server build/web --port=5500 --open=./index.html",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Watch: Rebuild Web on Change",
+      "type": "shell",
+      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"flutter build web\"",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Build & Live-Serve",
+      "dependsOn": [
+        "Flutter: Build Web",
+        "Serve: npx live-server (build/web)"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "Dev: Live Preview (Build + Serve + Watch)",
+      "dependsOn": [
+        "Flutter: Build Web",
+        "Serve: npx live-server (build/web)",
+        "Watch: Rebuild Web on Change"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    }
+  ]
+}
