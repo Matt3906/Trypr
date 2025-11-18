@@ -21,3 +21,15 @@ Future<List<Map<String, dynamic>>> searchNominatim(String query) async {
     return <Map<String, dynamic>>[];
   }
 }
+
+Future<String?> reverseNominatim(double lat, double lon) async {
+  final url =
+      'https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat.toString()}&lon=${lon.toString()}&zoom=14&addressdetails=0';
+  try {
+    final resp = await html.HttpRequest.getString(url);
+    final data = jsonDecode(resp) as Map<String, dynamic>;
+    return (data['display_name'] as String?) ?? null;
+  } catch (e) {
+    return null;
+  }
+}

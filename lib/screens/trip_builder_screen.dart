@@ -1,9 +1,17 @@
 import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:html' as html;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:trypr/widgets/top_taskbar.dart';
+                            // Protect against a stalled network or misconfigured Firestore by
+                            // adding a timeout to the write operation.
+                            await FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(uid)
+                                .collection('trips')
+                                .add(data)
+                                .timeout(const Duration(seconds: 12));
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -30,6 +38,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   final List<_Waypoint> _waypoints = [];
   List<Map<String, dynamic>> _searchResults = [];
+  StreamSubscription? _windowMsgSub;
+  StreamSubscription<User?>? _authSub;
+  Timer? _searchDebounce;
+  double? _roadDistanceKm;
+  double? _routeDurationMin;
+  User? _currentUser;
+  bool _isSaving = false;
 
   // Small sample lookup so we don't need external geocoding packages
   final Map<String, _Waypoint> _sampleLookup = {
@@ -79,6 +94,67 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     setState(() {
       if (index >= 0 && index < _waypoints.length) _waypoints.removeAt(index);
     });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Listen to auth changes so the Save button enables/disables reactively.
+    try {
+      _authSub = FirebaseAuth.instance.authStateChanges().listen((u) {
+        setState(() => _currentUser = u);
+      });
+    } catch (_) {
+      // ignore in non-supported environments
+    }
+    // Listen for map click messages posted from the web map instance.
+    try {
+      _windowMsgSub = html.window.onMessage.listen((event) {
+        try {
+          final dataRaw = event.data;
+          if (dataRaw is String) {
+            final decoded = jsonDecode(dataRaw);
+            if (decoded is Map) {
+              if (decoded['type'] == 'map_click') {
+                final lat = (decoded['lat'] ?? 0.0) as num;
+                final lon = (decoded['lon'] ?? 0.0) as num;
+                // Try reverse geocoding (web only). If it fails, fallback to "Dropped Pin".
+                try {
+                  reverseNominatim(lat.toDouble(), lon.toDouble()).then((name) {
+                    setState(() {
+                      _waypoints.add(
+                        _Waypoint(
+                          name ?? 'Dropped Pin',
+                          lat.toDouble(),
+                          lon.toDouble(),
+                        ),
+                      );
+                    });
+                  });
+                } catch (_) {
+                  setState(() {
+                    _waypoints.add(
+                      _Waypoint('Dropped Pin', lat.toDouble(), lon.toDouble()),
+                    );
+                  });
+                }
+              } else if (decoded['type'] == 'route_summary') {
+                final dist = (decoded['distance'] ?? 0) as num;
+                final dur = (decoded['duration'] ?? 0) as num;
+                setState(() {
+                  _roadDistanceKm = dist / 1000.0;
+                  _routeDurationMin = dur / 60.0;
+                });
+              }
+            }
+          }
+        } catch (e) {
+          // ignore malformed messages
+        }
+      });
+    } catch (_) {
+      // html.window not available on non-web; ignore.
+    }
   }
 
   void _openMapInNewTab() {
@@ -136,6 +212,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   @override
   void dispose() {
+    _windowMsgSub?.cancel();
+    _authSub?.cancel();
+    _searchDebounce?.cancel();
     _tripNameCtrl.dispose();
     _daysCtrl.dispose();
     _searchCtrl.dispose();
@@ -144,6 +223,8 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final user = _currentUser ?? FirebaseAuth.instance.currentUser;
+
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
       body: Row(
@@ -177,9 +258,20 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Total distance: ${_totalKm.toStringAsFixed(2)} km',
+                  'Total: ${((_roadDistanceKm ?? _totalKm)).toStringAsFixed(2)} km',
                   style: const TextStyle(fontSize: 16),
                 ),
+                if (_routeDurationMin != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6.0),
+                    child: Text(
+                      'Estimated drive time: ${_routeDurationMin!.toStringAsFixed(0)} min',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 12),
                 const Text(
                   'Segments (kms between):',
@@ -210,11 +302,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               }
                               return ListTile(
                                 dense: true,
+                                leading: CircleAvatar(child: Text('${i + 1}')),
                                 title: Text(_waypoints[i].name),
                                 subtitle: Text(
-                                  next != null
-                                      ? '${segKm.toStringAsFixed(2)} km to next'
-                                      : 'Last point',
+                                  'Day ${i + 1} — ' +
+                                      (next != null
+                                          ? '${segKm.toStringAsFixed(2)} km to next'
+                                          : 'Last point'),
                                 ),
                                 trailing: IconButton(
                                   icon: const Icon(Icons.delete_outline),
@@ -225,49 +319,75 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           ),
                 ),
                 const SizedBox(height: 8),
+                if (user == null)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8.0),
+                    child: Text(
+                      'Sign in to save trips',
+                      style: TextStyle(color: Colors.black54),
+                    ),
+                  ),
                 ElevatedButton.icon(
-                  onPressed: () async {
-                    final name = _tripNameCtrl.text.trim();
-                    final user = FirebaseAuth.instance.currentUser;
-                    if (user == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Sign in to save trips')),
-                      );
-                      return;
-                    }
-                    final data = {
-                      'name': name,
-                      'days': int.tryParse(_daysCtrl.text) ?? 1,
-                      'createdAt': FieldValue.serverTimestamp(),
-                      'totalKm': _totalKm,
-                      'waypoints':
-                          _waypoints
-                              .map(
-                                (w) => {
-                                  'name': w.name,
-                                  'lat': w.lat,
-                                  'lon': w.lon,
-                                },
-                              )
-                              .toList(),
-                    };
-                    try {
-                      await FirebaseFirestore.instance
-                          .collection('users')
-                          .doc(user.uid)
-                          .collection('trips')
-                          .add(data);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Trip saved to My Trips')),
-                      );
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Save failed: $e')),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.save),
-                  label: const Text('Save Trip'),
+                  onPressed:
+                      (user == null || _waypoints.isEmpty || _isSaving)
+                          ? null
+                          : () async {
+                            if (_waypoints.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Add at least one waypoint'),
+                                ),
+                              );
+                              return;
+                            }
+                            setState(() => _isSaving = true);
+                            final name = _tripNameCtrl.text.trim();
+                            final data = {
+                              'name': name,
+                              'days': int.tryParse(_daysCtrl.text) ?? 1,
+                              'createdAt': FieldValue.serverTimestamp(),
+                              'totalKm': _totalKm,
+                              'waypoints':
+                                  _waypoints
+                                      .map(
+                                        (w) => {
+                                          'name': w.name,
+                                          'lat': w.lat,
+                                          'lon': w.lon,
+                                        },
+                                      )
+                                      .toList(),
+                            };
+                            try {
+                              final uid =
+                                  FirebaseAuth.instance.currentUser!.uid;
+                              await FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(uid)
+                                  .collection('trips')
+                                  .add(data);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Trip saved to My Trips'),
+                                ),
+                              );
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Save failed: $e')),
+                              );
+                            } finally {
+                              setState(() => _isSaving = false);
+                            }
+                          },
+                  icon:
+                      _isSaving
+                          ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                          : const Icon(Icons.save),
+                  label: Text(_isSaving ? 'Saving...' : 'Save Trip'),
                 ),
               ],
             ),
@@ -286,8 +406,23 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           controller: _searchCtrl,
                           decoration: const InputDecoration(
                             prefixIcon: Icon(Icons.search),
-                            hintText: 'Search sample locations (try "Banff")',
+                            hintText: 'Search locations',
                           ),
+                          onChanged: (v) {
+                            _searchDebounce?.cancel();
+                            _searchDebounce = Timer(
+                              const Duration(milliseconds: 400),
+                              () async {
+                                final q = _searchCtrl.text.trim();
+                                if (q.isEmpty) {
+                                  setState(() => _searchResults = []);
+                                  return;
+                                }
+                                final results = await searchNominatim(q);
+                                setState(() => _searchResults = results);
+                              },
+                            );
+                          },
                           onSubmitted: (v) async {
                             // Try web geocoding (Nominatim) first; fallback to sample lookup
                             List<Map<String, dynamic>> results =
@@ -302,17 +437,19 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                 _addWaypointFromLookup(match);
                               return;
                             }
-                            // Let user pick first result (quick UX). You can extend to show a picker.
+                            // Add first result by default
                             final r = results.first;
-                            setState(
-                              () => _waypoints.add(
+                            setState(() {
+                              _waypoints.add(
                                 _Waypoint(
                                   r['name'] ?? v,
                                   r['lat'] ?? 0.0,
                                   r['lon'] ?? 0.0,
                                 ),
-                              ),
-                            );
+                              );
+                              _searchResults = [];
+                              _searchCtrl.clear();
+                            });
                           },
                         ),
                       ),
@@ -416,6 +553,22 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                   },
                                 )
                                 .toList(),
+                        onMapTap: (lat, lon) async {
+                          try {
+                            final name = await reverseNominatim(lat, lon);
+                            setState(() {
+                              _waypoints.add(
+                                _Waypoint(name ?? 'Dropped Pin', lat, lon),
+                              );
+                            });
+                          } catch (_) {
+                            setState(() {
+                              _waypoints.add(
+                                _Waypoint('Dropped Pin', lat, lon),
+                              );
+                            });
+                          }
+                        },
                       ),
                     ),
                   ),
