@@ -37,7 +37,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Widget _buildTripCard(BuildContext context, String title, String subtitle) {
+  Widget _buildTripCard(
+    BuildContext context,
+    String title,
+    String subtitle, {
+    required String image,
+  }) {
     return Container(
       // No fixed width so it works with Expanded (three-up) or stacked layout.
       margin: const EdgeInsets.only(right: 12, bottom: 12),
@@ -57,9 +62,16 @@ class _HomeScreenState extends State<HomeScreen> {
             child: AspectRatio(
               aspectRatio: 16 / 9,
               child: Image.asset(
-                'images/mainScreenPic.jpg',
+                image,
                 fit: BoxFit.cover,
                 width: double.infinity,
+                errorBuilder: (ctx, error, stack) {
+                  debugPrint('Asset load error: $image -> $error');
+                  return Container(
+                    color: Colors.grey[300],
+                    child: const Center(child: Icon(Icons.broken_image)),
+                  );
+                },
               ),
             ),
           ),
@@ -212,6 +224,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Canadian Icefield Parkway',
                                       '4 - 7 days',
+                                      image: 'images/DSC_0016.jpg',
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -220,6 +233,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Pacific West Coast',
                                       '7 - 14 days',
+                                      image: 'images/DSC_0042.jpg',
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -228,6 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Vancouver Island',
                                       '4 - 6 days',
+                                      image: 'images/DSC_0318.jpg',
                                     ),
                                   ),
                                 ],
@@ -239,18 +254,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                     context,
                                     'Canadian Icefield Parkway',
                                     '4 - 7 days',
+                                    image: 'images/DSC_0016.jpg',
                                   ),
                                   const SizedBox(height: 12),
                                   _buildTripCard(
                                     context,
                                     'Pacific West Coast',
                                     '7 - 14 days',
+                                    image: 'images/DSC_0042.jpg',
                                   ),
                                   const SizedBox(height: 12),
                                   _buildTripCard(
                                     context,
                                     'Vancouver Island',
                                     '4 - 6 days',
+                                    image: 'images/DSC_0318.jpg',
                                   ),
                                 ],
                               );

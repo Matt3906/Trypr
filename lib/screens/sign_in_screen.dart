@@ -110,11 +110,11 @@ class _SignInScreenState extends State<SignInScreen> {
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF0F172A), Color(0xFF0B3A4A)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: const AssetImage('images/DSC_0318.jpg'),
+            fit: BoxFit.cover,
+            colorFilter: ColorFilter.mode(Colors.black45, BlendMode.darken),
           ),
         ),
         child: Center(

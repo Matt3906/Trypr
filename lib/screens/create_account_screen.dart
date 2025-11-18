@@ -74,11 +74,11 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF042A2B), Color(0xFF082C3A)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: const AssetImage('images/DSC_0042.jpg'),
+            fit: BoxFit.cover,
+            colorFilter: ColorFilter.mode(Colors.black45, BlendMode.darken),
           ),
         ),
         child: Center(
