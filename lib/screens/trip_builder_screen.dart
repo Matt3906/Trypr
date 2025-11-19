@@ -4,14 +4,7 @@ import 'dart:html' as html;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-                            // Protect against a stalled network or misconfigured Firestore by
-                            // adding a timeout to the write operation.
-                            await FirebaseFirestore.instance
-                                .collection('users')
-                                .doc(uid)
-                                .collection('trips')
-                                .add(data)
-                                .timeout(const Duration(seconds: 12));
+import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';

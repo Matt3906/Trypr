@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Trypr — Coming Soon</title>
+    <style>
+      :root{--accent:#1976D2;--panel-bg:rgba(255,255,255,0.08);--glass:rgba(255,255,255,0.06)}
+      html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial}
+      body{color:#fff;overflow:hidden}
+
+      /* Background slideshow */
+      #bg{position:fixed;inset:0;z-index:0;display:block}
+      .slide{position:absolute;inset:0;background-size:cover;background-position:center center;opacity:0;transition:opacity 1.2s ease-in-out;filter:brightness(0.55) contrast(1.05)}
+      .slide.visible{opacity:1}
+
+      /* subtle gradient overlay */
+      #overlay{position:fixed;inset:0;z-index:1;background:linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0.5));pointer-events:none}
+
+      /* Content */
+      .wrap{position:relative;z-index:2;height:100%;display:flex;align-items:center;justify-content:center;padding:32px}
+      .card{max-width:980px;width:100%;display:grid;grid-template-columns:1fr 360px;gap:28px;align-items:center}
+      .left{padding:40px;border-radius:14px;background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));backdrop-filter:blur(6px);box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+      .brand{display:flex;gap:14px;align-items:center}
+      .brand img{height:42px}
+      h1{font-size:44px;margin:12px 0 6px;letter-spacing:-0.02em}
+      p.lead{margin:0;color:rgba(255,255,255,0.9);font-size:16px}
+
+      .subscribe{margin-top:22px;display:flex;gap:10px}
+      .subscribe input{flex:1;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.03);color:#fff;outline:none}
+      .subscribe button{padding:12px 16px;border-radius:10px;border:none;background:var(--accent);color:white;font-weight:600;cursor:pointer}
+
+      .meta{margin-top:18px;color:rgba(255,255,255,0.75);font-size:13px}
+
+      .right{padding:26px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));backdrop-filter:blur(4px);text-align:center}
+      .count{font-size:40px;font-weight:700;margin:6px 0}
+      .count small{display:block;font-size:12px;color:rgba(255,255,255,0.65);font-weight:600}
+      .actions{margin-top:18px;display:flex;flex-direction:column;gap:10px}
+      .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.12);padding:10px;border-radius:10px;color:#fff;cursor:pointer}
+
+      footer{position:fixed;left:20px;bottom:18px;z-index:3;color:rgba(255,255,255,0.6);font-size:13px}
+
+      /* responsive */
+      @media (max-width:880px){
+        .card{grid-template-columns:1fr;}
+        .right{order:-1}
+        h1{font-size:34px}
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+
+    <div class="wrap">
+      <div class="card">
+        <div class="left">
+          <div class="brand">
+            <img src="../images/Trypr%20Logo_White.png" alt="Trypr logo" onerror="this.style.display='none'" />
+            <div>
+              <div style="font-weight:700">Trypr</div>
+              <div style="font-size:12px;color:rgba(255,255,255,0.65)">Trip planning made simple</div>
+            </div>
+          </div>
+
+          <h1>We're launching soon</h1>
+          <p class="lead">Planning better trips with road-aware routing, intelligent waypoints, and one-click save to your account. In the meantime, drop your email and we'll let you know when we go live.</p>
+
+          <form id="subscribeForm" class="subscribe" onsubmit="return onSubscribe(event)">
+            <input id="email" type="email" placeholder="Enter your email" required />
+            <button type="submit">Notify Me</button>
+          </form>
+
+          <div class="meta">No spam. You can unsubscribe at any time.</div>
+        </div>
+
+        <div class="right">
+          <div style="opacity:0.9">Estimated launch</div>
+          <div class="count">Launching soon<br/><small>Stay tuned — sign up above</small></div>
+          <div class="actions">
+            <button class="btn-ghost" onclick="openDemo()">Try demo map</button>
+            <button class="btn-ghost" onclick="openRepo()">View Source</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer>Background photos: <strong>images/</strong></footer>
+
+    <script>
+      // Images from the repo's images/ folder
+      const images = [
+        "DSC_0001.jpg","DSC_0003.jpg","DSC_0006.jpg","DSC_0009.jpg","DSC_0016.jpg","DSC_0018.jpg",
+        "DSC_0025.jpg","DSC_0028.jpg","DSC_0036.jpg","DSC_0041.jpg","DSC_0042.jpg","DSC_0046.jpg",
+        "DSC_0057.jpg","DSC_0062.jpg","DSC_0070.jpg","DSC_0072.jpg","DSC_0074.jpg","DSC_0075.jpg",
+        "DSC_0101.jpg","DSC_0126.jpg","DSC_0163.jpg","DSC_0165.jpg","DSC_0170.jpg","DSC_0171.jpg",
+        "DSC_0180.jpg","DSC_0187.jpg","DSC_0188.jpg","DSC_0190.jpg","DSC_0191.jpg","DSC_0193.jpg",
+        "DSC_0204.jpg","DSC_0206.jpg","DSC_0207.jpg","DSC_0210.jpg","DSC_0211.jpg","DSC_0212.jpg",
+        "DSC_0213.jpg","DSC_0214.jpg","DSC_0216.jpg","DSC_0225.jpg","DSC_0227.jpg","DSC_0229.jpg",
+        "DSC_0252.jpg","DSC_0255.jpg","DSC_0281.jpg","DSC_0283.jpg","DSC_0298.jpg","DSC_0300.jpg",
+        "DSC_0305.jpg","DSC_0310.jpg","DSC_0318.jpg","DSC_0489.jpg","mainScreenPic.jpg","Screenshot 2025-11-13 121015.png"
+      ];
+
+      // Build slideshow elements
+      const bg = document.getElementById('bg');
+      images.forEach((fn, i) => {
+        const d = document.createElement('div');
+        d.className = 'slide';
+        d.style.backgroundImage = `url("../images/${encodeURI(fn)}")`;
+        if (i===0) d.classList.add('visible');
+        bg.appendChild(d);
+      });
+
+      let current = 0;
+      const slides = document.querySelectorAll('.slide');
+      setInterval(()=>{
+        slides[current].classList.remove('visible');
+        current = (current + 1) % slides.length;
+        slides[current].classList.add('visible');
+      }, 6000);
+
+      // Countdown removed; static message displayed in the right panel.
+
+      function onSubscribe(e){
+        e.preventDefault();
+        const email = document.getElementById('email').value.trim();
+        if(!email) return alert('Please enter a valid email');
+        localStorage.setItem('trypr_sub_email', email);
+        const btn = document.querySelector('.subscribe button');
+        btn.textContent = 'Thanks — we\'ll notify you'; btn.disabled = true;
+        return false;
+      }
+
+      function openDemo(){ window.open('../build/web/index.html','_blank'); }
+      function openRepo(){ window.open('https://github.com/Matt3906/Trypr','_blank'); }
+    </script>
+  </body>
+</html>
