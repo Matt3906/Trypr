@@ -1,0 +1,18 @@
+Write an about us text, for my company.
+
+Key feautres, trip planner because google maps just doesnt cut it.
+
+It will allow for better and more rigourous trip planning.
+
+currently it will only allow for roadtrip planning (by car). It is in the plans to add more modes of "tripping" (Hiking (backpacking), Equestrian, Portaging, Bikepacking).
+
+Collaborate with friends on trips, add friends
+
+create packing lists with friend collaborations
+
+live trip feature, which gives group chat features, upload pictures with ease (since many photos are taken on one phone and it never goes around)(I plan on creating a workaround so that it doesnt compress files for full image quality downloading)
+
+About me: 19 year old from Toronto, Ontario. I love to travel, i felt that there was a gapping hole in the trip planning industry (I really like to plan ahead), and spreadsheets just werent cutting it anymore. Therefore I decided to build the mega trip planning home, for trip planners
+
+Make sure to include an image of me (images > aboutUs.jpg).
+

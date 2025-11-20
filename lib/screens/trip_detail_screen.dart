@@ -418,7 +418,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   else
                     ...waypoints.asMap().entries.map((e) {
                       final idx = e.key;
-                      final wp = e.value as Map<String, dynamic>;
+                      final wp = e.value;
                       return ListTile(
                         leading: CircleAvatar(child: Text('${idx + 1}')),
                         title: Text(wp['name'] ?? 'Point ${idx + 1}'),

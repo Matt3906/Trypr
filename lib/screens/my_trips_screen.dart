@@ -81,6 +81,8 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
         .delete();
   }
 
+  // This helper is retained for backwards compatibility but may be unused.
+  // ignore: unused_element
   void _showTripDetails(Map<String, dynamic> data) {
     // Deprecated: we now use a full-screen detail view. Keep function for
     // backwards compatibility, but push the detail screen instead.
