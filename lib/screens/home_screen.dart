@@ -53,41 +53,57 @@ class _HomeScreenState extends State<HomeScreen> {
           BoxShadow(color: const Color.fromRGBO(0, 0, 0, 0.08), blurRadius: 8),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 16:9 image using AspectRatio so the image never looks awkward
-          ClipRRect(
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-            child: AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Image.asset(
-                image,
-                fit: BoxFit.cover,
-                width: double.infinity,
-                errorBuilder: (ctx, error, stack) {
-                  debugPrint('Asset load error: $image -> $error');
-                  return Container(
-                    color: Colors.grey[300],
-                    child: const Center(child: Icon(Icons.broken_image)),
-                  );
-                },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Large map/image area with rounded top corners
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.asset(image, fit: BoxFit.cover),
+                    // subtle overlay for contrast
+                    Container(color: const Color.fromRGBO(0, 0, 0, 0.06)),
+                  ],
+                ),
               ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 6),
-                Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-              ],
+
+            // Content area: title and metadata row
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      // Left meta: days | kms
+                      Expanded(
+                        child: Text(
+                          'Total days  |  total kms',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54),
+                        ),
+                      ),
+                      // Right meta: total stops
+                      Text(
+                        'Total stops',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
     );
   }
 
@@ -224,7 +240,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Canadian Icefield Parkway',
                                       '4 - 7 days',
-                                      image: 'images/DSC_0016.jpg',
+                                       image: 'images/mainScreenPic.jpg',
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -233,7 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Pacific West Coast',
                                       '7 - 14 days',
-                                      image: 'images/DSC_0042.jpg',
+                                       image: 'images/mainScreenPic.jpg',
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -242,7 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       context,
                                       'Vancouver Island',
                                       '4 - 6 days',
-                                      image: 'images/DSC_0318.jpg',
+                                       image: 'images/mainScreenPic.jpg',
                                     ),
                                   ),
                                 ],
@@ -254,21 +270,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                     context,
                                     'Canadian Icefield Parkway',
                                     '4 - 7 days',
-                                    image: 'images/DSC_0016.jpg',
+                                     image: 'images/mainScreenPic.jpg',
                                   ),
                                   const SizedBox(height: 12),
                                   _buildTripCard(
                                     context,
                                     'Pacific West Coast',
                                     '7 - 14 days',
-                                    image: 'images/DSC_0042.jpg',
+                                     image: 'images/mainScreenPic.jpg',
                                   ),
                                   const SizedBox(height: 12),
                                   _buildTripCard(
                                     context,
                                     'Vancouver Island',
                                     '4 - 6 days',
-                                    image: 'images/DSC_0318.jpg',
+                                     image: 'images/mainScreenPic.jpg',
                                   ),
                                 ],
                               );
