@@ -24,7 +24,8 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   void initState() {
     super.initState();
-    _rebuildFromPoints();
+    // run rebuild defensively so exceptions don't bubble to the framework
+    _safeRebuild();
   }
 
   @override
@@ -35,19 +36,18 @@ class _MapEmbedState extends State<MapEmbed> {
     }
   }
 
-  void _rebuildFromPoints() async {
+  Future<void> _rebuildFromPoints() async {
     _markers = [];
     final pts = widget.points;
     for (var i = 0; i < pts.length; i++) {
       final p = pts[i];
+      final lat = _toDouble(p['lat']);
+      final lon = _toDouble(p['lon']);
       _markers.add(
         Marker(
           width: 36,
           height: 36,
-          point: ll.LatLng(
-            (p['lat'] ?? 0.0) as double,
-            (p['lon'] ?? 0.0) as double,
-          ),
+          point: ll.LatLng(lat, lon),
           builder: (ctx) => CircleAvatar(child: Text('${i + 1}')),
         ),
       );
@@ -95,12 +95,7 @@ class _MapEmbedState extends State<MapEmbed> {
     // Fallback: straight polyline between points
     final fallback =
         widget.points
-            .map(
-              (p) => ll.LatLng(
-                (p['lat'] ?? 0.0) as double,
-                (p['lon'] ?? 0.0) as double,
-              ),
-            )
+            .map((p) => ll.LatLng(_toDouble(p['lat']), _toDouble(p['lon'])))
             .toList();
     setState(() {
       _route =
@@ -112,6 +107,29 @@ class _MapEmbedState extends State<MapEmbed> {
               )
               : null;
     });
+  }
+
+  double _toDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? 0.0;
+    return 0.0;
+  }
+
+  Future<void> _safeRebuild() async {
+    try {
+      await _rebuildFromPoints();
+    } catch (err, st) {
+      // don't let map errors crash the app; log and clear state
+      // ignore: avoid_print
+      print('Map rebuild failed: $err\n$st');
+      if (mounted) {
+        setState(() {
+          _markers = [];
+          _route = null;
+        });
+      }
+    }
   }
 
   @override

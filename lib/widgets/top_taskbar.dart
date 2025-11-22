@@ -42,14 +42,48 @@ class _TopTaskbarState extends State<TopTaskbar> {
     super.initState();
     final u = FirebaseAuth.instance.currentUser;
     if (u != null) {
-      _userDoc = FirebaseFirestore.instance.collection('users').doc(u.uid).snapshots();
+      _userDoc =
+          FirebaseFirestore.instance.collection('users').doc(u.uid).snapshots();
+      _ensureUserDoc(u);
     }
     AuthState.instance.signedIn.addListener(() {
       final uu = FirebaseAuth.instance.currentUser;
       setState(() {
-        _userDoc = uu != null ? FirebaseFirestore.instance.collection('users').doc(uu.uid).snapshots() : null;
+        _userDoc =
+            uu != null
+                ? FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(uu.uid)
+                    .snapshots()
+                : null;
+        if (uu != null) _ensureUserDoc(uu);
       });
     });
+  }
+
+  Future<void> _ensureUserDoc(User u) async {
+    try {
+      final doc = FirebaseFirestore.instance.collection('users').doc(u.uid);
+      final snap = await doc.get();
+      final exists = snap.exists;
+      final upd = <String, dynamic>{};
+      if (!exists) {
+        upd['createdAt'] = FieldValue.serverTimestamp();
+      }
+      // ensure email and displayName exist in the document for discoverability
+      upd['email'] = (u.email ?? '').toLowerCase();
+      final dn = (u.displayName ?? '').toString();
+      if (dn.isNotEmpty) {
+        upd['displayName'] = dn;
+        upd['displayNameLower'] = dn.toLowerCase();
+      } else {
+        // ensure the lower field exists (may be empty)
+        upd['displayNameLower'] = '';
+      }
+      await doc.set(upd, SetOptions(merge: true));
+    } catch (_) {
+      // ignore errors here; this is best-effort to populate user doc for friend search
+    }
   }
 
   @override
@@ -173,14 +207,19 @@ class _TopTaskbarState extends State<TopTaskbar> {
                   color: Color.lerp(Colors.white, Colors.black87, dp),
                 );
                 if (snap.hasData && snap.data?.data() != null) {
-                  final img = snap.data!.data()!['profileImageDataUrl'] as String?;
+                  final img =
+                      snap.data!.data()!['profileImageDataUrl'] as String?;
                   if (img != null) {
                     if (kIsWeb) {
-                      avatarChild = ClipOval(child: Image.network(img, fit: BoxFit.cover));
+                      avatarChild = ClipOval(
+                        child: Image.network(img, fit: BoxFit.cover),
+                      );
                     } else {
                       try {
                         final bytes = base64Decode(img.split(',').last);
-                        avatarChild = ClipOval(child: Image.memory(bytes, fit: BoxFit.cover));
+                        avatarChild = ClipOval(
+                          child: Image.memory(bytes, fit: BoxFit.cover),
+                        );
                       } catch (_) {}
                     }
                   }
@@ -199,35 +238,69 @@ class _TopTaskbarState extends State<TopTaskbar> {
                     onSelected: (value) async {
                       if (value == 'sign_in') {
                         final res = await Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const SignInScreen()),
+                          MaterialPageRoute(
+                            builder: (_) => const SignInScreen(),
+                          ),
                         );
-                        if (res == true) (widget.onSignInStateChanged ?? AuthState.instance.setSignedIn)(true);
+                        if (res == true)
+                          (widget.onSignInStateChanged ??
+                              AuthState.instance.setSignedIn)(true);
                       } else if (value == 'create_account') {
                         final res = await Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const CreateAccountScreen()),
+                          MaterialPageRoute(
+                            builder: (_) => const CreateAccountScreen(),
+                          ),
                         );
-                        if (res == true) (widget.onSignInStateChanged ?? AuthState.instance.setSignedIn)(true);
+                        if (res == true)
+                          (widget.onSignInStateChanged ??
+                              AuthState.instance.setSignedIn)(true);
                       } else if (value == 'view_account') {
-                        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AccountScreen()));
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const AccountScreen(),
+                          ),
+                        );
                       } else if (value == 'friends') {
-                        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendsScreen()));
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const FriendsScreen(),
+                          ),
+                        );
                       } else if (value == 'sign_out') {
-                        (widget.onSignInStateChanged ?? AuthState.instance.setSignedIn)(false);
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Signed out')));
+                        (widget.onSignInStateChanged ??
+                            AuthState.instance.setSignedIn)(false);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Signed out')),
+                        );
                       }
                     },
                     itemBuilder: (ctx2) {
                       if (!_signedIn) {
                         return [
-                          const PopupMenuItem(value: 'sign_in', child: Text('Sign in')),
-                          const PopupMenuItem(value: 'create_account', child: Text('Create account')),
+                          const PopupMenuItem(
+                            value: 'sign_in',
+                            child: Text('Sign in'),
+                          ),
+                          const PopupMenuItem(
+                            value: 'create_account',
+                            child: Text('Create account'),
+                          ),
                         ];
                       }
                       return [
-                        const PopupMenuItem(value: 'view_account', child: Text('View account')),
-                        const PopupMenuItem(value: 'friends', child: Text('Friends')),
+                        const PopupMenuItem(
+                          value: 'view_account',
+                          child: Text('View account'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'friends',
+                          child: Text('Friends'),
+                        ),
                         const PopupMenuDivider(),
-                        const PopupMenuItem(value: 'sign_out', child: Text('Sign out')),
+                        const PopupMenuItem(
+                          value: 'sign_out',
+                          child: Text('Sign out'),
+                        ),
                       ];
                     },
                   ),

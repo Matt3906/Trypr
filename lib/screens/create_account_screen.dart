@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class CreateAccountScreen extends StatefulWidget {
@@ -27,10 +28,15 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
     setState(() => _loading = true);
     try {
-      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
+      // Ensure a normalized users/{uid} document exists for searches.
+      final user = cred.user ?? FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await _upsertUserDoc(user);
+      }
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on FirebaseAuthException catch (e) {
@@ -57,6 +63,11 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           idToken: googleAuth.idToken,
         );
         await FirebaseAuth.instance.signInWithCredential(credential);
+      }
+      // After sign-in, ensure a users/{uid} doc is present/normalized
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await _upsertUserDoc(user);
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -175,5 +186,26 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         ),
       ),
     );
+  }
+}
+
+Future<void> _upsertUserDoc(User user) async {
+  try {
+    final email = (user.email ?? '').toLowerCase();
+    var displayName = (user.displayName ?? '').trim();
+    if (displayName.isEmpty) {
+      // Fallback to local-part of email if displayName missing
+      final parts = email.split('@');
+      displayName = parts.isNotEmpty ? parts.first : '';
+    }
+    final doc = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    await doc.set({
+      'displayName': displayName,
+      'displayNameLower': displayName.toLowerCase(),
+      'email': email,
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  } catch (_) {
+    // Don't block sign-in on Firestore write failures; optional retry could be added.
   }
 }
