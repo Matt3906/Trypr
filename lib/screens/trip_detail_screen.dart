@@ -9,7 +9,8 @@ import 'dart:convert';
 class TripDetailScreen extends StatefulWidget {
   final String docId;
   final Map<String, dynamic> data;
-  const TripDetailScreen({Key? key, required this.docId, required this.data}) : super(key: key);
+  const TripDetailScreen({Key? key, required this.docId, required this.data})
+    : super(key: key);
 
   @override
   State<TripDetailScreen> createState() => _TripDetailScreenState();
@@ -34,11 +35,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (d is num) _days = d.toInt();
     // copy waypoints into mutable list for editing
     final w = (widget.data['waypoints'] as List<dynamic>?) ?? [];
-    _waypoints = w.map<Map<String, dynamic>>((e) {
-      if (e is Map<String, dynamic>) return Map<String, dynamic>.from(e);
-      if (e is Map) return Map<String, dynamic>.from(e.cast<String, dynamic>());
-      return <String, dynamic>{};
-    }).toList();
+    _waypoints =
+        w.map<Map<String, dynamic>>((e) {
+          if (e is Map<String, dynamic>) return Map<String, dynamic>.from(e);
+          if (e is Map)
+            return Map<String, dynamic>.from(e.cast<String, dynamic>());
+          return <String, dynamic>{};
+        }).toList();
 
     _searchController.addListener(() {
       final v = _searchController.text.trim();
@@ -65,13 +68,29 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       _searchingPlaces = true;
     });
     try {
-      final url = Uri.parse('https://nominatim.openstreetmap.org/search')
-          .replace(queryParameters: {'q': query, 'format': 'json', 'limit': '6', 'addressdetails': '1'});
-      final resp = await http.get(url, headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'});
+      final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/search',
+      ).replace(
+        queryParameters: {
+          'q': query,
+          'format': 'json',
+          'limit': '6',
+          'addressdetails': '1',
+        },
+      );
+      final resp = await http.get(
+        url,
+        headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'},
+      );
       if (resp.statusCode == 200) {
         final List<dynamic> list = jsonDecode(resp.body) as List<dynamic>;
         setState(() {
-          _placeSuggestions = list.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+          _placeSuggestions =
+              list
+                  .map<Map<String, dynamic>>(
+                    (e) => Map<String, dynamic>.from(e as Map),
+                  )
+                  .toList();
         });
       } else {
         setState(() => _placeSuggestions = []);
@@ -93,13 +112,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           .doc(u.uid)
           .collection('trips')
           .doc(widget.docId)
-          .update({
-        'totalDays': _days,
-        'waypoints': _waypoints,
-      });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+          .update({'totalDays': _days, 'waypoints': _waypoints});
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Saved')));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -109,6 +129,241 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     // same as _saveDays but used when editing waypoints too
     await _saveDays();
     if (mounted) setState(() => _editing = false);
+  }
+
+  Future<void> _openPackingList() async {
+    final me = _user;
+    if (me == null) return;
+    DocumentReference<Map<String, dynamic>> tripRef;
+    if (widget.data.containsKey('tripRef') &&
+        widget.data['tripRef'] is String) {
+      tripRef =
+          FirebaseFirestore.instance.doc(widget.data['tripRef'] as String)
+              as DocumentReference<Map<String, dynamic>>;
+    } else {
+      tripRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(me.uid)
+          .collection('trips')
+          .doc(widget.docId);
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final addCtl = TextEditingController();
+        return AlertDialog(
+          title: const Text('Packing list'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream:
+                        tripRef
+                            .collection('packing')
+                            .orderBy('createdAt')
+                            .snapshots(),
+                    builder: (ctx2, snap) {
+                      if (!snap.hasData)
+                        return const Center(child: CircularProgressIndicator());
+                      final docs = snap.data!.docs;
+                      if (docs.isEmpty)
+                        return const Center(child: Text('No packing items'));
+                      return ListView.separated(
+                        itemCount: docs.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (ctx3, i) {
+                          final d = docs[i];
+                          final data = d.data();
+                          final name = (data['name'] ?? '').toString();
+                          final checkedBy = List<String>.from(
+                            data['checkedBy'] ?? [],
+                          );
+                          final checked = checkedBy.contains(me.uid);
+                          return CheckboxListTile(
+                            value: checked,
+                            onChanged: (v) async {
+                              if (v == true) {
+                                await d.reference.update({
+                                  'checkedBy': FieldValue.arrayUnion([me.uid]),
+                                });
+                              } else {
+                                await d.reference.update({
+                                  'checkedBy': FieldValue.arrayRemove([me.uid]),
+                                });
+                              }
+                            },
+                            title: Text(name),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: addCtl,
+                        decoration: const InputDecoration(hintText: 'Add item'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final t = addCtl.text.trim();
+                        if (t.isEmpty) return;
+                        await tripRef.collection('packing').add({
+                          'name': t,
+                          'createdAt': FieldValue.serverTimestamp(),
+                          'checkedBy': [],
+                        });
+                        addCtl.clear();
+                      },
+                      child: const Text('Add'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _openTripChat() async {
+    final me = _user;
+    if (me == null) return;
+    DocumentReference<Map<String, dynamic>> tripRef;
+    if (widget.data.containsKey('tripRef') &&
+        widget.data['tripRef'] is String) {
+      tripRef =
+          FirebaseFirestore.instance.doc(widget.data['tripRef'] as String)
+              as DocumentReference<Map<String, dynamic>>;
+    } else {
+      tripRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(me.uid)
+          .collection('trips')
+          .doc(widget.docId);
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final msgCtl = TextEditingController();
+        final imgCtl = TextEditingController();
+        return AlertDialog(
+          title: const Text('Trip chat'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream:
+                        tripRef
+                            .collection('messages')
+                            .orderBy('createdAt')
+                            .snapshots(),
+                    builder: (ctx2, snap) {
+                      if (!snap.hasData)
+                        return const Center(child: CircularProgressIndicator());
+                      final docs = snap.data!.docs;
+                      if (docs.isEmpty)
+                        return const Center(child: Text('No messages yet'));
+                      return ListView.builder(
+                        itemCount: docs.length,
+                        itemBuilder: (ctx3, i) {
+                          final d = docs[i];
+                          final data = d.data();
+                          final sender = (data['senderUid'] ?? '').toString();
+                          final text = (data['text'] ?? '').toString();
+                          final imageUrl = (data['imageUrl'] ?? '').toString();
+                          return ListTile(
+                            title: Text(sender == me.uid ? 'You' : sender),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (text.isNotEmpty) Text(text),
+                                if (imageUrl.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 6.0),
+                                    child: Image.network(
+                                      imageUrl,
+                                      width: 200,
+                                      errorBuilder:
+                                          (_, __, ___) => const Text(
+                                            'Image failed to load',
+                                          ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: msgCtl,
+                  decoration: const InputDecoration(hintText: 'Message'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: imgCtl,
+                        decoration: const InputDecoration(
+                          hintText: 'Image URL (optional)',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final t = msgCtl.text.trim();
+                        final img = imgCtl.text.trim();
+                        if (t.isEmpty && img.isEmpty) return;
+                        await tripRef.collection('messages').add({
+                          'senderUid': me.uid,
+                          'text': t,
+                          'imageUrl':
+                              img.isNotEmpty ? img : FieldValue.delete(),
+                          'createdAt': FieldValue.serverTimestamp(),
+                        });
+                        msgCtl.clear();
+                        imgCtl.clear();
+                      },
+                      child: const Text('Send'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _toggleEditing() {
@@ -128,7 +383,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     // both name and lat/lon. If the user prefers just renaming, they can
     // type a new name and press Save.
     final current = Map<String, dynamic>.from(_waypoints[index]);
-    final localNameCtrl = TextEditingController(text: current['name']?.toString() ?? '');
+    final localNameCtrl = TextEditingController(
+      text: current['name']?.toString() ?? '',
+    );
     final searchCtrl = TextEditingController();
     Timer? localDebounce;
     List<Map<String, dynamic>> localSuggestions = [];
@@ -143,12 +400,28 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       localLoading = true;
       if (mounted) setState(() {});
       try {
-        final url = Uri.parse('https://nominatim.openstreetmap.org/search')
-            .replace(queryParameters: {'q': q, 'format': 'json', 'limit': '6', 'addressdetails': '1'});
-        final resp = await http.get(url, headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'});
+        final url = Uri.parse(
+          'https://nominatim.openstreetmap.org/search',
+        ).replace(
+          queryParameters: {
+            'q': q,
+            'format': 'json',
+            'limit': '6',
+            'addressdetails': '1',
+          },
+        );
+        final resp = await http.get(
+          url,
+          headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'},
+        );
         if (resp.statusCode == 200) {
           final List<dynamic> list = jsonDecode(resp.body) as List<dynamic>;
-          localSuggestions = list.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+          localSuggestions =
+              list
+                  .map<Map<String, dynamic>>(
+                    (e) => Map<String, dynamic>.from(e as Map),
+                  )
+                  .toList();
         } else {
           localSuggestions = [];
         }
@@ -160,75 +433,130 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       }
     }
 
-    final res = await showDialog<bool>(context: context, builder: (ctx) {
-      return StatefulBuilder(builder: (ctx2, setStateDialog) {
-        return AlertDialog(
-          title: const Text('Edit waypoint'),
-          content: SizedBox(
-            width: 560,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Name field (allows quick rename)
-                TextField(controller: localNameCtrl, decoration: const InputDecoration(labelText: 'Name')),
-                const SizedBox(height: 8),
-                // Search box for picking a place (updates coords automatically)
-                TextField(
-                  controller: searchCtrl,
-                  decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: 'Search place to update location', suffix: localLoading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : null),
-                  onChanged: (v) {
-                    if (localDebounce?.isActive ?? false) localDebounce?.cancel();
-                    localDebounce = Timer(const Duration(milliseconds: 350), () async {
-                      await doSearch(v);
-                      setStateDialog(() {});
-                    });
-                  },
-                ),
-                if (localSuggestions.isNotEmpty)
-                  Container(
-                    constraints: const BoxConstraints(maxHeight: 200),
-                    margin: const EdgeInsets.only(top: 8),
-                    decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8)]),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: localSuggestions.length,
-                      itemBuilder: (sctx, i) {
-                        final p = localSuggestions[i];
-                        final display = (p['display_name'] ?? '') as String;
-                        return ListTile(
-                          title: Text(display, maxLines: 2, overflow: TextOverflow.ellipsis),
-                          onTap: () {
-                            final lat = double.tryParse((p['lat'] ?? '').toString()) ?? current['lat'] ?? 0.0;
-                            final lon = double.tryParse((p['lon'] ?? '').toString()) ?? current['lon'] ?? 0.0;
-                            // update waypoint immediately and close
-                            _waypoints[index]['name'] = display;
-                            _waypoints[index]['lat'] = lat;
-                            _waypoints[index]['lon'] = lon;
-                            if (mounted) setState(() {});
-                            Navigator.of(ctx).pop(true);
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx2, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Edit waypoint'),
+              content: SizedBox(
+                width: 560,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Name field (allows quick rename)
+                    TextField(
+                      controller: localNameCtrl,
+                      decoration: const InputDecoration(labelText: 'Name'),
+                    ),
+                    const SizedBox(height: 8),
+                    // Search box for picking a place (updates coords automatically)
+                    TextField(
+                      controller: searchCtrl,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.search),
+                        hintText: 'Search place to update location',
+                        suffix:
+                            localLoading
+                                ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                                : null,
+                      ),
+                      onChanged: (v) {
+                        if (localDebounce?.isActive ?? false)
+                          localDebounce?.cancel();
+                        localDebounce = Timer(
+                          const Duration(milliseconds: 350),
+                          () async {
+                            await doSearch(v);
+                            setStateDialog(() {});
                           },
                         );
                       },
                     ),
-                  ),
+                    if (localSuggestions.isNotEmpty)
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 200),
+                        margin: const EdgeInsets.only(top: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.06),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: localSuggestions.length,
+                          itemBuilder: (sctx, i) {
+                            final p = localSuggestions[i];
+                            final display = (p['display_name'] ?? '') as String;
+                            return ListTile(
+                              title: Text(
+                                display,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () {
+                                final lat =
+                                    double.tryParse(
+                                      (p['lat'] ?? '').toString(),
+                                    ) ??
+                                    current['lat'] ??
+                                    0.0;
+                                final lon =
+                                    double.tryParse(
+                                      (p['lon'] ?? '').toString(),
+                                    ) ??
+                                    current['lon'] ??
+                                    0.0;
+                                // update waypoint immediately and close
+                                _waypoints[index]['name'] = display;
+                                _waypoints[index]['lat'] = lat;
+                                _waypoints[index]['lon'] = lon;
+                                if (mounted) setState(() {});
+                                Navigator.of(ctx).pop(true);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    localDebounce?.cancel();
+                    Navigator.of(ctx).pop(false);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    // If user changed just the name, update that and close
+                    _waypoints[index]['name'] = localNameCtrl.text;
+                    localDebounce?.cancel();
+                    Navigator.of(ctx).pop(true);
+                  },
+                  child: const Text('Save'),
+                ),
               ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () {
-              localDebounce?.cancel();
-              Navigator.of(ctx).pop(false);
-            }, child: const Text('Cancel')),
-            ElevatedButton(onPressed: () {
-              // If user changed just the name, update that and close
-              _waypoints[index]['name'] = localNameCtrl.text;
-              localDebounce?.cancel();
-              Navigator.of(ctx).pop(true);
-            }, child: const Text('Save')),
-          ],
+            );
+          },
         );
-      });
-    });
+      },
+    );
 
     // Clean up any local debounce timer
     // (if dialog closed via selection, localDebounce may already be cancelled)
@@ -258,6 +586,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       appBar: AppBar(
         title: Text(name),
         actions: [
+          IconButton(icon: const Icon(Icons.list), onPressed: _openPackingList),
+          IconButton(icon: const Icon(Icons.chat), onPressed: _openTripChat),
           IconButton(
             icon: const Icon(Icons.save),
             onPressed: _saving ? null : _saveDays,
@@ -274,14 +604,18 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               // routes the same way they were built. When editing, allow tapping
               // the map to add a waypoint via `onMapTap`.
               child: MapEmbed(
-                points: waypoints.map((w) {
-                  return {
-                    'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
-                    'lon': (w['lon'] ?? w['longitude'] ?? w['lng'] ?? 0.0),
-                    'name': w['name'] ?? '',
-                  };
-                }).toList(),
-                onMapTap: _editing ? (lat, lon) => _addWaypointFromTap(lat, lon) : null,
+                points:
+                    waypoints.map((w) {
+                      return {
+                        'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
+                        'lon': (w['lon'] ?? w['longitude'] ?? w['lng'] ?? 0.0),
+                        'name': w['name'] ?? '',
+                      };
+                    }).toList(),
+                onMapTap:
+                    _editing
+                        ? (lat, lon) => _addWaypointFromTap(lat, lon)
+                        : null,
               ),
             ),
             Padding(
@@ -296,15 +630,29 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       const Text('Days:', style: TextStyle(fontSize: 16)),
                       const SizedBox(width: 12),
                       Container(
-                        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey.shade300)),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
                               icon: const Icon(Icons.remove),
-                              onPressed: _days > 1 ? () => setState(() => _days--) : null,
+                              onPressed:
+                                  _days > 1
+                                      ? () => setState(() => _days--)
+                                      : null,
                             ),
-                            SizedBox(width: 40, child: Center(child: Text('$_days', style: const TextStyle(fontSize: 16)))),
+                            SizedBox(
+                              width: 40,
+                              child: Center(
+                                child: Text(
+                                  '$_days',
+                                  style: const TextStyle(fontSize: 16),
+                                ),
+                              ),
+                            ),
                             IconButton(
                               icon: const Icon(Icons.add),
                               onPressed: () => setState(() => _days++),
@@ -315,14 +663,29 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       const SizedBox(width: 16),
                       ElevatedButton.icon(
                         onPressed: _saving ? null : _saveDays,
-                        icon: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.save),
+                        icon:
+                            _saving
+                                ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                                : const Icon(Icons.save),
                         label: const Text('Save'),
                       ),
                     ],
                   ),
 
                   const SizedBox(height: 16),
-                  Row(children: [Text('${waypoints.length} stops'), const SizedBox(width: 12), Text('${totalKm.toStringAsFixed(1)} km')]),
+                  Row(
+                    children: [
+                      Text('${waypoints.length} stops'),
+                      const SizedBox(width: 12),
+                      Text('${totalKm.toStringAsFixed(1)} km'),
+                    ],
+                  ),
                   const SizedBox(height: 12),
 
                   const Divider(),
@@ -330,12 +693,25 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Waypoints', style: TextStyle(fontWeight: FontWeight.bold)),
-                      Row(children: [
-                        if (_editing)
-                          TextButton.icon(onPressed: _saveAll, icon: const Icon(Icons.save), label: const Text('Save')),
-                        TextButton.icon(onPressed: _toggleEditing, icon: Icon(_editing ? Icons.check : Icons.edit), label: Text(_editing ? 'Done' : 'Edit')),
-                      ])
+                      const Text(
+                        'Waypoints',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Row(
+                        children: [
+                          if (_editing)
+                            TextButton.icon(
+                              onPressed: _saveAll,
+                              icon: const Icon(Icons.save),
+                              label: const Text('Save'),
+                            ),
+                          TextButton.icon(
+                            onPressed: _toggleEditing,
+                            icon: Icon(_editing ? Icons.check : Icons.edit),
+                            label: Text(_editing ? 'Done' : 'Edit'),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -346,7 +722,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         children: [
                           // Search / autocomplete input to help users pick a location
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8.0,
+                              vertical: 6.0,
+                            ),
                             child: Column(
                               children: [
                                 TextField(
@@ -354,28 +733,68 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   decoration: InputDecoration(
                                     prefixIcon: const Icon(Icons.search),
                                     hintText: 'Type a place name or address',
-                                    suffix: _searchingPlaces ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : null,
+                                    suffix:
+                                        _searchingPlaces
+                                            ? const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                            : null,
                                   ),
                                 ),
                                 if (_placeSuggestions.isNotEmpty)
                                   Container(
-                                    constraints: const BoxConstraints(maxHeight: 160),
+                                    constraints: const BoxConstraints(
+                                      maxHeight: 160,
+                                    ),
                                     margin: const EdgeInsets.only(top: 6),
-                                    decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8)]),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      border: Border.all(
+                                        color: Colors.grey.shade300,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.06),
+                                          blurRadius: 8,
+                                        ),
+                                      ],
+                                    ),
                                     child: ListView.builder(
                                       shrinkWrap: true,
                                       itemCount: _placeSuggestions.length,
                                       itemBuilder: (ctx, i) {
                                         final p = _placeSuggestions[i];
-                                        final display = (p['display_name'] ?? '') as String;
+                                        final display =
+                                            (p['display_name'] ?? '') as String;
                                         return ListTile(
-                                          title: Text(display, maxLines: 2, overflow: TextOverflow.ellipsis),
+                                          title: Text(
+                                            display,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
                                           onTap: () {
                                             // Add waypoint from the selected place; user doesn't need to edit coords
-                                            final lat = double.tryParse((p['lat'] ?? '').toString()) ?? 0.0;
-                                            final lon = double.tryParse((p['lon'] ?? '').toString()) ?? 0.0;
+                                            final lat =
+                                                double.tryParse(
+                                                  (p['lat'] ?? '').toString(),
+                                                ) ??
+                                                0.0;
+                                            final lon =
+                                                double.tryParse(
+                                                  (p['lon'] ?? '').toString(),
+                                                ) ??
+                                                0.0;
                                             setState(() {
-                                              _waypoints.add({'lat': lat, 'lon': lon, 'name': display});
+                                              _waypoints.add({
+                                                'lat': lat,
+                                                'lon': lon,
+                                                'name': display,
+                                              });
                                               _placeSuggestions = [];
                                               _searchController.clear();
                                             });
@@ -396,20 +815,38 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   _waypoints.insert(newIndex, item);
                                 });
                               },
-                              children: _waypoints.asMap().entries.map((e) {
-                                final idx = e.key;
-                                final wp = e.value;
-                                return ListTile(
-                                  key: ValueKey('wp-$idx'),
-                                  leading: CircleAvatar(child: Text('${idx + 1}')),
-                                  title: Text(wp['name'] ?? 'Point ${idx + 1}'),
-                                  subtitle: Text('${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}'),
-                                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                                    IconButton(icon: const Icon(Icons.edit), onPressed: () => _editWaypointDialog(idx)),
-                                    IconButton(icon: const Icon(Icons.delete), onPressed: () => _removeWaypoint(idx)),
-                                  ]),
-                                );
-                              }).toList(),
+                              children:
+                                  _waypoints.asMap().entries.map((e) {
+                                    final idx = e.key;
+                                    final wp = e.value;
+                                    return ListTile(
+                                      key: ValueKey('wp-$idx'),
+                                      leading: CircleAvatar(
+                                        child: Text('${idx + 1}'),
+                                      ),
+                                      title: Text(
+                                        wp['name'] ?? 'Point ${idx + 1}',
+                                      ),
+                                      subtitle: Text(
+                                        '${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}',
+                                      ),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(Icons.edit),
+                                            onPressed:
+                                                () => _editWaypointDialog(idx),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.delete),
+                                            onPressed:
+                                                () => _removeWaypoint(idx),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }).toList(),
                             ),
                           ),
                         ],
@@ -422,7 +859,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       return ListTile(
                         leading: CircleAvatar(child: Text('${idx + 1}')),
                         title: Text(wp['name'] ?? 'Point ${idx + 1}'),
-                        subtitle: Text('${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}'),
+                        subtitle: Text(
+                          '${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}',
+                        ),
                       );
                     }),
                 ],

@@ -206,14 +206,21 @@ class _AccountScreenState extends State<AccountScreen> {
                                     OutlinedButton.icon(
                                       onPressed: () async {
                                         await FirebaseAuth.instance.signOut();
-                                        if (mounted)
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('Signed out'),
-                                            ),
-                                          );
+                                        if (!mounted) return;
+                                        // After sign-out, navigate to sign-in and clear navigation
+                                        Navigator.of(
+                                          context,
+                                        ).pushNamedAndRemoveUntil(
+                                          '/sign-in',
+                                          (route) => false,
+                                        );
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('Signed out'),
+                                          ),
+                                        );
                                       },
                                       icon: const Icon(Icons.logout),
                                       label: const Text('Sign out'),

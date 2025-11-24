@@ -21,6 +21,7 @@ class _Waypoint {
   final String name;
   final double lat;
   final double lon;
+  int nights = 1;
   _Waypoint(this.name, this.lat, this.lon);
 }
 
@@ -30,6 +31,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   final TextEditingController _searchCtrl = TextEditingController();
 
   final List<_Waypoint> _waypoints = [];
+  DateTime? _startDate;
   List<Map<String, dynamic>> _searchResults = [];
   StreamSubscription? _windowMsgSub;
   StreamSubscription<User?>? _authSub;
@@ -38,6 +40,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   double? _routeDurationMin;
   User? _currentUser;
   bool _isSaving = false;
+  DocumentReference<Map<String, dynamic>>? _lastSavedTripRef;
 
   // Small sample lookup so we don't need external geocoding packages
   final Map<String, _Waypoint> _sampleLookup = {
@@ -61,6 +64,330 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     return total;
   }
 
+  Future<void> _showShareDialog(BuildContext context) async {
+    if (_lastSavedTripRef == null) return;
+    final me = FirebaseAuth.instance.currentUser;
+    if (me == null) return;
+    final meDoc =
+        await FirebaseFirestore.instance.collection('users').doc(me.uid).get();
+    final friendsRaw = meDoc.data()?['friends'] as List<dynamic>? ?? [];
+    final friends =
+        friendsRaw.map<Map<String, dynamic>>((f) {
+          if (f is Map) return Map<String, dynamic>.from(f);
+          return {'id': f.toString()};
+        }).toList();
+
+    final selected = <String>{};
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Share trip with friends'),
+          content: SizedBox(
+            width: 520,
+            child: StatefulBuilder(
+              builder: (ctx2, setState) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (friends.isEmpty) const Text('No friends to share with'),
+                    if (friends.isNotEmpty)
+                      SizedBox(
+                        height: 280,
+                        child: ListView.builder(
+                          itemCount: friends.length,
+                          itemBuilder: (ctx3, i) {
+                            final f = friends[i];
+                            final uid = (f['uid'] ?? f['id'])?.toString();
+                            final label =
+                                (f['displayName'] ??
+                                        f['name'] ??
+                                        f['email'] ??
+                                        uid ??
+                                        'Friend')
+                                    .toString();
+                            return CheckboxListTile(
+                              value: uid != null && selected.contains(uid),
+                              onChanged: (v) {
+                                if (uid == null) return;
+                                setState(() {
+                                  if (v == true)
+                                    selected.add(uid);
+                                  else
+                                    selected.remove(uid);
+                                });
+                              },
+                              title: Text(label),
+                              subtitle: Text((f['email'] ?? '').toString()),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                if (selected.isEmpty) return;
+                try {
+                  final tripId = _lastSavedTripRef!.id;
+                  await _lastSavedTripRef!.update({
+                    'sharedWith': FieldValue.arrayUnion(selected.toList()),
+                  });
+                  for (final uid in selected) {
+                    final dest = FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(uid)
+                        .collection('sharedTrips')
+                        .doc(tripId);
+                    await dest.set({
+                      'ownerUid': me.uid,
+                      'ownerName': me.displayName ?? '',
+                      'tripRef': _lastSavedTripRef!.path,
+                      'tripName': _tripNameCtrl.text.trim(),
+                      'createdAt': FieldValue.serverTimestamp(),
+                    });
+                  }
+                  if (mounted)
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Trip shared')),
+                    );
+                } catch (err) {
+                  if (mounted)
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to share: $err')),
+                    );
+                }
+              },
+              child: const Text('Share'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _openPackingList(
+    DocumentReference<Map<String, dynamic>> tripRef,
+  ) async {
+    final me = FirebaseAuth.instance.currentUser;
+    if (me == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final addCtl = TextEditingController();
+        return AlertDialog(
+          title: const Text('Packing list'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream:
+                        tripRef
+                            .collection('packing')
+                            .orderBy('createdAt')
+                            .snapshots(),
+                    builder: (ctx2, snap) {
+                      if (!snap.hasData)
+                        return const Center(child: CircularProgressIndicator());
+                      final docs = snap.data!.docs;
+                      if (docs.isEmpty)
+                        return const Center(child: Text('No packing items'));
+                      return ListView.separated(
+                        itemCount: docs.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (ctx3, i) {
+                          final d = docs[i];
+                          final data = d.data();
+                          final name = (data['name'] ?? '').toString();
+                          final checkedBy = List<String>.from(
+                            data['checkedBy'] ?? [],
+                          );
+                          final checked = checkedBy.contains(me.uid);
+                          return CheckboxListTile(
+                            value: checked,
+                            onChanged: (v) async {
+                              if (v == true) {
+                                await d.reference.update({
+                                  'checkedBy': FieldValue.arrayUnion([me.uid]),
+                                });
+                              } else {
+                                await d.reference.update({
+                                  'checkedBy': FieldValue.arrayRemove([me.uid]),
+                                });
+                              }
+                            },
+                            title: Text(name),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: addCtl,
+                        decoration: const InputDecoration(hintText: 'Add item'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final t = addCtl.text.trim();
+                        if (t.isEmpty) return;
+                        await tripRef.collection('packing').add({
+                          'name': t,
+                          'createdAt': FieldValue.serverTimestamp(),
+                          'checkedBy': [],
+                        });
+                        addCtl.clear();
+                      },
+                      child: const Text('Add'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _openTripChat(
+    DocumentReference<Map<String, dynamic>> tripRef,
+  ) async {
+    final me = FirebaseAuth.instance.currentUser;
+    if (me == null) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final msgCtl = TextEditingController();
+        final imgCtl = TextEditingController();
+        return AlertDialog(
+          title: const Text('Trip chat'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream:
+                        tripRef
+                            .collection('messages')
+                            .orderBy('createdAt')
+                            .snapshots(),
+                    builder: (ctx2, snap) {
+                      if (!snap.hasData)
+                        return const Center(child: CircularProgressIndicator());
+                      final docs = snap.data!.docs;
+                      if (docs.isEmpty)
+                        return const Center(child: Text('No messages yet'));
+                      return ListView.builder(
+                        itemCount: docs.length,
+                        itemBuilder: (ctx3, i) {
+                          final d = docs[i];
+                          final data = d.data();
+                          final sender = (data['senderUid'] ?? '').toString();
+                          final text = (data['text'] ?? '').toString();
+                          final imageUrl = (data['imageUrl'] ?? '').toString();
+                          return ListTile(
+                            title: Text(sender == me.uid ? 'You' : sender),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (text.isNotEmpty) Text(text),
+                                if (imageUrl.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 6.0),
+                                    child: Image.network(
+                                      imageUrl,
+                                      width: 200,
+                                      errorBuilder:
+                                          (_, __, ___) => const Text(
+                                            'Image failed to load',
+                                          ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: msgCtl,
+                  decoration: const InputDecoration(hintText: 'Message'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: imgCtl,
+                        decoration: const InputDecoration(
+                          hintText: 'Image URL (optional)',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final t = msgCtl.text.trim();
+                        final img = imgCtl.text.trim();
+                        if (t.isEmpty && img.isEmpty) return;
+                        await tripRef.collection('messages').add({
+                          'senderUid': me.uid,
+                          'text': t,
+                          'imageUrl':
+                              img.isNotEmpty ? img : FieldValue.delete(),
+                          'createdAt': FieldValue.serverTimestamp(),
+                        });
+                        msgCtl.clear();
+                        imgCtl.clear();
+                      },
+                      child: const Text('Send'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   static double _haversine(double lat1, double lon1, double lat2, double lon2) {
     const r = 6371.0; // km
     final dLat = _deg2rad(lat2 - lat1);
@@ -80,8 +407,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   void _addWaypointFromLookup(String key) {
     final k = key.toLowerCase().trim();
     final s = _sampleLookup[k];
-    if (s != null) setState(() => _waypoints.add(s));
+    if (s != null) {
+      final wp = _Waypoint(s.name, s.lat, s.lon);
+      wp.nights = 1;
+      setState(() => _waypoints.add(wp));
+    }
   }
+
+  int _parseDays() => int.tryParse(_daysCtrl.text) ?? 1;
 
   void _removeWaypoint(int index) {
     setState(() {
@@ -114,14 +447,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 // Try reverse geocoding (web only). If it fails, fallback to "Dropped Pin".
                 try {
                   reverseNominatim(lat.toDouble(), lon.toDouble()).then((name) {
+                    final wp = _Waypoint(
+                      name ?? 'Dropped Pin',
+                      lat.toDouble(),
+                      lon.toDouble(),
+                    );
+                    wp.nights = math.min(_waypoints.length + 1, _parseDays());
                     setState(() {
-                      _waypoints.add(
-                        _Waypoint(
-                          name ?? 'Dropped Pin',
-                          lat.toDouble(),
-                          lon.toDouble(),
-                        ),
-                      );
+                      _waypoints.add(wp);
                     });
                   });
                 } catch (_) {
@@ -242,6 +575,39 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   controller: _tripNameCtrl,
                   decoration: const InputDecoration(labelText: 'Trip Name'),
                 ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Start date',
+                        ),
+                        child: InkWell(
+                          onTap: () async {
+                            final now = DateTime.now();
+                            final picked = await showDatePicker(
+                              context: context,
+                              initialDate: _startDate ?? now,
+                              firstDate: DateTime(now.year - 5),
+                              lastDate: DateTime(now.year + 5),
+                            );
+                            if (picked != null && mounted)
+                              setState(() => _startDate = picked);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12.0),
+                            child: Text(
+                              _startDate != null
+                                  ? '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')}'
+                                  : 'Select start date',
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _daysCtrl,
@@ -293,19 +659,59 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                   next.lon,
                                 );
                               }
+                              final nights = _waypoints[i].nights;
+                              // compute arrival offset by summing nights of earlier stops
+                              int offsetDays = 0;
+                              for (var j = 0; j < i; j++)
+                                offsetDays += _waypoints[j].nights;
+                              String dateStr = '';
+                              if (_startDate != null) {
+                                final dt = _startDate!.add(
+                                  Duration(days: offsetDays),
+                                );
+                                dateStr =
+                                    ' — ${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+                              }
                               return ListTile(
                                 dense: true,
                                 leading: CircleAvatar(child: Text('${i + 1}')),
                                 title: Text(_waypoints[i].name),
                                 subtitle: Text(
-                                  'Day ${i + 1} — ' +
+                                  '${nights} night${nights == 1 ? '' : 's'}$dateStr — ' +
                                       (next != null
                                           ? '${segKm.toStringAsFixed(2)} km to next'
                                           : 'Last point'),
                                 ),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete_outline),
-                                  onPressed: () => _removeWaypoint(i),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      width: 90,
+                                      child: DropdownButton<int>(
+                                        value: nights,
+                                        isExpanded: true,
+                                        items: List.generate(
+                                          math.max(1, _parseDays()),
+                                          (idx) => DropdownMenuItem(
+                                            value: idx + 1,
+                                            child: Text(
+                                              '${idx + 1} night${idx == 0 ? '' : 's'}',
+                                            ),
+                                          ),
+                                        ),
+                                        onChanged: (v) {
+                                          if (v == null) return;
+                                          setState(
+                                            () => _waypoints[i].nights = v,
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline),
+                                      onPressed: () => _removeWaypoint(i),
+                                    ),
+                                  ],
                                 ),
                               );
                             },
@@ -341,24 +747,37 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               'createdAt': FieldValue.serverTimestamp(),
                               'totalKm': _totalKm,
                               'waypoints':
-                                  _waypoints
-                                      .map(
-                                        (w) => {
-                                          'name': w.name,
-                                          'lat': w.lat,
-                                          'lon': w.lon,
-                                        },
-                                      )
-                                      .toList(),
+                                  _waypoints.asMap().entries.map((e) {
+                                    final idx = e.key;
+                                    final w = e.value;
+                                    final m = {
+                                      'name': w.name,
+                                      'lat': w.lat,
+                                      'lon': w.lon,
+                                      'nights': w.nights,
+                                    };
+                                    if (_startDate != null) {
+                                      int offset = 0;
+                                      for (var j = 0; j < idx; j++)
+                                        offset += _waypoints[j].nights;
+                                      final dt = _startDate!.add(
+                                        Duration(days: offset),
+                                      );
+                                      m['date'] =
+                                          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+                                    }
+                                    return m;
+                                  }).toList(),
                             };
                             try {
                               final uid =
                                   FirebaseAuth.instance.currentUser!.uid;
-                              await FirebaseFirestore.instance
+                              final ref = await FirebaseFirestore.instance
                                   .collection('users')
                                   .doc(uid)
                                   .collection('trips')
                                   .add(data);
+                              _lastSavedTripRef = ref;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text('Trip saved to My Trips'),
@@ -381,6 +800,19 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           )
                           : const Icon(Icons.save),
                   label: Text(_isSaving ? 'Saving...' : 'Save Trip'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed:
+                          _lastSavedTripRef == null
+                              ? null
+                              : () => _showShareDialog(context),
+                      icon: const Icon(Icons.share),
+                      label: const Text('Share'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -433,13 +865,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             // Add first result by default
                             final r = results.first;
                             setState(() {
-                              _waypoints.add(
-                                _Waypoint(
-                                  r['name'] ?? v,
-                                  r['lat'] ?? 0.0,
-                                  r['lon'] ?? 0.0,
-                                ),
+                              final wp = _Waypoint(
+                                r['name'] ?? v,
+                                r['lat'] ?? 0.0,
+                                r['lon'] ?? 0.0,
                               );
+                              wp.nights = math.min(
+                                _waypoints.length + 1,
+                                _parseDays(),
+                              );
+                              _waypoints.add(wp);
                               _searchResults = [];
                               _searchCtrl.clear();
                             });
@@ -508,13 +943,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             trailing: TextButton(
                               onPressed: () {
                                 setState(() {
-                                  _waypoints.add(
-                                    _Waypoint(
-                                      r['name'] ?? 'Point',
-                                      (r['lat'] ?? 0.0) as double,
-                                      (r['lon'] ?? 0.0) as double,
-                                    ),
+                                  final wp = _Waypoint(
+                                    r['name'] ?? 'Point',
+                                    (r['lat'] ?? 0.0) as double,
+                                    (r['lon'] ?? 0.0) as double,
                                   );
+                                  wp.nights = math.min(
+                                    _waypoints.length + 1,
+                                    _parseDays(),
+                                  );
+                                  _waypoints.add(wp);
                                   _searchResults = [];
                                   _searchCtrl.clear();
                                 });
@@ -549,16 +987,26 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         onMapTap: (lat, lon) async {
                           try {
                             final name = await reverseNominatim(lat, lon);
+                            final wp = _Waypoint(
+                              name ?? 'Dropped Pin',
+                              lat,
+                              lon,
+                            );
+                            wp.nights = math.min(
+                              _waypoints.length + 1,
+                              _parseDays(),
+                            );
                             setState(() {
-                              _waypoints.add(
-                                _Waypoint(name ?? 'Dropped Pin', lat, lon),
-                              );
+                              _waypoints.add(wp);
                             });
                           } catch (_) {
+                            final wp = _Waypoint('Dropped Pin', lat, lon);
+                            wp.nights = math.min(
+                              _waypoints.length + 1,
+                              _parseDays(),
+                            );
                             setState(() {
-                              _waypoints.add(
-                                _Waypoint('Dropped Pin', lat, lon),
-                              );
+                              _waypoints.add(wp);
                             });
                           }
                         },
