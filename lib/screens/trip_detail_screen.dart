@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -25,16 +26,23 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   List<Map<String, dynamic>> _placeSuggestions = [];
   Timer? _debounce;
   bool _searchingPlaces = false;
+  Map<String, dynamic> _liveData = {};
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+  final Map<String, String> _nameCache = {};
 
   User? get _user => FirebaseAuth.instance.currentUser;
 
   @override
   void initState() {
     super.initState();
-    final d = widget.data['totalDays'];
+    // Use a mutable local copy of the trip data. If this trip points to a
+    // remote `tripRef`, subscribe to that document so the UI updates in
+    // realtime when the owner makes changes.
+    _liveData = Map<String, dynamic>.from(widget.data);
+    final d = _liveData['totalDays'];
     if (d is num) _days = d.toInt();
     // copy waypoints into mutable list for editing
-    final w = (widget.data['waypoints'] as List<dynamic>?) ?? [];
+    final w = (_liveData['waypoints'] as List<dynamic>?) ?? [];
     _waypoints =
         w.map<Map<String, dynamic>>((e) {
           if (e is Map<String, dynamic>) return Map<String, dynamic>.from(e);
@@ -42,6 +50,50 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             return Map<String, dynamic>.from(e.cast<String, dynamic>());
           return <String, dynamic>{};
         }).toList();
+
+    // If we have a remote tripRef, listen for live updates and merge them
+    // into `_liveData` so the UI updates when the owner edits the trip.
+    try {
+      final tripRefPath =
+          (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+      if (tripRefPath != null && tripRefPath.isNotEmpty) {
+        final docRef =
+            FirebaseFirestore.instance.doc(tripRefPath)
+                as DocumentReference<Map<String, dynamic>>;
+        _docSub = docRef.snapshots().listen((snapshot) {
+          if (!snapshot.exists) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('This trip was removed by the owner'),
+                ),
+              );
+            }
+            return;
+          }
+          final remote = snapshot.data() ?? {};
+          // Merge remote fields into _liveData but keep local metadata such as `tripRef` and `sharedFrom`.
+          setState(() {
+            _liveData.addAll(remote);
+            // ensure tripRef remains
+            _liveData['tripRef'] = tripRefPath;
+            // update waypoints list for map and editing UI
+            final rw = (_liveData['waypoints'] as List<dynamic>?) ?? [];
+            _waypoints =
+                rw.map<Map<String, dynamic>>((e) {
+                  if (e is Map<String, dynamic>)
+                    return Map<String, dynamic>.from(e);
+                  if (e is Map)
+                    return Map<String, dynamic>.from(e.cast<String, dynamic>());
+                  return <String, dynamic>{};
+                }).toList();
+            // update days if present
+            final td = _liveData['totalDays'];
+            if (td is num) _days = td.toInt();
+          });
+        });
+      }
+    } catch (_) {}
 
     _searchController.addListener(() {
       final v = _searchController.text.trim();
@@ -56,10 +108,205 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     });
   }
 
+  Future<void> _shareTrip() async {
+    final me = _user;
+    if (me == null) return;
+
+    // Determine tripRef: if this screen was opened from a shared invite, use that path
+    DocumentReference<Map<String, dynamic>> tripRef;
+    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    if (refPath != null && refPath.isNotEmpty) {
+      tripRef = FirebaseFirestore.instance.doc(refPath);
+    } else {
+      tripRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(me.uid)
+          .collection('trips')
+          .doc(widget.docId);
+    }
+
+    // Load friends from my user doc
+    final meDoc =
+        await FirebaseFirestore.instance.collection('users').doc(me.uid).get();
+    final friendsRaw = meDoc.data()?['friends'] as List<dynamic>? ?? [];
+    final friends =
+        friendsRaw.map<Map<String, dynamic>>((f) {
+          if (f is Map) return Map<String, dynamic>.from(f);
+          return {'id': f.toString()};
+        }).toList();
+
+    final selected = <String>{};
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Share trip with friends'),
+          content: SizedBox(
+            width: 520,
+            child: StatefulBuilder(
+              builder: (ctx2, setState2) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (friends.isEmpty) const Text('No friends to share with'),
+                    if (friends.isNotEmpty)
+                      SizedBox(
+                        height: 280,
+                        child: ListView.builder(
+                          itemCount: friends.length,
+                          itemBuilder: (ctx3, i) {
+                            final f = friends[i];
+                            final uid = (f['uid'] ?? f['id'])?.toString();
+                            final label =
+                                (f['displayName'] ??
+                                        f['name'] ??
+                                        f['email'] ??
+                                        uid ??
+                                        'Friend')
+                                    .toString();
+                            return CheckboxListTile(
+                              value: uid != null && selected.contains(uid),
+                              onChanged: (v) {
+                                if (uid == null) return;
+                                setState2(() {
+                                  if (v == true)
+                                    selected.add(uid);
+                                  else
+                                    selected.remove(uid);
+                                });
+                              },
+                              title: Text(label),
+                              subtitle: Text((f['email'] ?? '').toString()),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                if (selected.isEmpty) return;
+                try {
+                  // If we are the owner, update sharedWith on the trip doc
+                  String ownerUid = '';
+                  try {
+                    final p = tripRef.path.split('/');
+                    if (p.length >= 2 && p[0] == 'users') ownerUid = p[1];
+                  } catch (_) {}
+
+                  if (ownerUid == me.uid) {
+                    await tripRef.update({
+                      'sharedWith': FieldValue.arrayUnion(selected.toList()),
+                    });
+                  }
+
+                  final List<String> failed = [];
+                  for (final uid in selected) {
+                    try {
+                      final dest = FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(uid)
+                          .collection('sharedTrips')
+                          .doc(widget.docId);
+                      await dest.set({
+                        'ownerUid': ownerUid.isNotEmpty ? ownerUid : me.uid,
+                        'ownerName': me.displayName ?? '',
+                        'tripRef': tripRef.path,
+                        'tripName':
+                            _liveData['name'] ?? widget.data['name'] ?? '',
+                        'createdAt': FieldValue.serverTimestamp(),
+                      });
+                    } catch (e, st) {
+                      // invite write failed — attempt to copy trip into recipient's trips as fallback
+                      // ignore: avoid_print
+                      print(
+                        'Invite write to $uid failed, attempting copy: $e\n$st',
+                      );
+                      try {
+                        await FirebaseFirestore.instance
+                            .collection('users')
+                            .doc(uid)
+                            .collection('trips')
+                            .add({
+                              ...widget.data,
+                              'sharedFrom': me.displayName ?? me.uid,
+                              'createdAt': FieldValue.serverTimestamp(),
+                            });
+                        // best-effort: try to still create sharedTrips doc
+                        try {
+                          final dest = FirebaseFirestore.instance
+                              .collection('users')
+                              .doc(uid)
+                              .collection('sharedTrips')
+                              .doc(widget.docId);
+                          await dest.set({
+                            'ownerUid': ownerUid.isNotEmpty ? ownerUid : me.uid,
+                            'ownerName': me.displayName ?? '',
+                            'tripRef': tripRef.path,
+                            'tripName':
+                                _liveData['name'] ?? widget.data['name'] ?? '',
+                            'createdAt': FieldValue.serverTimestamp(),
+                          });
+                        } catch (_) {}
+                      } catch (e2, st2) {
+                        failed.add(uid);
+                        // ignore: avoid_print
+                        print('Copy to $uid failed: $e2\n$st2');
+                      }
+                    }
+                  }
+
+                  if (failed.isEmpty) {
+                    if (mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Trip shared')),
+                      );
+                  } else {
+                    if (mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Share completed with failures: ${failed.join(', ')}',
+                          ),
+                        ),
+                      );
+                    // ignore: avoid_print
+                    print(
+                      'Share completed with failures for uids: ${failed.join(', ')}',
+                    );
+                  }
+                } catch (e, st) {
+                  // ignore: avoid_print
+                  print('Share failed: $e\n$st');
+                  if (mounted)
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text('Share failed: $e')));
+                }
+              },
+              child: const Text('Share'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
     _debounce?.cancel();
+    _docSub?.cancel();
     super.dispose();
   }
 
@@ -107,12 +354,21 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (u == null) return;
     setState(() => _saving = true);
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(u.uid)
-          .collection('trips')
-          .doc(widget.docId)
-          .update({'totalDays': _days, 'waypoints': _waypoints});
+      // If this trip was opened from a shared tripRef, write back to that ref so edits sync to owner
+      DocumentReference<Map<String, dynamic>> targetRef;
+      final targetPath =
+          (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+      if (targetPath != null && targetPath.isNotEmpty) {
+        targetRef = FirebaseFirestore.instance.doc(targetPath);
+      } else {
+        targetRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(u.uid)
+            .collection('trips')
+            .doc(widget.docId);
+      }
+
+      await targetRef.update({'totalDays': _days, 'waypoints': _waypoints});
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Saved')));
@@ -135,11 +391,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final me = _user;
     if (me == null) return;
     DocumentReference<Map<String, dynamic>> tripRef;
-    if (widget.data.containsKey('tripRef') &&
-        widget.data['tripRef'] is String) {
-      tripRef =
-          FirebaseFirestore.instance.doc(widget.data['tripRef'] as String)
-              as DocumentReference<Map<String, dynamic>>;
+    if ((_liveData['tripRef'] ?? widget.data['tripRef']) is String) {
+      final refPath =
+          (_liveData['tripRef'] ?? widget.data['tripRef']) as String;
+      tripRef = FirebaseFirestore.instance.doc(refPath);
     } else {
       tripRef = FirebaseFirestore.instance
           .collection('users')
@@ -147,95 +402,404 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           .collection('trips')
           .doc(widget.docId);
     }
+    // Build a list of participant UIDs: owner (if available), sharedWith, and current user
+    List<String> _collectParticipants() {
+      final parts = <String>{};
+      // If tripRef is a path like users/{owner}/trips/{id}, extract owner
+      try {
+        final p = tripRef.path.split('/');
+        if (p.length >= 2 && p[0] == 'users') {
+          parts.add(p[1]);
+        }
+      } catch (_) {}
+      final shared =
+          (_liveData['sharedWith'] as List<dynamic>?) ??
+          (widget.data['sharedWith'] as List<dynamic>?) ??
+          [];
+      for (final s in shared) {
+        try {
+          parts.add(s.toString());
+        } catch (_) {}
+      }
+      if (me.uid.isNotEmpty) parts.add(me.uid);
+      return parts.toList();
+    }
+
+    final nameCache = <String, String>{};
+
+    Future<void> _ensureNames(List<String> uids) async {
+      final missing = uids.where((u) => !nameCache.containsKey(u)).toList();
+      for (final uid in missing) {
+        try {
+          final doc =
+              await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(uid)
+                  .get();
+          final data = doc.data() ?? {};
+          final name =
+              (data['displayName'] ?? data['name'] ?? data['email'] ?? uid)
+                  .toString();
+          nameCache[uid] = name;
+        } catch (_) {
+          nameCache[uid] = uid;
+        }
+      }
+    }
+
     await showDialog<void>(
       context: context,
       builder: (ctx) {
+        String scopeView = 'group'; // 'group' or 'private'
         final addCtl = TextEditingController();
-        return AlertDialog(
-          title: const Text('Packing list'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream:
-                        tripRef
-                            .collection('packing')
-                            .orderBy('createdAt')
-                            .snapshots(),
-                    builder: (ctx2, snap) {
-                      if (!snap.hasData)
-                        return const Center(child: CircularProgressIndicator());
-                      final docs = snap.data!.docs;
-                      if (docs.isEmpty)
-                        return const Center(child: Text('No packing items'));
-                      return ListView.separated(
-                        itemCount: docs.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (ctx3, i) {
-                          final d = docs[i];
-                          final data = d.data();
-                          final name = (data['name'] ?? '').toString();
-                          final checkedBy = List<String>.from(
-                            data['checkedBy'] ?? [],
-                          );
-                          final checked = checkedBy.contains(me.uid);
-                          return CheckboxListTile(
-                            value: checked,
-                            onChanged: (v) async {
-                              if (v == true) {
-                                await d.reference.update({
-                                  'checkedBy': FieldValue.arrayUnion([me.uid]),
-                                });
-                              } else {
-                                await d.reference.update({
-                                  'checkedBy': FieldValue.arrayRemove([me.uid]),
-                                });
+        String addScope = 'group';
+        String? addAssignee;
+        final participants = _collectParticipants();
+        _ensureNames(participants);
+
+        return StatefulBuilder(
+          builder: (ctx2, setState2) {
+            return AlertDialog(
+              title: const Text('Packing list'),
+              content: SizedBox(
+                width: 520,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Group'),
+                          selected: scopeView == 'group',
+                          onSelected:
+                              (v) => setState2(() => scopeView = 'group'),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Private'),
+                          selected: scopeView == 'private',
+                          onSelected:
+                              (v) => setState2(() => scopeView = 'private'),
+                        ),
+                        const Spacer(),
+                        Text('Participants: ${participants.length}'),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                        stream:
+                            tripRef
+                                .collection('packing')
+                                .orderBy('createdAt')
+                                .snapshots(),
+                        builder: (ctx3, snap) {
+                          if (!snap.hasData)
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          final docs = snap.data!.docs;
+                          final visible =
+                              docs.where((d) {
+                                final data = d.data();
+                                final pTo = data['privateTo'];
+                                if (scopeView == 'group') return pTo == null;
+                                return pTo != null && pTo == me.uid;
+                              }).toList();
+                          if (visible.isEmpty)
+                            return const Center(
+                              child: Text('No packing items'),
+                            );
+                          return ListView.separated(
+                            itemCount: visible.length,
+                            separatorBuilder:
+                                (_, __) => const Divider(height: 1),
+                            itemBuilder: (ctx4, i) {
+                              final d = visible[i];
+                              final data = d.data();
+                              final name = (data['name'] ?? '').toString();
+                              final checkedBy = List<String>.from(
+                                data['checkedBy'] ?? [],
+                              );
+                              final checked = checkedBy.contains(me.uid);
+                              final assignee =
+                                  (data['assigneeUid'] ?? '').toString();
+                              final privateTo = data['privateTo'] as String?;
+                              final canEdit =
+                                  (scopeView == 'group') ||
+                                  (privateTo == me.uid);
+                              final assigneeName =
+                                  assignee.isNotEmpty
+                                      ? (nameCache[assignee] ?? assignee)
+                                      : '';
+                              if (assignee.isNotEmpty &&
+                                  !nameCache.containsKey(assignee)) {
+                                // fire-and-forget load
+                                FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(assignee)
+                                    .get()
+                                    .then((doc) {
+                                      final ddata = doc.data() ?? {};
+                                      final n =
+                                          (ddata['displayName'] ??
+                                                  ddata['name'] ??
+                                                  ddata['email'] ??
+                                                  assignee)
+                                              .toString();
+                                      if (mounted)
+                                        setState(() => nameCache[assignee] = n);
+                                    })
+                                    .catchError((_) {});
                               }
+
+                              return CheckboxListTile(
+                                value: checked,
+                                onChanged: (v) async {
+                                  if (v == true) {
+                                    await d.reference.update({
+                                      'checkedBy': FieldValue.arrayUnion([
+                                        me.uid,
+                                      ]),
+                                    });
+                                  } else {
+                                    await d.reference.update({
+                                      'checkedBy': FieldValue.arrayRemove([
+                                        me.uid,
+                                      ]),
+                                    });
+                                  }
+                                },
+                                title: Row(
+                                  children: [
+                                    Expanded(child: Text(name)),
+                                    if (assigneeName.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          left: 8.0,
+                                        ),
+                                        child: Chip(label: Text(assigneeName)),
+                                      ),
+                                  ],
+                                ),
+                                subtitle:
+                                    canEdit
+                                        ? Row(
+                                          children: [
+                                            TextButton.icon(
+                                              onPressed: () async {
+                                                // open assignee editor
+                                                final chosen = await showDialog<
+                                                  String?
+                                                >(
+                                                  context: ctx2,
+                                                  builder: (ctx3) {
+                                                    String? sel =
+                                                        assignee.isNotEmpty
+                                                            ? assignee
+                                                            : null;
+                                                    return AlertDialog(
+                                                      title: const Text(
+                                                        'Assign item',
+                                                      ),
+                                                      content: SizedBox(
+                                                        width: 360,
+                                                        child: StatefulBuilder(
+                                                          builder: (
+                                                            ctx4,
+                                                            setState4,
+                                                          ) {
+                                                            return Column(
+                                                              mainAxisSize:
+                                                                  MainAxisSize
+                                                                      .min,
+                                                              children: [
+                                                                DropdownButton<
+                                                                  String?
+                                                                >(
+                                                                  value: sel,
+                                                                  hint: const Text(
+                                                                    'Unassigned',
+                                                                  ),
+                                                                  isExpanded:
+                                                                      true,
+                                                                  items: [
+                                                                    const DropdownMenuItem<
+                                                                      String?
+                                                                    >(
+                                                                      value:
+                                                                          null,
+                                                                      child: Text(
+                                                                        'Unassigned',
+                                                                      ),
+                                                                    ),
+                                                                    ...participants
+                                                                        .map(
+                                                                          (
+                                                                            u,
+                                                                          ) => DropdownMenuItem(
+                                                                            value:
+                                                                                u,
+                                                                            child: Text(
+                                                                              nameCache[u] ??
+                                                                                  u,
+                                                                            ),
+                                                                          ),
+                                                                        )
+                                                                        .toList(),
+                                                                  ],
+                                                                  onChanged:
+                                                                      (
+                                                                        v,
+                                                                      ) => setState4(
+                                                                        () =>
+                                                                            sel =
+                                                                                v,
+                                                                      ),
+                                                                ),
+                                                              ],
+                                                            );
+                                                          },
+                                                        ),
+                                                      ),
+                                                      actions: [
+                                                        TextButton(
+                                                          onPressed:
+                                                              () =>
+                                                                  Navigator.of(
+                                                                    ctx3,
+                                                                  ).pop(null),
+                                                          child: const Text(
+                                                            'Cancel',
+                                                          ),
+                                                        ),
+                                                        TextButton(
+                                                          onPressed:
+                                                              () =>
+                                                                  Navigator.of(
+                                                                    ctx3,
+                                                                  ).pop(sel),
+                                                          child: const Text(
+                                                            'Save',
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    );
+                                                  },
+                                                );
+                                                if (chosen != null) {
+                                                  await d.reference.update({
+                                                    'assigneeUid': chosen,
+                                                  });
+                                                  if (mounted) setState2(() {});
+                                                }
+                                              },
+                                              icon: const Icon(
+                                                Icons.person_outline,
+                                              ),
+                                              label: Text(
+                                                assigneeName.isNotEmpty
+                                                    ? 'Assigned: $assigneeName'
+                                                    : 'Assign',
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                        : null,
+                              );
                             },
-                            title: Text(name),
                           );
                         },
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: addCtl,
-                        decoration: const InputDecoration(hintText: 'Add item'),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final t = addCtl.text.trim();
-                        if (t.isEmpty) return;
-                        await tripRef.collection('packing').add({
-                          'name': t,
-                          'createdAt': FieldValue.serverTimestamp(),
-                          'checkedBy': [],
-                        });
-                        addCtl.clear();
-                      },
-                      child: const Text('Add'),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: addCtl,
+                            decoration: const InputDecoration(
+                              hintText: 'Add item',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        DropdownButton<String>(
+                          value: addScope,
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'group',
+                              child: Text('Group'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'private',
+                              child: Text('Private'),
+                            ),
+                          ],
+                          onChanged:
+                              (v) => setState2(() => addScope = v ?? 'group'),
+                        ),
+                        const SizedBox(width: 8),
+                        DropdownButton<String?>(
+                          value: addAssignee,
+                          hint: const Text('Assignee'),
+                          items: [
+                            const DropdownMenuItem<String?>(
+                              value: null,
+                              child: Text('Unassigned'),
+                            ),
+                            ...participants
+                                .map(
+                                  (u) => DropdownMenuItem<String?>(
+                                    value: u,
+                                    child: Text(nameCache[u] ?? u),
+                                  ),
+                                )
+                                .toList(),
+                          ],
+                          onChanged: (v) => setState2(() => addAssignee = v),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () async {
+                            final t = addCtl.text.trim();
+                            if (t.isEmpty) return;
+                            final data = <String, dynamic>{
+                              'name': t,
+                              'createdAt': FieldValue.serverTimestamp(),
+                              'checkedBy': [],
+                            };
+                            if (addScope == 'private')
+                              data['privateTo'] = me.uid;
+                            if (addAssignee != null) {
+                              data['assigneeUid'] = addAssignee;
+                              data['assigneeName'] =
+                                  nameCache[addAssignee] ?? addAssignee;
+                            }
+                            if (kDebugMode)
+                              print(
+                                'Packing add -> target: ${tripRef.path} data: ${data}',
+                              );
+                            await tripRef.collection('packing').add(data);
+                            addCtl.clear();
+                            addAssignee = null;
+                            if (mounted) setState2(() {});
+                          },
+                          child: const Text('Add'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Close'),
+                ),
               ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-          ],
+            );
+          },
         );
       },
     );
@@ -245,11 +809,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final me = _user;
     if (me == null) return;
     DocumentReference<Map<String, dynamic>> tripRef;
-    if (widget.data.containsKey('tripRef') &&
-        widget.data['tripRef'] is String) {
-      tripRef =
-          FirebaseFirestore.instance.doc(widget.data['tripRef'] as String)
-              as DocumentReference<Map<String, dynamic>>;
+    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    if (refPath != null && refPath.isNotEmpty) {
+      tripRef = FirebaseFirestore.instance.doc(refPath);
     } else {
       tripRef = FirebaseFirestore.instance
           .collection('users')
@@ -261,7 +823,6 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       context: context,
       builder: (ctx) {
         final msgCtl = TextEditingController();
-        final imgCtl = TextEditingController();
         return AlertDialog(
           title: const Text('Trip chat'),
           content: SizedBox(
@@ -287,29 +848,46 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         itemBuilder: (ctx3, i) {
                           final d = docs[i];
                           final data = d.data();
-                          final sender = (data['senderUid'] ?? '').toString();
+                          final senderUid =
+                              (data['senderUid'] ?? '').toString();
                           final text = (data['text'] ?? '').toString();
-                          final imageUrl = (data['imageUrl'] ?? '').toString();
+                          // Prefer explicit senderName written on messages (faster),
+                          // otherwise fall back to cache or async lookup of the user doc.
+                          String display =
+                              senderUid == me.uid ? 'You' : senderUid;
+                          final explicit =
+                              (data['senderName'] ?? '').toString();
+                          if (explicit.isNotEmpty) {
+                            display = explicit;
+                          } else if (senderUid != me.uid) {
+                            final cached = _nameCache[senderUid];
+                            if (cached != null) {
+                              display = cached;
+                            } else {
+                              // fire-and-forget fetch displayName
+                              FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(senderUid)
+                                  .get()
+                                  .then((doc) {
+                                    final ddata = doc.data() ?? {};
+                                    final name =
+                                        (ddata['displayName'] ??
+                                                ddata['name'] ??
+                                                ddata['email'] ??
+                                                senderUid)
+                                            .toString();
+                                    if (mounted)
+                                      setState(
+                                        () => _nameCache[senderUid] = name,
+                                      );
+                                  })
+                                  .catchError((_) {});
+                            }
+                          }
                           return ListTile(
-                            title: Text(sender == me.uid ? 'You' : sender),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (text.isNotEmpty) Text(text),
-                                if (imageUrl.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 6.0),
-                                    child: Image.network(
-                                      imageUrl,
-                                      width: 200,
-                                      errorBuilder:
-                                          (_, __, ___) => const Text(
-                                            'Image failed to load',
-                                          ),
-                                    ),
-                                  ),
-                              ],
-                            ),
+                            title: Text(display),
+                            subtitle: text.isNotEmpty ? Text(text) : null,
                           );
                         },
                       );
@@ -317,36 +895,36 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                TextField(
-                  controller: msgCtl,
-                  decoration: const InputDecoration(hintText: 'Message'),
-                ),
-                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
                       child: TextField(
-                        controller: imgCtl,
-                        decoration: const InputDecoration(
-                          hintText: 'Image URL (optional)',
-                        ),
+                        controller: msgCtl,
+                        decoration: const InputDecoration(hintText: 'Message'),
                       ),
                     ),
                     const SizedBox(width: 8),
                     ElevatedButton(
                       onPressed: () async {
                         final t = msgCtl.text.trim();
-                        final img = imgCtl.text.trim();
-                        if (t.isEmpty && img.isEmpty) return;
-                        await tripRef.collection('messages').add({
-                          'senderUid': me.uid,
-                          'text': t,
-                          'imageUrl':
-                              img.isNotEmpty ? img : FieldValue.delete(),
-                          'createdAt': FieldValue.serverTimestamp(),
-                        });
-                        msgCtl.clear();
-                        imgCtl.clear();
+                        if (t.isEmpty) return;
+                        try {
+                          // Debug: log the target path so we can confirm where messages are written
+                          if (kDebugMode)
+                            print('Trip chat send -> target: ${tripRef.path}');
+                          await tripRef.collection('messages').add({
+                            'senderUid': me.uid,
+                            'senderName': me.displayName ?? '',
+                            'text': t,
+                            'createdAt': FieldValue.serverTimestamp(),
+                          });
+                          msgCtl.clear();
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Send failed: $e')),
+                            );
+                        }
                       },
                       child: const Text('Send'),
                     ),
@@ -577,7 +1155,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final data = widget.data;
+    final data = _liveData;
     final name = data['name'] ?? 'Untitled Trip';
     final waypoints = _waypoints;
     final totalKm = (data['totalKm'] ?? 0) as num;
@@ -588,6 +1166,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         actions: [
           IconButton(icon: const Icon(Icons.list), onPressed: _openPackingList),
           IconButton(icon: const Icon(Icons.chat), onPressed: _openTripChat),
+          IconButton(icon: const Icon(Icons.share), onPressed: _shareTrip),
           IconButton(
             icon: const Icon(Icons.save),
             onPressed: _saving ? null : _saveDays,

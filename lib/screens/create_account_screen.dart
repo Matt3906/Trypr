@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
+import 'package:trypr/screens/complete_profile_screen.dart';
 
 class CreateAccountScreen extends StatefulWidget {
   const CreateAccountScreen({Key? key}) : super(key: key);
@@ -38,7 +39,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         await _upsertUserDoc(user);
       }
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      // Navigate to complete profile so new users fill required fields
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const CompleteProfileScreen()),
+      );
     } on FirebaseAuthException catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message ?? 'Create account failed')),
@@ -70,7 +74,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         await _upsertUserDoc(user);
       }
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const CompleteProfileScreen()),
+      );
     } catch (e) {
       ScaffoldMessenger.of(
         context,

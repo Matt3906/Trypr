@@ -304,11 +304,20 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                     fu['displayName'] ??
                                     fu['email'] ??
                                     'User';
-                                final email = fu['email'] ?? '';
+                                final location =
+                                    (fu['location'] ??
+                                            fu['city'] ??
+                                            fu['country'] ??
+                                            fu['region'] ??
+                                            fu['timezone'] ??
+                                            fu['home'] ??
+                                            fu['email'])
+                                        ?.toString() ??
+                                    '';
                                 return ListTile(
                                   leading: const Icon(Icons.person),
                                   title: Text(title),
-                                  subtitle: Text(email),
+                                  subtitle: Text(location),
                                   trailing: Builder(
                                     builder: (ctxBtn) {
                                       final targetUid = fu['uid'] as String?;

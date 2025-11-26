@@ -56,36 +56,77 @@ class _MapEmbedState extends State<MapEmbed> {
     if (pts.length > 1) {
       // Request OSRM route
       try {
-        final coords = pts.map((p) => '${p['lon']},${p['lat']}').join(';');
-        final url = Uri.parse(
+        String coords = pts.map((p) => '${p['lon']},${p['lat']}').join(';');
+        Uri url = Uri.parse(
           'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
         );
-        final resp = await http.get(url);
+        var resp = await http.get(url);
         if (resp.statusCode == 200) {
-          final data = jsonDecode(resp.body) as Map<String, dynamic>;
-          final routes = data['routes'] as List<dynamic>?;
-          if (routes != null && routes.isNotEmpty) {
-            final geom = routes[0]['geometry'] as Map<String, dynamic>;
-            final coordsList =
-                (geom['coordinates'] as List<dynamic>).cast<List<dynamic>>();
-            final latlngs =
-                coordsList
-                    .map(
-                      (c) => ll.LatLng(
-                        (c[1] as num).toDouble(),
-                        (c[0] as num).toDouble(),
-                      ),
-                    )
-                    .toList();
-            setState(() {
-              _route = Polyline(
-                points: latlngs,
-                strokeWidth: 4.0,
-                color: Colors.blue,
-              );
-            });
-            return;
+          try {
+            final data = jsonDecode(resp.body) as Map<String, dynamic>;
+            final routes = data['routes'] as List<dynamic>?;
+            if (routes != null && routes.isNotEmpty) {
+              final geom = routes[0]['geometry'] as Map<String, dynamic>;
+              final coordsList =
+                  (geom['coordinates'] as List<dynamic>).cast<List<dynamic>>();
+              final latlngs =
+                  coordsList
+                      .map(
+                        (c) => ll.LatLng(
+                          (c[1] as num).toDouble(),
+                          (c[0] as num).toDouble(),
+                        ),
+                      )
+                      .toList();
+              setState(() {
+                _route = Polyline(
+                  points: latlngs,
+                  strokeWidth: 4.0,
+                  color: Colors.blue,
+                );
+              });
+              return;
+            }
+          } catch (_) {
+            // ignore malformed response
           }
+        }
+        // If we get here, try the alternative coordinate order (lat,lon)
+        // in case upstream data uses reversed keys.
+        try {
+          coords = pts.map((p) => '${p['lat']},${p['lon']}').join(';');
+          url = Uri.parse(
+            'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
+          );
+          resp = await http.get(url);
+          if (resp.statusCode == 200) {
+            final data = jsonDecode(resp.body) as Map<String, dynamic>;
+            final routes = data['routes'] as List<dynamic>?;
+            if (routes != null && routes.isNotEmpty) {
+              final geom = routes[0]['geometry'] as Map<String, dynamic>;
+              final coordsList =
+                  (geom['coordinates'] as List<dynamic>).cast<List<dynamic>>();
+              final latlngs =
+                  coordsList
+                      .map(
+                        (c) => ll.LatLng(
+                          (c[1] as num).toDouble(),
+                          (c[0] as num).toDouble(),
+                        ),
+                      )
+                      .toList();
+              setState(() {
+                _route = Polyline(
+                  points: latlngs,
+                  strokeWidth: 4.0,
+                  color: Colors.blue,
+                );
+              });
+              return;
+            }
+          }
+        } catch (_) {
+          // fall through to fallback
         }
       } catch (_) {
         // ignore network errors; fall back to polyline between points

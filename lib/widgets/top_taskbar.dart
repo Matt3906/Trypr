@@ -267,11 +267,22 @@ class _TopTaskbarState extends State<TopTaskbar> {
                           ),
                         );
                       } else if (value == 'sign_out') {
+                        try {
+                          await FirebaseAuth.instance.signOut();
+                        } catch (_) {}
                         (widget.onSignInStateChanged ??
                             AuthState.instance.setSignedIn)(false);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Signed out')),
-                        );
+                        // Navigate back to sign-in clearing the stack so the
+                        // application state resets to a fresh view.
+                        if (mounted) {
+                          Navigator.of(context).pushNamedAndRemoveUntil(
+                            '/sign-in',
+                            (route) => false,
+                          );
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Signed out')),
+                          );
+                        }
                       }
                     },
                     itemBuilder: (ctx2) {

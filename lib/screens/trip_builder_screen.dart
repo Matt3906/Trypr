@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
@@ -360,8 +361,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         final t = msgCtl.text.trim();
                         final img = imgCtl.text.trim();
                         if (t.isEmpty && img.isEmpty) return;
+                        if (kDebugMode)
+                          print(
+                            'TripBuilder chat send -> target: ${tripRef.path}',
+                          );
                         await tripRef.collection('messages').add({
                           'senderUid': me.uid,
+                          'senderName': me.displayName ?? '',
                           'text': t,
                           'imageUrl':
                               img.isNotEmpty ? img : FieldValue.delete(),

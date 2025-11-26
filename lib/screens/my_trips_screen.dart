@@ -109,6 +109,8 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
         .collection('trips')
         .doc(docId)
         .delete();
+    // force rebuild after delete to ensure UI updates immediately
+    if (mounted) setState(() {});
   }
 
   Future<void> _openSharedTrip(
@@ -162,16 +164,20 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           );
         return;
       }
-      final tripData = Map<String, dynamic>.from(
-        tripDoc.data() as Map<String, dynamic>,
-      );
+      // Instead of copying the trip into the recipient's collection, create
+      // a lightweight linked trip that points to the owner's trip document
+      // using `tripRef`. This lets the recipient view the owner's live
+      // document (packing/chat/waypoints) and see updates in realtime.
+      final ownerName = data['ownerName'] ?? data['ownerUid'] ?? '';
       await FirebaseFirestore.instance
           .collection('users')
           .doc(u.uid)
           .collection('trips')
           .add({
-            ...tripData,
-            'sharedFrom': data['ownerUid'] ?? data['ownerName'] ?? '',
+            'name':
+                data['tripName'] ?? tripDoc.data()?['name'] ?? 'Shared Trip',
+            'tripRef': tripRefPath,
+            'sharedFrom': ownerName,
             'createdAt': FieldValue.serverTimestamp(),
           });
       await FirebaseFirestore.instance
@@ -559,11 +565,20 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                       children: [
                                         LayoutBuilder(
                                           builder: (tileCtx, tileConstraints) {
-                                            const double footerHeight = 92.0;
-                                            final mapHeight = (tileConstraints
-                                                        .maxHeight -
+                                            // allocate footer as a proportion of available height
+                                            final available =
+                                                tileConstraints
+                                                        .maxHeight
+                                                        .isFinite
+                                                    ? tileConstraints.maxHeight
+                                                    : 320.0;
+                                            final footerHeight = (available *
+                                                    0.28)
+                                                .clamp(56.0, 140.0);
+                                            final mapHeight = (available -
                                                     footerHeight)
-                                                .clamp(80.0, double.infinity);
+                                                .clamp(40.0, double.infinity);
+
                                             return Column(
                                               crossAxisAlignment:
                                                   CrossAxisAlignment.stretch,
@@ -579,22 +594,24 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                         ),
                                                     child: MapEmbed(
                                                       points:
-                                                          waypoints.map((w) {
-                                                            return {
-                                                              'lat':
-                                                                  (w['lat'] ??
-                                                                      w['latitude'] ??
-                                                                      0.0),
-                                                              'lon':
-                                                                  (w['lon'] ??
-                                                                      w['longitude'] ??
-                                                                      w['lng'] ??
-                                                                      0.0),
-                                                              'name':
-                                                                  w['name'] ??
-                                                                  '',
-                                                            };
-                                                          }).toList(),
+                                                          waypoints
+                                                              .map(
+                                                                (w) => {
+                                                                  'lat':
+                                                                      (w['lat'] ??
+                                                                          w['latitude'] ??
+                                                                          0.0),
+                                                                  'lon':
+                                                                      (w['lon'] ??
+                                                                          w['longitude'] ??
+                                                                          w['lng'] ??
+                                                                          0.0),
+                                                                  'name':
+                                                                      w['name'] ??
+                                                                      '',
+                                                                },
+                                                              )
+                                                              .toList(),
                                                     ),
                                                   ),
                                                 ),
@@ -698,6 +715,63 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                   ),
                                                 ),
                                               ],
+                                            );
+                                          },
+                                        ),
+                                        // shared badge (left) — shows when trip is shared or was shared from someone
+                                        Builder(
+                                          builder: (ctx) {
+                                            final isShared =
+                                                ((data['sharedWith'] as List?)
+                                                        ?.isNotEmpty ??
+                                                    false) ||
+                                                (data['sharedFrom'] != null &&
+                                                    data['sharedFrom']
+                                                        .toString()
+                                                        .isNotEmpty);
+                                            if (!isShared)
+                                              return const SizedBox.shrink();
+                                            return Positioned(
+                                              top: 8,
+                                              left: 8,
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 6,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.blue.shade600,
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                  boxShadow: [
+                                                    BoxShadow(
+                                                      color: Colors.black
+                                                          .withOpacity(0.12),
+                                                      blurRadius: 6,
+                                                    ),
+                                                  ],
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: const [
+                                                    Icon(
+                                                      Icons.people,
+                                                      size: 14,
+                                                      color: Colors.white,
+                                                    ),
+                                                    SizedBox(width: 6),
+                                                    Text(
+                                                      'Shared',
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 12,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
                                             );
                                           },
                                         ),
