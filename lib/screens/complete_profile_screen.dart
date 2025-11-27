@@ -52,16 +52,39 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
           .collection('users')
           .doc(uid)
           .set(upd, SetOptions(merge: true));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      }
+      // Ensure saving flag is cleared and return early since write failed.
+      if (mounted) setState(() => _saving = false);
+      return;
+    }
+
+    // Write succeeded. Show success, then attempt navigation. Any navigation
+    // errors should not be reported as a save failure since the data is already
+    // persisted.
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile completed')),
+      );
+    }
+
+    try {
       if (!mounted) return;
       Navigator.of(context).pushReplacementNamed('/account');
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Profile completed')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+    } catch (e, st) {
+      // Navigation failed after successful save — log for debugging but do not
+      // present this as a save failure to the user.
+      // ignore: avoid_print
+      print('Navigation failed after profile save: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved but navigation failed: $e')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }

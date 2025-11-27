@@ -1164,11 +1164,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       appBar: AppBar(
         title: Text(name),
         actions: [
-          IconButton(icon: const Icon(Icons.list), onPressed: _openPackingList),
-          IconButton(icon: const Icon(Icons.chat), onPressed: _openTripChat),
-          IconButton(icon: const Icon(Icons.share), onPressed: _shareTrip),
+          IconButton(icon: const Icon(Icons.list), tooltip: 'Packing list', onPressed: _openPackingList),
+          IconButton(icon: const Icon(Icons.chat), tooltip: 'Open chat', onPressed: _openTripChat),
+          IconButton(icon: const Icon(Icons.share), tooltip: 'Share trip', onPressed: _shareTrip),
           IconButton(
             icon: const Icon(Icons.save),
+            tooltip: 'Save changes',
             onPressed: _saving ? null : _saveDays,
           ),
         ],

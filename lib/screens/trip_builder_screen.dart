@@ -151,7 +151,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         .doc(tripId);
                     await dest.set({
                       'ownerUid': me.uid,
-                      'ownerName': me.displayName ?? '',
+                      'ownerName': me.displayName ?? me.email ?? me.uid,
                       'tripRef': _lastSavedTripRef!.path,
                       'tripName': _tripNameCtrl.text.trim(),
                       'createdAt': FieldValue.serverTimestamp(),

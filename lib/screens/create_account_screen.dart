@@ -206,6 +206,7 @@ Future<void> _upsertUserDoc(User user) async {
     }
     final doc = FirebaseFirestore.instance.collection('users').doc(user.uid);
     await doc.set({
+      'name': displayName,
       'displayName': displayName,
       'displayNameLower': displayName.toLowerCase(),
       'email': email,

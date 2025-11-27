@@ -314,7 +314,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                         .doc(tripId);
                     await dest.set({
                       'ownerUid': u.uid,
-                      'ownerName': u.displayName ?? '',
+                      'ownerName': u.displayName ?? u.email ?? u.uid,
                       'tripRef': tripRef.path,
                       'tripName': tripData['name'] ?? '',
                       'createdAt': FieldValue.serverTimestamp(),
@@ -374,33 +374,13 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                   builder: (ctx, snap) {
                     if (snap.connectionState == ConnectionState.waiting)
                       return const Center(child: CircularProgressIndicator());
-                    if (!snap.hasData || snap.data!.docs.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'No saved trips yet',
-                              style: TextStyle(fontSize: 18),
-                            ),
-                            const SizedBox(height: 8),
-                            ElevatedButton(
-                              onPressed:
-                                  () => Navigator.of(
-                                    context,
-                                  ).pushNamed('/trip-builder'),
-                              child: const Text('Create a trip'),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-
-                    final docs = snap.data!.docs;
+                    final docs = snap.data?.docs ?? [];
 
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        // Always render shared invites area (so users with no
+                        // personal trips still see incoming shared trips).
                         StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                           stream: _sharedStream(),
                           builder: (sctx, ssnap) {
@@ -521,22 +501,43 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                           },
                         ),
                         const SizedBox(height: 12),
-                        Expanded(
-                          child: GridView.builder(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            gridDelegate:
-                                SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount:
-                                      MediaQuery.of(context).size.width >= 900
-                                          ? 3
-                                          : 1,
-                                  mainAxisSpacing: 12,
-                                  crossAxisSpacing: 12,
-                                  childAspectRatio: 16 / 11,
+                        if (docs.isEmpty)
+                          Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text(
+                                  'No saved trips yet',
+                                  style: TextStyle(fontSize: 18),
                                 ),
-                            itemCount: docs.length,
-                            itemBuilder: (ctx, i) {
-                              final d = docs[i];
+                                const SizedBox(height: 8),
+                                ElevatedButton(
+                                  onPressed:
+                                      () => Navigator.of(
+                                        context,
+                                      ).pushNamed('/trip-builder'),
+                                  child: const Text('Create a trip'),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          Expanded(
+                            child: GridView.builder(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              gridDelegate:
+                                  SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount:
+                                        MediaQuery.of(context).size.width >= 900
+                                            ? 3
+                                            : 1,
+                                    mainAxisSpacing: 12,
+                                    crossAxisSpacing: 12,
+                                    childAspectRatio: 16 / 11,
+                                  ),
+                              itemCount: docs.length,
+                              itemBuilder: (ctx, i) {
+                                final d = docs[i];
                               final data = d.data();
                               final name = data['name'] ?? 'Untitled Trip';
                               final created = data['createdAt'];

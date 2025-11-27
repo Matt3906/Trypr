@@ -232,9 +232,11 @@ class _TopTaskbarState extends State<TopTaskbar> {
                     color: Color.lerp(Colors.white24, Colors.grey.shade200, dp),
                     shape: BoxShape.circle,
                   ),
-                  child: PopupMenuButton<String>(
-                    padding: EdgeInsets.zero,
-                    child: avatarChild,
+                  child: Tooltip(
+                    message: 'Account',
+                    child: PopupMenuButton<String>(
+                      padding: EdgeInsets.zero,
+                      child: avatarChild,
                     onSelected: (value) async {
                       if (value == 'sign_in') {
                         final res = await Navigator.of(context).push(
@@ -314,8 +316,9 @@ class _TopTaskbarState extends State<TopTaskbar> {
                         ),
                       ];
                     },
-                  ),
-                );
+                      ),
+                    ),
+                  );
               },
             ),
           ],
