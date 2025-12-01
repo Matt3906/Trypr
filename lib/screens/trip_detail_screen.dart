@@ -28,7 +28,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   bool _searchingPlaces = false;
   Map<String, dynamic> _liveData = {};
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _localDocSub;
   final Map<String, String> _nameCache = {};
+  String? _currentSubscribedPath;
 
   User? get _user => FirebaseAuth.instance.currentUser;
 
@@ -60,6 +62,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         final docRef =
             FirebaseFirestore.instance.doc(tripRefPath)
                 as DocumentReference<Map<String, dynamic>>;
+        if (kDebugMode)
+          print('TripDetail: initial owner subscription -> $tripRefPath');
+        _currentSubscribedPath = tripRefPath;
         _docSub = docRef.snapshots().listen((snapshot) {
           if (!snapshot.exists) {
             if (mounted) {
@@ -91,6 +96,73 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             final td = _liveData['totalDays'];
             if (td is num) _days = td.toInt();
           });
+        });
+      }
+    } catch (_) {}
+
+    // Also subscribe to the local trip doc (the one inside the current user's `trips` collection)
+    // This lets us detect when a `tripRef` is added or changed (for example after Accept).
+    try {
+      final me = _user;
+      if (me != null) {
+        final localRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(me.uid)
+            .collection('trips')
+            .doc(widget.docId);
+        if (kDebugMode)
+          print('TripDetail: subscribing to local trip doc ${localRef.path}');
+        _localDocSub = localRef.snapshots().listen((snap) {
+          if (!snap.exists) return;
+          final data = snap.data() ?? {};
+          // If local doc now contains a tripRef and we are not yet subscribed to it, (re)subscribe.
+          final newRef = (data['tripRef'] ?? '') as String;
+          if (newRef.isNotEmpty && newRef != _currentSubscribedPath) {
+            try {
+              _docSub?.cancel();
+              final ownerRef =
+                  FirebaseFirestore.instance.doc(newRef)
+                      as DocumentReference<Map<String, dynamic>>;
+              if (kDebugMode)
+                print('TripDetail: switching owner subscription -> $newRef');
+              _currentSubscribedPath = newRef;
+              _docSub = ownerRef.snapshots().listen((snapshot) {
+                if (!snapshot.exists) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('This trip was removed by the owner'),
+                      ),
+                    );
+                  }
+                  return;
+                }
+                final remote = snapshot.data() ?? {};
+                if (mounted) {
+                  setState(() {
+                    _liveData.addAll(remote);
+                    _liveData['tripRef'] = newRef;
+                    final rw = (_liveData['waypoints'] as List<dynamic>?) ?? [];
+                    _waypoints =
+                        rw.map<Map<String, dynamic>>((e) {
+                          if (e is Map<String, dynamic>)
+                            return Map<String, dynamic>.from(e);
+                          if (e is Map)
+                            return Map<String, dynamic>.from(
+                              e.cast<String, dynamic>(),
+                            );
+                          return <String, dynamic>{};
+                        }).toList();
+                    final td = _liveData['totalDays'];
+                    if (td is num) _days = td.toInt();
+                  });
+                }
+              });
+            } catch (_) {}
+          } else {
+            // Merge local data to reflect user's own metadata quickly
+            if (mounted) setState(() => _liveData.addAll(data));
+          }
         });
       }
     } catch (_) {}
@@ -1164,9 +1236,21 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       appBar: AppBar(
         title: Text(name),
         actions: [
-          IconButton(icon: const Icon(Icons.list), tooltip: 'Packing list', onPressed: _openPackingList),
-          IconButton(icon: const Icon(Icons.chat), tooltip: 'Open chat', onPressed: _openTripChat),
-          IconButton(icon: const Icon(Icons.share), tooltip: 'Share trip', onPressed: _shareTrip),
+          IconButton(
+            icon: const Icon(Icons.list),
+            tooltip: 'Packing list',
+            onPressed: _openPackingList,
+          ),
+          IconButton(
+            icon: const Icon(Icons.chat),
+            tooltip: 'Open chat',
+            onPressed: _openTripChat,
+          ),
+          IconButton(
+            icon: const Icon(Icons.share),
+            tooltip: 'Share trip',
+            onPressed: _shareTrip,
+          ),
           IconButton(
             icon: const Icon(Icons.save),
             tooltip: 'Save changes',

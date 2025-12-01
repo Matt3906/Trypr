@@ -3,11 +3,17 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'dart:convert';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/foundation.dart' show kIsWeb, setEquals;
 import 'dart:math' as math;
 // Web-only file picker
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
+
+// MAP PACKAGES
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+// 'http' used previously for remote GeoJSON fetch; now we load from assets.
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({Key? key}) : super(key: key);
@@ -18,6 +24,11 @@ class AccountScreen extends StatefulWidget {
 
 class _AccountScreenState extends State<AccountScreen> {
   User? get _user => FirebaseAuth.instance.currentUser;
+  // Staged visited countries while editing the embedded map
+  final Set<String> _stagedVisited = {};
+  bool _isEditingVisited = false;
+
+  // MAP STATE (uses dedicated VisitedMapScreen)
 
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _userDocStream() {
     final u = _user;
@@ -28,15 +39,313 @@ class _AccountScreenState extends State<AccountScreen> {
         .snapshots();
   }
 
+  // -------------------------------------------------------------------------
+  // MAP LOGIC
+  // -------------------------------------------------------------------------
+
+  int supportedTotal() {
+    // Approximate number of countries supported for progress calculation.
+    // Using a constant avoids depending on the countries_world_map package
+    // which had API mismatches in this environment.
+    return 195;
+  }
+
+  Future<void> _toggleRegion(
+    String regionId,
+    List<dynamic> currentVisited,
+  ) async {
+    final u = _user;
+    if (u == null) return;
+
+    final docRef = FirebaseFirestore.instance.collection('users').doc(u.uid);
+
+    try {
+      final snap = await docRef.get();
+      if (currentVisited.contains(regionId)) {
+        if (snap.exists) {
+          await docRef.update({
+            'visitedCountries': FieldValue.arrayRemove([regionId]),
+          });
+          if (mounted) {
+            setState(() {
+              _stagedVisited.remove(regionId);
+              _isEditingVisited = false;
+            });
+          }
+        }
+      } else {
+        if (snap.exists) {
+          await docRef.update({
+            'visitedCountries': FieldValue.arrayUnion([regionId]),
+          });
+          if (mounted) {
+            setState(() {
+              _stagedVisited.add(regionId);
+              _isEditingVisited = false;
+            });
+          }
+        } else {
+          await docRef.set({
+            'visitedCountries': [regionId],
+          }, SetOptions(merge: true));
+          if (mounted) {
+            setState(() {
+              _stagedVisited.add(regionId);
+              _isEditingVisited = false;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // best-effort: ignore failures here (UI will show raw doc for debugging)
+      rethrow;
+    }
+  }
+
+  // Show add-region dialog and return the chosen country name (full name) or null
+  // Note: map-based adding is handled by tapping the map; search/dialog
+  // based adding has been removed from this screen.
+
+  bool _pointInPolygon(LatLng point, List<LatLng> polygon) {
+    // Ray-casting algorithm
+    var inside = false;
+    for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final xi = polygon[i].longitude, yi = polygon[i].latitude;
+      final xj = polygon[j].longitude, yj = polygon[j].latitude;
+      final intersect =
+          ((yi > point.latitude) != (yj > point.latitude)) &&
+          (point.longitude <
+              (xj - xi) * (point.latitude - yi) / (yj - yi + 0.0) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Small built-in centroid lookup for common countries. If a country isn't
+  // found here, we will still store the country name but won't show a marker.
+  static final Map<String, LatLng> _countryCentroids = {
+    'United States': LatLng(39.8283, -98.5795),
+    'Canada': LatLng(56.1304, -106.3468),
+    'Mexico': LatLng(23.6345, -102.5528),
+    'Brazil': LatLng(-14.2350, -51.9253),
+    'Argentina': LatLng(-38.4161, -63.6167),
+    'United Kingdom': LatLng(55.3781, -3.4360),
+    'France': LatLng(46.2276, 2.2137),
+    'Germany': LatLng(51.1657, 10.4515),
+    'Italy': LatLng(41.8719, 12.5674),
+    'Spain': LatLng(40.4637, -3.7492),
+    'Portugal': LatLng(39.3999, -8.2245),
+    'Netherlands': LatLng(52.1326, 5.2913),
+    'Belgium': LatLng(50.5039, 4.4699),
+    'Switzerland': LatLng(46.8182, 8.2275),
+    'Austria': LatLng(47.5162, 14.5501),
+    'Sweden': LatLng(60.1282, 18.6435),
+    'Norway': LatLng(60.4720, 8.4689),
+    'Finland': LatLng(61.9241, 25.7482),
+    'Denmark': LatLng(56.2639, 9.5018),
+    'Poland': LatLng(51.9194, 19.1451),
+    'Czech Republic': LatLng(49.8175, 15.4730),
+    'Hungary': LatLng(47.1625, 19.5033),
+    'Greece': LatLng(39.0742, 21.8243),
+    'Turkey': LatLng(38.9637, 35.2433),
+    'Russia': LatLng(61.5240, 105.3188),
+    'China': LatLng(35.8617, 104.1954),
+    'Japan': LatLng(36.2048, 138.2529),
+    'South Korea': LatLng(35.9078, 127.7669),
+    'India': LatLng(20.5937, 78.9629),
+    'Pakistan': LatLng(30.3753, 69.3451),
+    'Bangladesh': LatLng(23.6850, 90.3563),
+    'Australia': LatLng(-25.2744, 133.7751),
+    'New Zealand': LatLng(-40.9006, 174.8860),
+    'South Africa': LatLng(-30.5595, 22.9375),
+    'Egypt': LatLng(26.8206, 30.8025),
+    'Nigeria': LatLng(9.0820, 8.6753),
+    'Kenya': LatLng(-0.0236, 37.9062),
+    'Morocco': LatLng(31.7917, -7.0926),
+    'Algeria': LatLng(28.0339, 1.6596),
+    'Saudi Arabia': LatLng(23.8859, 45.0792),
+    'United Arab Emirates': LatLng(23.4241, 53.8478),
+    'Israel': LatLng(31.0461, 34.8516),
+    'Lebanon': LatLng(33.8547, 35.8623),
+    'Indonesia': LatLng(-0.7893, 113.9213),
+    'Philippines': LatLng(12.8797, 121.7740),
+    'Vietnam': LatLng(14.0583, 108.2772),
+    'Thailand': LatLng(15.8700, 100.9925),
+    'Malaysia': LatLng(4.2105, 101.9758),
+    'Singapore': LatLng(1.3521, 103.8198),
+  };
+
+  // Polygons loaded from an external GeoJSON source keyed by a normalized name.
+  final Map<String, List<List<LatLng>>> _countryPolygons = {};
+  bool _polygonsLoaded = false;
+
+  String _keyForMatching(String s) {
+    final low = s.toLowerCase();
+    // remove common words and non-alphanum
+    final cleaned = low.replaceAll(RegExp(r"[^a-z0-9]"), ' ');
+    final tokens =
+        cleaned
+            .split(RegExp(r"\s+"))
+            .where(
+              (t) =>
+                  t.isNotEmpty &&
+                  t != 'of' &&
+                  t != 'the' &&
+                  t != 'and' &&
+                  t != 'republic' &&
+                  t != 'federation' &&
+                  t != 'kingdom',
+            )
+            .toList();
+    return tokens.join(' ');
+  }
+
+  Future<void> _loadCountryPolygons() async {
+    if (_polygonsLoaded) return;
+    try {
+      // Load bundled GeoJSON from assets to avoid runtime CORS/network issues.
+      final body = await rootBundle.loadString('assets/countries.geojson');
+      final js = jsonDecode(body) as Map<String, dynamic>;
+      final features = js['features'] as List<dynamic>?;
+      if (features == null) return;
+      for (final f in features) {
+        try {
+          final feat = f as Map<String, dynamic>;
+          final props = feat['properties'] as Map<String, dynamic>? ?? {};
+          final rawName =
+              (props['ADMIN'] ??
+                      props['admin'] ??
+                      props['NAME'] ??
+                      props['name'] ??
+                      props['COUNTRY'] ??
+                      props['country'] ??
+                      '')
+                  .toString();
+          if (rawName.isEmpty) continue;
+          final key = _keyForMatching(rawName);
+          final geom = feat['geometry'] as Map<String, dynamic>?;
+          if (geom == null) continue;
+          final type = geom['type'] as String?;
+          final coords = geom['coordinates'];
+          final List<List<LatLng>> polygons = [];
+          if (type == 'Polygon' && coords is List) {
+            // coords: [ [ [lon,lat], ... ], [ ... holes ... ] ]
+            final firstRing =
+                coords.isNotEmpty ? coords[0] as List<dynamic> : [];
+            final pts = <LatLng>[];
+            for (final p in firstRing) {
+              if (p is List && p.length >= 2) {
+                final lon = (p[0] as num).toDouble();
+                final lat = (p[1] as num).toDouble();
+                pts.add(LatLng(lat, lon));
+              }
+            }
+            if (pts.isNotEmpty) polygons.add(pts);
+          } else if (type == 'MultiPolygon' && coords is List) {
+            // coords: [ [ [ [lon,lat], ... ], ... ], ... ]
+            for (final poly in coords) {
+              if (poly is List && poly.isNotEmpty) {
+                final outer = poly[0] as List<dynamic>;
+                final pts = <LatLng>[];
+                for (final p in outer) {
+                  if (p is List && p.length >= 2) {
+                    final lon = (p[0] as num).toDouble();
+                    final lat = (p[1] as num).toDouble();
+                    pts.add(LatLng(lat, lon));
+                  }
+                }
+                if (pts.isNotEmpty) polygons.add(pts);
+              }
+            }
+          }
+          if (polygons.isNotEmpty) {
+            _countryPolygons[key] = polygons;
+          }
+        } catch (_) {
+          // ignore per-feature failures
+        }
+      }
+      _polygonsLoaded = true;
+      if (mounted) setState(() {});
+    } catch (_) {
+      // best-effort; leave polygons empty
+    }
+  }
+
+  List<Marker> _buildMarkers(Set<String> staged) {
+    final List<Marker> markers = [];
+    for (final name in staged) {
+      final key = name.trim();
+      final center = _countryCentroids[key];
+      if (center != null) {
+        markers.add(
+          Marker(
+            width: 28,
+            height: 28,
+            point: center,
+            builder:
+                (ctx) => Container(
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.9),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                ),
+          ),
+        );
+      }
+    }
+    return markers;
+  }
+
+  String _normalizeCountryName(String s) {
+    final words = s.trim().split(RegExp(r"\s+"));
+    final normalized = words
+        .map((w) {
+          if (w.isEmpty) return '';
+          final lower = w.toLowerCase();
+          return '${lower[0].toUpperCase()}${lower.substring(1)}';
+        })
+        .where((p) => p.isNotEmpty)
+        .join(' ');
+    return normalized;
+  }
+
+  // Map color helper removed; Visited map is shown in a dedicated screen.
+
+  List<Polygon> _buildPolygonsSet(Set<String> staged) {
+    final List<Polygon> out = [];
+    final stagedKeys = staged.map(_keyForMatching).toSet();
+    _countryPolygons.forEach((norm, polyRings) {
+      final isVisited = stagedKeys.contains(norm);
+      for (final ring in polyRings) {
+        out.add(
+          Polygon(
+            points: ring,
+            color:
+                isVisited
+                    ? Colors.green.withOpacity(0.6)
+                    : Colors.grey.shade200,
+            borderColor: Colors.grey.shade400,
+            borderStrokeWidth: 0.5,
+            isFilled: true,
+          ),
+        );
+      }
+    });
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
     final stream = _userDocStream();
 
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
-        child: Center(
+        child: Align(
+          alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: Card(
@@ -52,13 +361,15 @@ class _AccountScreenState extends State<AccountScreen> {
                         : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                           stream: stream,
                           builder: (ctx, snap) {
-                            if (snap.connectionState == ConnectionState.waiting)
+                            if (snap.connectionState ==
+                                ConnectionState.waiting) {
                               return const SizedBox(
                                 height: 180,
                                 child: Center(
                                   child: CircularProgressIndicator(),
                                 ),
                               );
+                            }
                             final doc = snap.data;
                             final data = doc?.data() ?? <String, dynamic>{};
 
@@ -78,12 +389,13 @@ class _AccountScreenState extends State<AccountScreen> {
                               try {
                                 final d = data['dob'];
                                 DateTime dt;
-                                if (d is String)
+                                if (d is String) {
                                   dt = DateTime.parse(d);
-                                else if (d is Timestamp)
+                                } else if (d is Timestamp) {
                                   dt = d.toDate();
-                                else
+                                } else {
                                   dt = DateTime.parse(d.toString());
+                                }
                                 dobStr =
                                     '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
                               } catch (_) {}
@@ -107,6 +419,33 @@ class _AccountScreenState extends State<AccountScreen> {
                               }
                             }
 
+                            final visitedRaw =
+                                data['visitedCountries'] as List<dynamic>? ??
+                                [];
+                            final visitedSet =
+                                visitedRaw.map((e) => e.toString()).toSet();
+
+                            // Keep the staged set in sync with Firestore when the
+                            // user is not actively editing in the embedded map.
+                            // Only update if the persisted set differs to avoid
+                            // scheduling a post-frame setState on every build
+                            // (which caused a rebuild loop and UI flash).
+                            if (!_isEditingVisited) {
+                              final newSet = visitedSet;
+                              if (!setEquals(_stagedVisited, newSet)) {
+                                WidgetsBinding.instance.addPostFrameCallback((
+                                  _,
+                                ) {
+                                  if (!mounted) return;
+                                  setState(() {
+                                    _stagedVisited
+                                      ..clear()
+                                      ..addAll(newSet);
+                                  });
+                                });
+                              }
+                            }
+
                             return Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
@@ -116,7 +455,6 @@ class _AccountScreenState extends State<AccountScreen> {
                                       ?.copyWith(fontWeight: FontWeight.w700),
                                 ),
                                 const SizedBox(height: 16),
-                                // Profile header row with avatar
                                 Row(
                                   children: [
                                     CircleAvatar(
@@ -192,7 +530,267 @@ class _AccountScreenState extends State<AccountScreen> {
                                         }).toList(),
                                   ),
                                 ],
-                                const SizedBox(height: 18),
+
+                                const Divider(height: 32),
+
+                                // -------------------------------------------------
+                                // INTERACTIVE MAP SECTION
+                                // -------------------------------------------------
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      'My Travel Map',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleMedium?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox.shrink(),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                // Embedded interactive country-shape map
+                                SizedBox(
+                                  // make map taller so top and bottom are visible
+                                  height: 460,
+                                  child: Card(
+                                    color: const Color(0xFFF5F7FA),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8.0),
+                                      child: Column(
+                                        children: [
+                                          Expanded(
+                                            child: Builder(
+                                              builder: (ctx) {
+                                                // initialize staged set from live data on first build
+                                                if (_stagedVisited.isEmpty)
+                                                  _stagedVisited.addAll(
+                                                    visitedSet,
+                                                  );
+                                                // ensure polygons are loaded (idempotent)
+                                                _loadCountryPolygons();
+                                                return FlutterMap(
+                                                  options: MapOptions(
+                                                    center: LatLng(20, 0),
+                                                    zoom: 2,
+                                                    minZoom: 2,
+                                                    maxZoom: 18,
+                                                    // Allow interactive gestures (zoom/drag/etc.).
+                                                    interactiveFlags:
+                                                        InteractiveFlag.all,
+                                                    onTap: (
+                                                      tapPos,
+                                                      latlng,
+                                                    ) async {
+                                                      // Add a visited country by tapping on its polygon.
+                                                      if (!_polygonsLoaded)
+                                                        return;
+                                                      String? foundKey;
+                                                      _countryPolygons.forEach((
+                                                        k,
+                                                        polyRings,
+                                                      ) {
+                                                        for (final ring
+                                                            in polyRings) {
+                                                          if (_pointInPolygon(
+                                                            latlng,
+                                                            ring,
+                                                          )) {
+                                                            foundKey = k;
+                                                            break;
+                                                          }
+                                                        }
+                                                        if (foundKey != null)
+                                                          return;
+                                                      });
+                                                      if (foundKey != null) {
+                                                        final display =
+                                                            _normalizeCountryName(
+                                                              foundKey!,
+                                                            );
+                                                        if (!_stagedVisited
+                                                            .contains(
+                                                              display,
+                                                            )) {
+                                                          setState(() {
+                                                            _stagedVisited.add(
+                                                              display,
+                                                            );
+                                                            _isEditingVisited =
+                                                                true;
+                                                          });
+                                                        }
+                                                      }
+                                                    },
+                                                  ),
+                                                  children: [
+                                                    TileLayer(
+                                                      urlTemplate:
+                                                          'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                                      subdomains: const [
+                                                        'a',
+                                                        'b',
+                                                        'c',
+                                                      ],
+                                                      userAgentPackageName:
+                                                          'com.example.trypr',
+                                                    ),
+                                                    if (_polygonsLoaded)
+                                                      PolygonLayer(
+                                                        polygons:
+                                                            _buildPolygonsSet(
+                                                              _stagedVisited,
+                                                            ),
+                                                      )
+                                                    else
+                                                      MarkerLayer(
+                                                        markers: _buildMarkers(
+                                                          _stagedVisited,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                );
+                                              },
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(
+                                                child: Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: LinearProgressIndicator(
+                                                        value:
+                                                            (supportedTotal() >
+                                                                    0)
+                                                                ? (_stagedVisited
+                                                                        .length /
+                                                                    supportedTotal())
+                                                                : 0,
+                                                        minHeight: 8,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Text(
+                                                      '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              const SizedBox(width: 12),
+                                              ElevatedButton(
+                                                onPressed:
+                                                    _isEditingVisited
+                                                        ? () async {
+                                                          // persist staged set to Firestore
+                                                          final u = _user;
+                                                          if (u == null) return;
+                                                          final docRef =
+                                                              FirebaseFirestore
+                                                                  .instance
+                                                                  .collection(
+                                                                    'users',
+                                                                  )
+                                                                  .doc(u.uid);
+                                                          try {
+                                                            await docRef.set(
+                                                              {
+                                                                'visitedCountries':
+                                                                    _stagedVisited
+                                                                        .toList(),
+                                                              },
+                                                              SetOptions(
+                                                                merge: true,
+                                                              ),
+                                                            );
+                                                            setState(
+                                                              () =>
+                                                                  _isEditingVisited =
+                                                                      false,
+                                                            );
+                                                          } catch (err) {
+                                                            if (mounted)
+                                                              ScaffoldMessenger.of(
+                                                                context,
+                                                              ).showSnackBar(
+                                                                SnackBar(
+                                                                  content: Text(
+                                                                    'Failed to save: $err',
+                                                                  ),
+                                                                ),
+                                                              );
+                                                          }
+                                                        }
+                                                        : null,
+                                                child: const Text('Save'),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+
+                                // Read-only list of visited places
+                                Text(
+                                  "Visited Regions (${visitedSet.length})",
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                if (visitedSet.isNotEmpty)
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    children:
+                                        visitedSet
+                                            .map(
+                                              (c) => Chip(
+                                                label: Text(
+                                                  c,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                backgroundColor: Colors.white,
+                                                side: BorderSide(
+                                                  color: Colors.grey.shade300,
+                                                ),
+                                                onDeleted:
+                                                    () => _toggleRegion(
+                                                      c,
+                                                      visitedRaw,
+                                                    ),
+                                              ),
+                                            )
+                                            .toList(),
+                                  )
+                                else
+                                  const Text(
+                                    "No regions marked yet.",
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+
+                                const SizedBox(height: 24),
+
                                 Row(
                                   children: [
                                     ElevatedButton.icon(
@@ -207,7 +805,6 @@ class _AccountScreenState extends State<AccountScreen> {
                                       onPressed: () async {
                                         await FirebaseAuth.instance.signOut();
                                         if (!mounted) return;
-                                        // After sign-out, navigate to sign-in and clear navigation
                                         Navigator.of(
                                           context,
                                         ).pushNamedAndRemoveUntil(
@@ -324,9 +921,6 @@ class _AccountScreenState extends State<AccountScreen> {
   ) async {
     final uid = _user?.uid;
     if (uid == null) return;
-    // Use a dedicated StatefulWidget for the bottom sheet so we can safely
-    // check `mounted` inside async callbacks and avoid calling setState
-    // after the sheet has been disposed.
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -422,7 +1016,6 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                   controller: cityCtl,
                   decoration: const InputDecoration(labelText: 'City'),
                 ),
-                const SizedBox(height: 8),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -522,69 +1115,6 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                       ),
                     ),
                   ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Visited countries',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    TextButton(
-                      onPressed: () async {
-                        final newVisited = await _showCountryPicker(
-                          context,
-                          visited,
-                        );
-                        if (newVisited != null && mounted)
-                          setState(() {
-                            visited.clear();
-                            visited.addAll(newVisited);
-                          });
-                      },
-                      child: const Text('Edit'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: visited.map((c) => Chip(label: Text(c))).toList(),
-                ),
-                const SizedBox(height: 16),
-                const SizedBox(height: 8),
-                Text(
-                  'Visited map',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  height: 160,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    color: Colors.grey.shade50,
-                    border: Border.all(color: Colors.grey.shade200),
-                  ),
-                  padding: const EdgeInsets.all(12),
-                  child: SingleChildScrollView(
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children:
-                          visited
-                              .map(
-                                (c) => Chip(
-                                  backgroundColor: Colors.blue.shade50,
-                                  label: Text(c),
-                                ),
-                              )
-                              .toList(),
-                    ),
-                  ),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -710,133 +1240,16 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
 
     try {
       await docRef.set(upd, SetOptions(merge: true));
-      if (localProfileImage != null) {
-        // ignore: avoid_print
-        print('Saved profileImageDataUrl length: ${localProfileImage!.length}');
-      }
       if (!mounted) return;
       Navigator.of(context).pop();
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Profile updated')));
     } catch (err, st) {
-      // ignore: avoid_print
-      print('Failed to save profile: $err\n$st');
       if (mounted)
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Failed to save profile: $err')));
     }
   }
-
-  // Country picker dialog returns the selected set or null if cancelled.
-  Future<Set<String>?> _showCountryPicker(
-    BuildContext context,
-    Set<String> initial,
-  ) async {
-    final countries = _commonCountries;
-    final selected = Set<String>.from(initial);
-    return showDialog<Set<String>>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Select visited countries'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: StatefulBuilder(
-              builder: (ctx2, setState) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      height: 320,
-                      width: double.maxFinite,
-                      child: SingleChildScrollView(
-                        child: Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children:
-                              countries.map((c) {
-                                final isSel = selected.contains(c);
-                                return FilterChip(
-                                  selected: isSel,
-                                  label: Text(c),
-                                  onSelected:
-                                      (v) => setState(
-                                        () =>
-                                            v
-                                                ? selected.add(c)
-                                                : selected.remove(c),
-                                      ),
-                                );
-                              }).toList(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(null),
-                          child: const Text('Cancel'),
-                        ),
-                        const Spacer(),
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(selected),
-                          child: const Text('Done'),
-                        ),
-                      ],
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  // A short common country list for the picker. Extend as needed.
-  static const List<String> _commonCountries = [
-    'United States',
-    'Canada',
-    'Mexico',
-    'United Kingdom',
-    'France',
-    'Germany',
-    'Italy',
-    'Spain',
-    'Portugal',
-    'Netherlands',
-    'Belgium',
-    'Switzerland',
-    'Austria',
-    'Ireland',
-    'Sweden',
-    'Norway',
-    'Denmark',
-    'Finland',
-    'Iceland',
-    'Poland',
-    'Czech Republic',
-    'Greece',
-    'Turkey',
-    'Russia',
-    'China',
-    'Japan',
-    'South Korea',
-    'India',
-    'Australia',
-    'New Zealand',
-    'South Africa',
-    'Morocco',
-    'Egypt',
-    'Kenya',
-    'Argentina',
-    'Brazil',
-    'Chile',
-    'Peru',
-    'Colombia',
-  ];
 }
