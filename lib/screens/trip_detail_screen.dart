@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/screens/destination_detail_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'dart:async';
@@ -1027,6 +1028,58 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     });
   }
 
+  Future<void> _openDestinationDetail(
+    int index,
+    Map<String, dynamic> destination,
+  ) async {
+    // Initialize destination data structure if not present
+    final dest = Map<String, dynamic>.from(destination);
+    dest['accommodations'] ??= [];
+    dest['itinerary'] ??= [];
+    dest['things_to_do'] ??= [];
+    dest['startDate'] ??= '';
+    dest['endDate'] ??= '';
+
+    // Determine trip reference path: use explicit tripRef if available,
+    // otherwise construct path for personal trip
+    String tripRefPath =
+        (_liveData['tripRef'] ?? widget.data['tripRef']) as String? ?? '';
+
+    if (tripRefPath.isEmpty) {
+      // For personal trips, construct the path from user ID and trip ID
+      final user = _user;
+      if (user == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Not logged in')));
+        return;
+      }
+      tripRefPath = 'users/${user.uid}/trips/${widget.docId}';
+    }
+
+    final result = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder:
+            (_) => DestinationDetailScreen(
+              tripId: widget.docId,
+              destinationIndex: index,
+              destination: dest,
+              tripRef: tripRefPath,
+              userId: _user?.uid ?? '',
+            ),
+      ),
+    );
+
+    // Refresh waypoints if destination was updated
+    if (result != null && mounted) {
+      setState(() {
+        if (index >= 0 && index < _waypoints.length) {
+          _waypoints[index] = result;
+        }
+      });
+    }
+  }
+
   Future<void> _editWaypointDialog(int index) async {
     // Provide a search/autocomplete UI when editing a waypoint so users
     // don't have to touch raw coordinates. Selecting a suggestion updates
@@ -1520,11 +1573,56 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     ...waypoints.asMap().entries.map((e) {
                       final idx = e.key;
                       final wp = e.value;
-                      return ListTile(
-                        leading: CircleAvatar(child: Text('${idx + 1}')),
-                        title: Text(wp['name'] ?? 'Point ${idx + 1}'),
-                        subtitle: Text(
-                          '${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}',
+                      return GestureDetector(
+                        onTap: () => _openDestinationDetail(idx, wp),
+                        child: Card(
+                          margin: const EdgeInsets.symmetric(vertical: 6),
+                          elevation: 2,
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: const Color(0xFF00695C),
+                              foregroundColor: Colors.white,
+                              child: Text('${idx + 1}'),
+                            ),
+                            title: Text(
+                              wp['name'] ?? 'Point ${idx + 1}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${wp['lat'] ?? '-'}, ${wp['lon'] ?? '-'}',
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Chip(
+                                      label: Text(
+                                        '${(wp['accommodations'] as List?)?.length ?? 0} accommodations',
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                      padding: const EdgeInsets.all(4),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Chip(
+                                      label: Text(
+                                        '${(wp['itinerary'] as List?)?.length ?? 0} days',
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                      padding: const EdgeInsets.all(4),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            trailing: const Icon(
+                              Icons.arrow_forward_ios,
+                              size: 16,
+                            ),
+                          ),
                         ),
                       );
                     }),
