@@ -1094,6 +1094,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       setState(() {
         if (index >= 0 && index < _waypoints.length) {
           _waypoints[index] = result;
+          // Keep live data in sync so preview chips update immediately
+          _liveData['waypoints'] = _waypoints.map((e) => Map<String, dynamic>.from(e)).toList();
         }
       });
     }

@@ -134,11 +134,14 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       tripData['tripRef'] =
           tripRefPath; // ensure TripDetailScreen can find packing/chat
       if (mounted) {
-        Navigator.of(context).push(
+        final updated = await Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => TripDetailScreen(docId: tripDoc.id, data: tripData),
           ),
         );
+        if (updated == true && mounted) {
+          setState(() {}); // triggers refresh
+        }
       }
     } catch (e) {
       if (mounted) {

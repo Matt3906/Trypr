@@ -1,5 +1,4 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 
@@ -46,6 +45,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     'Shopping': Color(0xFF7B1FA2), // Deep Purple
     'Photography': Color(0xFF0277BD), // Light Blue
     'Adventure': Color(0xFFFBC02D), // Amber
+    'Driving': Colors.blueAccent, // New category added
   };
 
   // Store TextEditingControllers for accommodations
@@ -58,13 +58,13 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   final Map<int, TextEditingController> _dayTitleControllers = {};
   final Map<int, TextEditingController> _dayNotesControllers = {};
 
-  User? get _user => FirebaseAuth.instance.currentUser;
-
   @override
   void initState() {
     super.initState();
     _destData = Map<String, dynamic>.from(widget.destination);
-    _dayCount = _calculateDayCount();
+    final initialDays = _calculateDayCount();
+    _ensureItineraryLength(initialDays);
+    _dayCount = initialDays;
     _weekCount = (_dayCount / 7).ceil();
     _mainTabController = TabController(length: 3, vsync: this);
     _weekTabController = TabController(
@@ -72,63 +72,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       vsync: this,
     );
     _initializeItinerary();
-    _initializeControllers();
-  }
-
-  void _initializeControllers() {
-    // Initialize accommodation controllers
-    final accommodations = _destData['accommodations'] as List<dynamic>? ?? [];
-    for (int i = 0; i < accommodations.length; i++) {
-      final acc = accommodations[i] as Map<String, dynamic>;
-      _accNameControllers[i] = TextEditingController(text: acc['name'] ?? '');
-      _accAddressControllers[i] = TextEditingController(
-        text: acc['address'] ?? '',
-      );
-      _accPriceControllers[i] = TextEditingController(
-        text: acc['price']?.toString() ?? '',
-      );
-      _accRatingControllers[i] = TextEditingController(
-        text: acc['rating']?.toString() ?? '',
-      );
-    }
-
-    // Initialize day controllers
-    final itinerary = _destData['itinerary'] as List<dynamic>? ?? [];
-    for (int i = 0; i < itinerary.length; i++) {
-      final day = itinerary[i] as Map<String, dynamic>;
-      _dayTitleControllers[i] = TextEditingController(text: day['title'] ?? '');
-      _dayNotesControllers[i] = TextEditingController(text: day['notes'] ?? '');
-    }
-  }
-
-  int _calculateDayCount() {
-    final String startDateStr = _destData['startDate'] ?? '';
-    final String endDateStr = _destData['endDate'] ?? '';
-
-    if (startDateStr.isEmpty || endDateStr.isEmpty) return 0;
-
-    try {
-      final start = DateTime.parse(startDateStr);
-      final end = DateTime.parse(endDateStr);
-      return end.difference(start).inDays + 1;
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  void _initializeItinerary() {
-    if (_destData['itinerary'] == null ||
-        (_destData['itinerary'] as List).isEmpty) {
-      final itinerary = <Map<String, dynamic>>[];
-      for (int i = 0; i < _dayCount; i++) {
-        itinerary.add({
-          'title': 'Day ${i + 1}',
-          'notes': '',
-          'activities': <Map<String, dynamic>>[],
-        });
-      }
-      _destData['itinerary'] = itinerary;
-    }
   }
 
   @override
@@ -146,7 +89,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   }
 
   Future<void> _saveChanges() async {
-    if (_saving) return; // Prevent multiple concurrent saves
+    if (_saving) return;
     setState(() => _saving = true);
     try {
       final tripRef = FirebaseFirestore.instance.doc(widget.tripRef);
@@ -168,143 +111,106 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
         waypoints[widget.destinationIndex] = _destData;
       }
 
-      // Use update instead of set for reliability
       await tripRef.update({'waypoints': waypoints});
 
-      if (mounted) {
-        // Re-fetch the data to ensure UI shows latest
-        final refetchSnapshot = await tripRef.get();
-        final refetchData = refetchSnapshot.data() ?? {};
-        final refetchWaypoints =
-            refetchData['waypoints'] as List<dynamic>? ?? [];
+      if (!mounted) return;
+      final snapshot2 = await tripRef.get();
+      final tripData2 = snapshot2.data() ?? {};
+      final waypoints2 = tripData2['waypoints'] as List<dynamic>? ?? [];
 
+      if (mounted) {
         setState(() {
           _saving = false;
-          // Reload destination data from Firestore
           if (widget.destinationIndex >= 0 &&
-              widget.destinationIndex < refetchWaypoints.length) {
+              widget.destinationIndex < waypoints2.length) {
             _destData = Map<String, dynamic>.from(
-              refetchWaypoints[widget.destinationIndex] as Map,
+              waypoints2[widget.destinationIndex] as Map,
             );
           }
         });
-
-        // Show success message
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✓ Destination plan saved'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        }
       }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✓ Destination plan saved'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      // Return the updated destination so the caller can refresh immediately
+      Navigator.of(context).pop(_destData);
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save: $e')),
+        );
       }
     }
   }
 
-  Future<void> _loadDestinationFromFirestore() async {
-    try {
-      final tripRef = FirebaseFirestore.instance.doc(widget.tripRef);
-      final snapshot = await tripRef.get();
-      if (!snapshot.exists) {
-        throw Exception('Trip document not found');
-      }
-
-      final tripData = snapshot.data() ?? {};
-      final waypoints = tripData['waypoints'] as List<dynamic>? ?? [];
-
-      if (widget.destinationIndex >= 0 &&
-          widget.destinationIndex < waypoints.length) {
-        setState(() {
-          // Reload destination data from Firestore
-          _destData = Map<String, dynamic>.from(
-            waypoints[widget.destinationIndex] as Map,
-          );
-
-          // Reset tab controllers to first tab
-          _mainTabController.index = 0;
-
-          // Recalculate day/week counts
-          _dayCount = _calculateDayCount();
-          _weekCount = (_dayCount / 7).ceil();
-          _weekTabController.dispose();
-          _weekTabController = TabController(
-            length: _weekCount > 0 ? _weekCount : 1,
-            vsync: this,
-          );
-
-          // Reinitialize all controllers with fresh data
-          _accNameControllers.clear();
-          _accAddressControllers.clear();
-          _accPriceControllers.clear();
-          _accRatingControllers.clear();
-          _dayTitleControllers.clear();
-          _dayNotesControllers.clear();
-          _initializeControllers();
-        });
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✓ Page refreshed'),
-              duration: Duration(seconds: 1),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to refresh: $e')));
-      }
-    }
-  }
-
-  void _reinitializeControllers() {
-    // Clear and reinitialize accommodation controllers
-    _accNameControllers.forEach((_, ctrl) => ctrl.dispose());
-    _accAddressControllers.forEach((_, ctrl) => ctrl.dispose());
-    _accPriceControllers.forEach((_, ctrl) => ctrl.dispose());
-    _accRatingControllers.forEach((_, ctrl) => ctrl.dispose());
-    _accNameControllers.clear();
-    _accAddressControllers.clear();
-    _accPriceControllers.clear();
-    _accRatingControllers.clear();
-
-    final accommodations = _destData['accommodations'] as List<dynamic>? ?? [];
-    for (int i = 0; i < accommodations.length; i++) {
-      final acc = accommodations[i] as Map<String, dynamic>;
-      _accNameControllers[i] = TextEditingController(text: acc['name'] ?? '');
-      _accAddressControllers[i] = TextEditingController(
-        text: acc['address'] ?? '',
-      );
-      _accPriceControllers[i] = TextEditingController(
-        text: acc['price']?.toString() ?? '',
-      );
-      _accRatingControllers[i] = TextEditingController(
-        text: acc['rating']?.toString() ?? '',
-      );
-    }
-
-    // Clear and reinitialize day controllers
-    _dayTitleControllers.forEach((_, ctrl) => ctrl.dispose());
-    _dayNotesControllers.forEach((_, ctrl) => ctrl.dispose());
-    _dayTitleControllers.clear();
-    _dayNotesControllers.clear();
-
+  int _calculateDayCount() {
     final itinerary = _destData['itinerary'] as List<dynamic>? ?? [];
+    final startDateStr = _destData['startDate'] as String? ?? '';
+    final endDateStr = _destData['endDate'] as String? ?? '';
+
+    if (startDateStr.isNotEmpty && endDateStr.isNotEmpty) {
+      try {
+        final start = DateTime.parse(startDateStr);
+        final end = DateTime.parse(endDateStr);
+        final days = end.difference(start).inDays + 1;
+        if (days > 0) return days;
+      } catch (_) {
+        // Fall back to itinerary length if parsing fails
+      }
+    }
+
+    return itinerary.length;
+  }
+
+  void _ensureItineraryLength(int dayCount) {
+    if (dayCount <= 0) return;
+
+    List<Map<String, dynamic>> itinerary = List<Map<String, dynamic>>.from(
+      (_destData['itinerary'] as List<dynamic>? ?? []).map(
+        (d) => Map<String, dynamic>.from(d as Map),
+      ),
+    );
+
+    if (itinerary.length < dayCount) {
+      for (int i = itinerary.length; i < dayCount; i++) {
+        itinerary.add({
+          'title': 'Day ${i + 1}',
+          'notes': '',
+          'activities': <Map<String, dynamic>>[],
+        });
+      }
+    } else if (itinerary.length > dayCount) {
+      itinerary = itinerary.sublist(0, dayCount);
+    }
+
+    _destData['itinerary'] = itinerary;
+  }
+
+  void _initializeItinerary() {
+    final itinerary = _destData['itinerary'] as List<dynamic>? ?? [];
+
+    // Clean up controllers no longer needed
+    final keysToRemove = _dayTitleControllers.keys
+        .where((k) => k >= itinerary.length)
+        .toList();
+    for (final k in keysToRemove) {
+      _dayTitleControllers.remove(k)?.dispose();
+      _dayNotesControllers.remove(k)?.dispose();
+    }
+
     for (int i = 0; i < itinerary.length; i++) {
       final day = itinerary[i] as Map<String, dynamic>;
-      _dayTitleControllers[i] = TextEditingController(text: day['title'] ?? '');
-      _dayNotesControllers[i] = TextEditingController(text: day['notes'] ?? '');
+      _dayTitleControllers[i] =
+          TextEditingController(text: day['title'] ?? '');
+      _dayNotesControllers[i] =
+          TextEditingController(text: day['notes'] ?? '');
     }
   }
 
@@ -321,23 +227,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
         actions: [
           Padding(
             padding: const EdgeInsets.all(8.0),
-            child: GradientButton(
-              onPressed: () {
-                // Refresh: reload destination data from Firestore
-                _loadDestinationFromFirestore();
-              },
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.refresh, size: 16),
-                  SizedBox(width: 6),
-                  Text('Refresh'),
-                ],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
             child:
                 _saving
                     ? const Center(child: CircularProgressIndicator())
@@ -348,7 +237,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                         children: [
                           Icon(Icons.save, size: 16),
                           SizedBox(width: 6),
-                          Text('Save'),
+                          Text('Save and Exit'),
                         ],
                       ),
                     ),
@@ -918,116 +807,113 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     final hours = List.generate(24, (i) => i);
     const hourHeight = 80.0; // Height per hour in pixels
 
+    // Pre-parse activities into minute ranges once so we can compute
+    // both their absolute positions and also draw hour grid lines.
+    final parsedActivities = <Map<String, dynamic>>[];
+    for (final a in activities) {
+      final startTime = a['startTime'] as String? ?? '';
+      final endTime = a['endTime'] as String? ?? '';
+      if (startTime.isEmpty || endTime.isEmpty) continue;
+      try {
+        final start = startTime.split(':');
+        final end = endTime.split(':');
+        final startMinutes =
+            int.parse(start[0]) * 60 + int.parse(start[1]);
+        final endMinutes =
+            int.parse(end[0]) * 60 + int.parse(end[1]);
+        if (endMinutes <= startMinutes) continue;
+        parsedActivities.add({
+          'data': a,
+          'startMinutes': startMinutes,
+          'endMinutes': endMinutes,
+        });
+      } catch (_) {
+        // ignore malformed times
+      }
+    }
+
+    final totalHeight = hours.length * hourHeight;
+
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: Colors.grey.shade300),
         borderRadius: BorderRadius.circular(8),
       ),
       child: SingleChildScrollView(
-        child: Column(
-          children:
-              hours.map((hour) {
-                final hourStr = '${hour.toString().padLeft(2, '0')}:00';
-
-                // Show activities that START in this hour only
-                final hourActivities =
-                    activities.where((a) {
-                      final startTime = a['startTime'] as String? ?? '';
-                      if (startTime.isEmpty) return false;
-
-                      try {
-                        final start = startTime.split(':');
-                        final startMinutes =
-                            int.parse(start[0]) * 60 + int.parse(start[1]);
-                        final startHour = startMinutes ~/ 60;
-
-                        return hour == startHour;
-                      } catch (e) {
-                        return false;
-                      }
-                    }).toList();
-
-                return Container(
-                  height: hourHeight,
-                  decoration: BoxDecoration(
-                    border: Border(
-                      bottom: BorderSide(color: Colors.grey.shade300),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      // Hour label
-                      SizedBox(
-                        width: 60,
-                        child: Center(
-                          child: Text(
-                            hourStr,
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(color: Colors.grey),
+        child: SizedBox(
+          height: totalHeight,
+          child: Row(
+            children: [
+              // Hour labels column
+              SizedBox(
+                width: 60,
+                child: Column(
+                  children:
+                      hours.map((hour) {
+                        final hourStr =
+                            '${hour.toString().padLeft(2, '0')}:00';
+                        return SizedBox(
+                          height: hourHeight,
+                          child: Center(
+                            child: Text(
+                              hourStr,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(color: Colors.grey),
+                            ),
                           ),
+                        );
+                      }).toList(),
+                ),
+              ),
+              // Main calendar area with hour grid + continuous events
+              Expanded(
+                child: Stack(
+                  children: [
+                    // Hour grid lines
+                    Column(
+                      children:
+                          hours.map((_) {
+                            return Container(
+                              height: hourHeight,
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(
+                                    color: Colors.grey.shade300,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                    ),
+                    // Continuous event blocks
+                    ...parsedActivities.map((pa) {
+                      final a = pa['data'] as Map<String, dynamic>;
+                      final startMinutes = pa['startMinutes'] as int;
+                      final endMinutes = pa['endMinutes'] as int;
+
+                      final top =
+                          (startMinutes / 60.0) * hourHeight;
+                      final height =
+                          ((endMinutes - startMinutes) / 60.0) *
+                              hourHeight;
+
+                      return Positioned(
+                        left: 4,
+                        right: 4,
+                        top: top,
+                        child: SizedBox(
+                          height: height - 4,
+                          child: _buildActivityChip(a),
                         ),
-                      ),
-                      // Activities that start in this hour
-                      Expanded(
-                        child: Stack(
-                          children:
-                              hourActivities.map((activity) {
-                                // Calculate height across all hours the activity spans
-                                final startTime =
-                                    activity['startTime'] as String? ?? '';
-                                final endTime =
-                                    activity['endTime'] as String? ?? '';
-
-                                double activityHeight = hourHeight;
-                                double topOffset = 0;
-
-                                if (startTime.isNotEmpty &&
-                                    endTime.isNotEmpty) {
-                                  try {
-                                    final start = startTime.split(':');
-                                    final end = endTime.split(':');
-                                    final startMinutes =
-                                        int.parse(start[0]) * 60 +
-                                        int.parse(start[1]);
-                                    final endMinutes =
-                                        int.parse(end[0]) * 60 +
-                                        int.parse(end[1]);
-                                    final durationMinutes =
-                                        endMinutes - startMinutes;
-
-                                    // Offset from top based on start time within the hour
-                                    final minutesIntoHour = startMinutes % 60;
-                                    topOffset =
-                                        (minutesIntoHour / 60) * hourHeight;
-
-                                    // Height = total duration converted to pixels
-                                    activityHeight =
-                                        (durationMinutes / 60.0) * hourHeight;
-                                  } catch (e) {
-                                    activityHeight = 0;
-                                    topOffset = 0;
-                                  }
-                                }
-
-                                if (activityHeight > 0) {
-                                  return Positioned(
-                                    left: 4,
-                                    right: 4,
-                                    top: topOffset,
-                                    child: SizedBox(
-                                      height: activityHeight - 4,
-                                      child: _buildActivityChip(activity),
-                                    ),
-                                  );
-                                }
-                                return const SizedBox.shrink();
-                              }).toList(),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1399,7 +1285,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     if (picked != null) {
       setState(() {
         _destData['startDate'] = picked.toIso8601String().split('T')[0];
-        _dayCount = _calculateDayCount();
+        final days = _calculateDayCount();
+        _ensureItineraryLength(days);
+        _dayCount = days;
         _weekCount = (_dayCount / 7).ceil();
         _weekTabController.dispose();
         _weekTabController = TabController(
@@ -1421,7 +1309,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     if (picked != null) {
       setState(() {
         _destData['endDate'] = picked.toIso8601String().split('T')[0];
-        _dayCount = _calculateDayCount();
+        final days = _calculateDayCount();
+        _ensureItineraryLength(days);
+        _dayCount = days;
         _weekCount = (_dayCount / 7).ceil();
         _weekTabController.dispose();
         _weekTabController = TabController(
