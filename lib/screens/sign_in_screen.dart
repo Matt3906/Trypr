@@ -6,7 +6,7 @@ import 'package:trypr/widgets/top_taskbar.dart';
 import 'create_account_screen.dart';
 
 class SignInScreen extends StatefulWidget {
-  const SignInScreen({Key? key}) : super(key: key);
+  const SignInScreen({super.key});
 
   @override
   State<SignInScreen> createState() => _SignInScreenState();

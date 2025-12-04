@@ -9,12 +9,12 @@ class DestinationStatsCard extends StatelessWidget {
   final VoidCallback? onTap;
 
   const DestinationStatsCard({
-    Key? key,
+    super.key,
     required this.label,
     required this.count,
     required this.icon,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -52,11 +52,11 @@ class BudgetTrackerWidget extends StatelessWidget {
   final String currency;
 
   const BudgetTrackerWidget({
-    Key? key,
+    super.key,
     required this.totalBudget,
     required this.spent,
     this.currency = '\$',
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -130,8 +130,7 @@ class DailyChecklistWidget extends StatefulWidget {
   final List<Map<String, dynamic>> items;
   final ValueChanged<List<Map<String, dynamic>>>? onChanged;
 
-  const DailyChecklistWidget({Key? key, required this.items, this.onChanged})
-    : super(key: key);
+  const DailyChecklistWidget({super.key, required this.items, this.onChanged});
 
   @override
   State<DailyChecklistWidget> createState() => _DailyChecklistWidgetState();
@@ -206,13 +205,13 @@ class LocationPreviewCard extends StatelessWidget {
   final VoidCallback? onTap;
 
   const LocationPreviewCard({
-    Key? key,
+    super.key,
     required this.locationName,
     this.latitude,
     this.longitude,
     this.imageUrl,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -271,10 +270,10 @@ class TimelineActivityWidget extends StatelessWidget {
   final bool isCompact;
 
   const TimelineActivityWidget({
-    Key? key,
+    super.key,
     required this.activities,
     this.isCompact = false,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

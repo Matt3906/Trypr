@@ -16,7 +16,7 @@ import 'package:latlong2/latlong.dart';
 // 'http' used previously for remote GeoJSON fetch; now we load from assets.
 
 class AccountScreen extends StatefulWidget {
-  const AccountScreen({Key? key}) : super(key: key);
+  const AccountScreen({super.key});
 
   @override
   State<AccountScreen> createState() => _AccountScreenState();
@@ -569,10 +569,11 @@ class _AccountScreenState extends State<AccountScreen> {
                                             child: Builder(
                                               builder: (ctx) {
                                                 // initialize staged set from live data on first build
-                                                if (_stagedVisited.isEmpty)
+                                                if (_stagedVisited.isEmpty) {
                                                   _stagedVisited.addAll(
                                                     visitedSet,
                                                   );
+                                                }
                                                 // ensure polygons are loaded (idempotent)
                                                 _loadCountryPolygons();
                                                 return FlutterMap(
@@ -589,8 +590,9 @@ class _AccountScreenState extends State<AccountScreen> {
                                                       latlng,
                                                     ) async {
                                                       // Add a visited country by tapping on its polygon.
-                                                      if (!_polygonsLoaded)
+                                                      if (!_polygonsLoaded) {
                                                         return;
+                                                      }
                                                       String? foundKey;
                                                       _countryPolygons.forEach((
                                                         k,
@@ -606,8 +608,9 @@ class _AccountScreenState extends State<AccountScreen> {
                                                             break;
                                                           }
                                                         }
-                                                        if (foundKey != null)
+                                                        if (foundKey != null) {
                                                           return;
+                                                        }
                                                       });
                                                       if (foundKey != null) {
                                                         final display =
@@ -718,7 +721,7 @@ class _AccountScreenState extends State<AccountScreen> {
                                                                       false,
                                                             );
                                                           } catch (err) {
-                                                            if (mounted)
+                                                            if (mounted) {
                                                               ScaffoldMessenger.of(
                                                                 context,
                                                               ).showSnackBar(
@@ -728,6 +731,7 @@ class _AccountScreenState extends State<AccountScreen> {
                                                                   ),
                                                                 ),
                                                               );
+                                                            }
                                                           }
                                                         }
                                                         : null,
@@ -942,8 +946,7 @@ class _EditProfileSheet extends StatefulWidget {
   final String uid;
   final Map<String, dynamic> data;
 
-  const _EditProfileSheet({Key? key, required this.uid, required this.data})
-    : super(key: key);
+  const _EditProfileSheet({super.key, required this.uid, required this.data});
 
   @override
   State<_EditProfileSheet> createState() => _EditProfileSheetState();
@@ -1100,8 +1103,9 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                               firstDate: DateTime(1900),
                               lastDate: DateTime(now.year),
                             );
-                            if (picked != null && mounted)
+                            if (picked != null && mounted) {
                               setState(() => dob = picked);
+                            }
                           },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -1144,12 +1148,13 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
 
   Future<void> _onUploadPressed() async {
     if (!kIsWeb) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Profile upload currently supported on web only'),
           ),
         );
+      }
       return;
     }
     final input = html.FileUploadInputElement();
@@ -1227,7 +1232,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
       'displayNameLower': nameCtl.text.trim().toLowerCase(),
       'city': cityCtl.text.trim(),
       'sex': sex,
-      'dob': dob != null ? dob!.toIso8601String() : null,
+      'dob': dob?.toIso8601String(),
       'visitedCountries': visited.toList(),
     };
     if (localProfileImage != null) {
@@ -1245,11 +1250,12 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Profile updated')));
-    } catch (err, st) {
-      if (mounted)
+    } catch (err) {
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Failed to save profile: $err')));
+      }
     }
   }
 }

@@ -7,7 +7,7 @@ import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/complete_profile_screen.dart';
 
 class CreateAccountScreen extends StatefulWidget {
-  const CreateAccountScreen({Key? key}) : super(key: key);
+  const CreateAccountScreen({super.key});
 
   @override
   State<CreateAccountScreen> createState() => _CreateAccountScreenState();
@@ -156,10 +156,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                           ? const Center(child: CircularProgressIndicator())
                           : ElevatedButton(
                             onPressed: _createAccount,
-                            child: const Text('Create account'),
                             style: ElevatedButton.styleFrom(
                               padding: const EdgeInsets.symmetric(vertical: 14),
                             ),
+                            child: const Text('Create account'),
                           ),
                       const SizedBox(height: 12),
                       Row(

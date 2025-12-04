@@ -11,8 +11,7 @@ import 'dart:convert';
 class TripDetailScreen extends StatefulWidget {
   final String docId;
   final Map<String, dynamic> data;
-  const TripDetailScreen({Key? key, required this.docId, required this.data})
-    : super(key: key);
+  const TripDetailScreen({super.key, required this.docId, required this.data});
 
   @override
   State<TripDetailScreen> createState() => _TripDetailScreenState();
@@ -49,8 +48,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     _waypoints =
         w.map<Map<String, dynamic>>((e) {
           if (e is Map<String, dynamic>) return Map<String, dynamic>.from(e);
-          if (e is Map)
+          if (e is Map) {
             return Map<String, dynamic>.from(e.cast<String, dynamic>());
+          }
           return <String, dynamic>{};
         }).toList();
 
@@ -61,10 +61,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
       if (tripRefPath != null && tripRefPath.isNotEmpty) {
         final docRef =
-            FirebaseFirestore.instance.doc(tripRefPath)
-                as DocumentReference<Map<String, dynamic>>;
-        if (kDebugMode)
+            FirebaseFirestore.instance.doc(tripRefPath);
+        if (kDebugMode) {
           print('TripDetail: initial owner subscription -> $tripRefPath');
+        }
         _currentSubscribedPath = tripRefPath;
         _docSub = docRef.snapshots().listen((snapshot) {
           if (!snapshot.exists) {
@@ -87,10 +87,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             final rw = (_liveData['waypoints'] as List<dynamic>?) ?? [];
             _waypoints =
                 rw.map<Map<String, dynamic>>((e) {
-                  if (e is Map<String, dynamic>)
+                  if (e is Map<String, dynamic>) {
                     return Map<String, dynamic>.from(e);
-                  if (e is Map)
+                  }
+                  if (e is Map) {
                     return Map<String, dynamic>.from(e.cast<String, dynamic>());
+                  }
                   return <String, dynamic>{};
                 }).toList();
             // update days if present
@@ -111,8 +113,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             .doc(me.uid)
             .collection('trips')
             .doc(widget.docId);
-        if (kDebugMode)
+        if (kDebugMode) {
           print('TripDetail: subscribing to local trip doc ${localRef.path}');
+        }
         _localDocSub = localRef.snapshots().listen((snap) {
           if (!snap.exists) return;
           final data = snap.data() ?? {};
@@ -122,10 +125,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             try {
               _docSub?.cancel();
               final ownerRef =
-                  FirebaseFirestore.instance.doc(newRef)
-                      as DocumentReference<Map<String, dynamic>>;
-              if (kDebugMode)
+                  FirebaseFirestore.instance.doc(newRef);
+              if (kDebugMode) {
                 print('TripDetail: switching owner subscription -> $newRef');
+              }
               _currentSubscribedPath = newRef;
               _docSub = ownerRef.snapshots().listen((snapshot) {
                 if (!snapshot.exists) {
@@ -146,12 +149,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     final rw = (_liveData['waypoints'] as List<dynamic>?) ?? [];
                     _waypoints =
                         rw.map<Map<String, dynamic>>((e) {
-                          if (e is Map<String, dynamic>)
+                          if (e is Map<String, dynamic>) {
                             return Map<String, dynamic>.from(e);
-                          if (e is Map)
+                          }
+                          if (e is Map) {
                             return Map<String, dynamic>.from(
                               e.cast<String, dynamic>(),
                             );
+                          }
                           return <String, dynamic>{};
                         }).toList();
                     final td = _liveData['totalDays'];
@@ -243,10 +248,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                               onChanged: (v) {
                                 if (uid == null) return;
                                 setState2(() {
-                                  if (v == true)
+                                  if (v == true) {
                                     selected.add(uid);
-                                  else
+                                  } else {
                                     selected.remove(uid);
+                                  }
                                 });
                               },
                               title: Text(label),
@@ -340,12 +346,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   }
 
                   if (failed.isEmpty) {
-                    if (mounted)
+                    if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Trip shared')),
                       );
+                    }
                   } else {
-                    if (mounted)
+                    if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
@@ -353,6 +360,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                           ),
                         ),
                       );
+                    }
                     // ignore: avoid_print
                     print(
                       'Share completed with failures for uids: ${failed.join(', ')}',
@@ -361,10 +369,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 } catch (e, st) {
                   // ignore: avoid_print
                   print('Share failed: $e\n$st');
-                  if (mounted)
+                  if (mounted) {
                     ScaffoldMessenger.of(
                       context,
                     ).showSnackBar(SnackBar(content: Text('Share failed: $e')));
+                  }
                 }
               },
               child: const Text('Share'),
@@ -476,7 +485,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           .doc(widget.docId);
     }
     // Build a list of participant UIDs: owner (if available), sharedWith, and current user
-    List<String> _collectParticipants() {
+    List<String> collectParticipants() {
       final parts = <String>{};
       // If tripRef is a path like users/{owner}/trips/{id}, extract owner
       try {
@@ -500,7 +509,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
     final nameCache = <String, String>{};
 
-    Future<void> _ensureNames(List<String> uids) async {
+    Future<void> ensureNames(List<String> uids) async {
       final missing = uids.where((u) => !nameCache.containsKey(u)).toList();
       for (final uid in missing) {
         try {
@@ -527,8 +536,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         final addCtl = TextEditingController();
         String addScope = 'group';
         String? addAssignee;
-        final participants = _collectParticipants();
-        _ensureNames(participants);
+        final participants = collectParticipants();
+        ensureNames(participants);
 
         return StatefulBuilder(
           builder: (ctx2, setState2) {
@@ -567,10 +576,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 .orderBy('createdAt')
                                 .snapshots(),
                         builder: (ctx3, snap) {
-                          if (!snap.hasData)
+                          if (!snap.hasData) {
                             return const Center(
                               child: CircularProgressIndicator(),
                             );
+                          }
                           final docs = snap.data!.docs;
                           final visible =
                               docs.where((d) {
@@ -579,10 +589,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 if (scopeView == 'group') return pTo == null;
                                 return pTo != null && pTo == me.uid;
                               }).toList();
-                          if (visible.isEmpty)
+                          if (visible.isEmpty) {
                             return const Center(
                               child: Text('No packing items'),
                             );
+                          }
                           return ListView.separated(
                             itemCount: visible.length,
                             separatorBuilder:
@@ -620,8 +631,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                                   ddata['email'] ??
                                                   assignee)
                                               .toString();
-                                      if (mounted)
+                                      if (mounted) {
                                         setState(() => nameCache[assignee] = n);
+                                      }
                                     })
                                     .catchError((_) {});
                               }
@@ -719,7 +731,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                                                             ),
                                                                           ),
                                                                         )
-                                                                        .toList(),
+                                                                        ,
                                                                   ],
                                                                   onChanged:
                                                                       (
@@ -828,7 +840,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                     child: Text(nameCache[u] ?? u),
                                   ),
                                 )
-                                .toList(),
+                                ,
                           ],
                           onChanged: (v) => setState2(() => addAssignee = v),
                         ),
@@ -842,17 +854,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                               'createdAt': FieldValue.serverTimestamp(),
                               'checkedBy': [],
                             };
-                            if (addScope == 'private')
+                            if (addScope == 'private') {
                               data['privateTo'] = me.uid;
+                            }
                             if (addAssignee != null) {
                               data['assigneeUid'] = addAssignee;
                               data['assigneeName'] =
                                   nameCache[addAssignee] ?? addAssignee;
                             }
-                            if (kDebugMode)
+                            if (kDebugMode) {
                               print(
-                                'Packing add -> target: ${tripRef.path} data: ${data}',
+                                'Packing add -> target: ${tripRef.path} data: $data',
                               );
+                            }
                             await tripRef.collection('packing').add(data);
                             addCtl.clear();
                             addAssignee = null;
@@ -911,11 +925,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                             .orderBy('createdAt')
                             .snapshots(),
                     builder: (ctx2, snap) {
-                      if (!snap.hasData)
+                      if (!snap.hasData) {
                         return const Center(child: CircularProgressIndicator());
+                      }
                       final docs = snap.data!.docs;
-                      if (docs.isEmpty)
+                      if (docs.isEmpty) {
                         return const Center(child: Text('No messages yet'));
+                      }
                       return ListView.builder(
                         itemCount: docs.length,
                         itemBuilder: (ctx3, i) {
@@ -950,10 +966,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                                 ddata['email'] ??
                                                 senderUid)
                                             .toString();
-                                    if (mounted)
+                                    if (mounted) {
                                       setState(
                                         () => _nameCache[senderUid] = name,
                                       );
+                                    }
                                   })
                                   .catchError((_) {});
                             }
@@ -983,8 +1000,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         if (t.isEmpty) return;
                         try {
                           // Debug: log the target path so we can confirm where messages are written
-                          if (kDebugMode)
+                          if (kDebugMode) {
                             print('Trip chat send -> target: ${tripRef.path}');
+                          }
                           await tripRef.collection('messages').add({
                             'senderUid': me.uid,
                             'senderName': me.displayName ?? '',
@@ -993,10 +1011,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                           });
                           msgCtl.clear();
                         } catch (e) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(content: Text('Send failed: $e')),
                             );
+                          }
                         }
                       },
                       child: const Text('Send'),
@@ -1172,8 +1191,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 : null,
                       ),
                       onChanged: (v) {
-                        if (localDebounce?.isActive ?? false)
+                        if (localDebounce?.isActive ?? false) {
                           localDebounce?.cancel();
+                        }
                         localDebounce = Timer(
                           const Duration(milliseconds: 350),
                           () async {

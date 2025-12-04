@@ -21,10 +21,10 @@ class TopTaskbar extends StatefulWidget implements PreferredSizeWidget {
   final SignInStateSetter? onSignInStateChanged;
 
   const TopTaskbar({
-    Key? key,
+    super.key,
     this.dockProgress = 1.0,
     this.onSignInStateChanged,
-  }) : super(key: key);
+  });
 
   @override
   Size get preferredSize => const Size.fromHeight(64);
@@ -244,18 +244,20 @@ class _TopTaskbarState extends State<TopTaskbar> {
                             builder: (_) => const SignInScreen(),
                           ),
                         );
-                        if (res == true)
+                        if (res == true) {
                           (widget.onSignInStateChanged ??
                               AuthState.instance.setSignedIn)(true);
+                        }
                       } else if (value == 'create_account') {
                         final res = await Navigator.of(context).push(
                           MaterialPageRoute(
                             builder: (_) => const CreateAccountScreen(),
                           ),
                         );
-                        if (res == true)
+                        if (res == true) {
                           (widget.onSignInStateChanged ??
                               AuthState.instance.setSignedIn)(true);
+                        }
                       } else if (value == 'view_account') {
                         Navigator.of(context).push(
                           MaterialPageRoute(
@@ -333,11 +335,11 @@ class _NavItem extends StatelessWidget {
   final Color color;
   final VoidCallback? onPressed;
   const _NavItem({
-    Key? key,
+    super.key,
     required this.label,
     this.color = Colors.white70,
     this.onPressed,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

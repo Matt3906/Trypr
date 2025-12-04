@@ -7,7 +7,7 @@ import 'package:trypr/screens/sign_in_screen.dart';
 import 'package:trypr/widgets/map_embed.dart';
 
 class MyTripsScreen extends StatefulWidget {
-  const MyTripsScreen({Key? key}) : super(key: key);
+  const MyTripsScreen({super.key});
 
   @override
   State<MyTripsScreen> createState() => _MyTripsScreenState();
@@ -16,8 +16,7 @@ class MyTripsScreen extends StatefulWidget {
 class _Hoverable extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
-  const _Hoverable({Key? key, required this.child, this.onTap})
-    : super(key: key);
+  const _Hoverable({super.key, required this.child, this.onTap});
 
   @override
   State<_Hoverable> createState() => _HoverableState();
@@ -122,10 +121,11 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
     try {
       final tripDoc = await FirebaseFirestore.instance.doc(tripRefPath).get();
       if (!tripDoc.exists) {
-        if (mounted)
+        if (mounted) {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('Trip not available')));
+        }
         return;
       }
       final tripData = Map<String, dynamic>.from(
@@ -133,17 +133,19 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       );
       tripData['tripRef'] =
           tripRefPath; // ensure TripDetailScreen can find packing/chat
-      if (mounted)
+      if (mounted) {
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => TripDetailScreen(docId: tripDoc.id, data: tripData),
           ),
         );
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Open failed: $e')));
+      }
     }
   }
 
@@ -158,10 +160,11 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
     try {
       final tripDoc = await FirebaseFirestore.instance.doc(tripRefPath).get();
       if (!tripDoc.exists) {
-        if (mounted)
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Original trip not found')),
           );
+        }
         return;
       }
       // Instead of copying the trip into the recipient's collection, create
@@ -186,15 +189,17 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           .collection('sharedTrips')
           .doc(sharedDoc.id)
           .delete();
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Trip accepted and added to My Trips')),
         );
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Accept failed: $e')));
+      }
     }
   }
 
@@ -210,15 +215,17 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           .collection('sharedTrips')
           .doc(sharedDoc.id)
           .delete();
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Shared invite declined')));
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Decline failed: $e')));
+      }
     }
   }
 
@@ -271,10 +278,11 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                               onChanged: (v) {
                                 if (uid == null) return;
                                 setState2(() {
-                                  if (v == true)
+                                  if (v == true) {
                                     selected.add(uid);
-                                  else
+                                  } else {
                                     selected.remove(uid);
+                                  }
                                 });
                               },
                               title: Text(label),
@@ -320,15 +328,17 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                       'createdAt': FieldValue.serverTimestamp(),
                     });
                   }
-                  if (mounted)
+                  if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Trip shared')),
                     );
+                  }
                 } catch (e) {
-                  if (mounted)
+                  if (mounted) {
                     ScaffoldMessenger.of(
                       context,
                     ).showSnackBar(SnackBar(content: Text('Share failed: $e')));
+                  }
                 }
               },
               child: const Text('Share'),
@@ -372,8 +382,9 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                 : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: stream,
                   builder: (ctx, snap) {
-                    if (snap.connectionState == ConnectionState.waiting)
+                    if (snap.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
+                    }
                     final docs = snap.data?.docs ?? [];
 
                     return Column(
@@ -730,8 +741,9 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                     data['sharedFrom']
                                                         .toString()
                                                         .isNotEmpty);
-                                            if (!isShared)
+                                            if (!isShared) {
                                               return const SizedBox.shrink();
+                                            }
                                             return Positioned(
                                               top: 8,
                                               left: 8,

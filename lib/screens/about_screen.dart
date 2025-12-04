@@ -3,7 +3,7 @@ import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/trip_builder_screen.dart';
 
 class AboutScreen extends StatelessWidget {
-  const AboutScreen({Key? key}) : super(key: key);
+  const AboutScreen({super.key});
 
   @override
   Widget build(BuildContext context) {

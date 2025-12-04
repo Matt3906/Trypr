@@ -12,7 +12,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class TripBuilderScreen extends StatefulWidget {
-  const TripBuilderScreen({Key? key}) : super(key: key);
+  const TripBuilderScreen({super.key});
 
   @override
   State<TripBuilderScreen> createState() => _TripBuilderScreenState();
@@ -112,10 +112,11 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               onChanged: (v) {
                                 if (uid == null) return;
                                 setState(() {
-                                  if (v == true)
+                                  if (v == true) {
                                     selected.add(uid);
-                                  else
+                                  } else {
                                     selected.remove(uid);
+                                  }
                                 });
                               },
                               title: Text(label),
@@ -157,15 +158,17 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                       'createdAt': FieldValue.serverTimestamp(),
                     });
                   }
-                  if (mounted)
+                  if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Trip shared')),
                     );
+                  }
                 } catch (err) {
-                  if (mounted)
+                  if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(content: Text('Failed to share: $err')),
                     );
+                  }
                 }
               },
               child: const Text('Share'),
@@ -200,11 +203,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             .orderBy('createdAt')
                             .snapshots(),
                     builder: (ctx2, snap) {
-                      if (!snap.hasData)
+                      if (!snap.hasData) {
                         return const Center(child: CircularProgressIndicator());
+                      }
                       final docs = snap.data!.docs;
-                      if (docs.isEmpty)
+                      if (docs.isEmpty) {
                         return const Center(child: Text('No packing items'));
+                      }
                       return ListView.separated(
                         itemCount: docs.length,
                         separatorBuilder: (_, __) => const Divider(height: 1),
@@ -300,11 +305,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             .orderBy('createdAt')
                             .snapshots(),
                     builder: (ctx2, snap) {
-                      if (!snap.hasData)
+                      if (!snap.hasData) {
                         return const Center(child: CircularProgressIndicator());
+                      }
                       final docs = snap.data!.docs;
-                      if (docs.isEmpty)
+                      if (docs.isEmpty) {
                         return const Center(child: Text('No messages yet'));
+                      }
                       return ListView.builder(
                         itemCount: docs.length,
                         itemBuilder: (ctx3, i) {
@@ -361,10 +368,11 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         final t = msgCtl.text.trim();
                         final img = imgCtl.text.trim();
                         if (t.isEmpty && img.isEmpty) return;
-                        if (kDebugMode)
+                        if (kDebugMode) {
                           print(
                             'TripBuilder chat send -> target: ${tripRef.path}',
                           );
+                        }
                         await tripRef.collection('messages').add({
                           'senderUid': me.uid,
                           'senderName': me.displayName ?? '',
@@ -598,8 +606,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               firstDate: DateTime(now.year - 5),
                               lastDate: DateTime(now.year + 5),
                             );
-                            if (picked != null && mounted)
+                            if (picked != null && mounted) {
                               setState(() => _startDate = picked);
+                            }
                           },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -668,8 +677,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               final nights = _waypoints[i].nights;
                               // compute arrival offset by summing nights of earlier stops
                               int offsetDays = 0;
-                              for (var j = 0; j < i; j++)
+                              for (var j = 0; j < i; j++) {
                                 offsetDays += _waypoints[j].nights;
+                              }
                               String dateStr = '';
                               if (_startDate != null) {
                                 final dt = _startDate!.add(
@@ -683,10 +693,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                 leading: CircleAvatar(child: Text('${i + 1}')),
                                 title: Text(_waypoints[i].name),
                                 subtitle: Text(
-                                  '${nights} night${nights == 1 ? '' : 's'}$dateStr — ' +
-                                      (next != null
+                                  '${nights} night${nights == 1 ? '' : 's'}$dateStr — ${next != null
                                           ? '${segKm.toStringAsFixed(2)} km to next'
-                                          : 'Last point'),
+                                          : 'Last point'}',
                                 ),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
@@ -764,8 +773,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                     };
                                     if (_startDate != null) {
                                       int offset = 0;
-                                      for (var j = 0; j < idx; j++)
+                                      for (var j = 0; j < idx; j++) {
                                         offset += _waypoints[j].nights;
+                                      }
                                       final dt = _startDate!.add(
                                         Duration(days: offset),
                                       );
@@ -864,8 +874,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                     k.toLowerCase().contains(v.toLowerCase()),
                                 orElse: () => '',
                               );
-                              if (match.isNotEmpty)
+                              if (match.isNotEmpty) {
                                 _addWaypointFromLookup(match);
+                              }
                               return;
                             }
                             // Add first result by default

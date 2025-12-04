@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class VerifiedTripsScreen extends StatelessWidget {
-  const VerifiedTripsScreen({Key? key}) : super(key: key);
+  const VerifiedTripsScreen({super.key});
 
   @override
   Widget build(BuildContext context) {

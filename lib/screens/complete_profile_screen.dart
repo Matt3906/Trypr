@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class CompleteProfileScreen extends StatefulWidget {
-  const CompleteProfileScreen({Key? key}) : super(key: key);
+  const CompleteProfileScreen({super.key});
 
   @override
   State<CompleteProfileScreen> createState() => _CompleteProfileScreenState();
@@ -122,10 +122,11 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
                         label: Text(c),
                         onSelected:
                             (v) => setState(() {
-                              if (v)
+                              if (v) {
                                 selected.add(c);
-                              else
+                              } else {
                                 selected.remove(c);
+                              }
                             }),
                       );
                     }).toList(),
@@ -145,11 +146,12 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
         );
       },
     );
-    if (result != null && mounted)
+    if (result != null && mounted) {
       setState(() {
         _visited.clear();
         _visited.addAll(result);
       });
+    }
   }
 
   static const List<String> _commonCountries = [
@@ -242,8 +244,9 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
                                 ),
                               ],
                               onChanged: (v) {
-                                if (v != null && mounted)
+                                if (v != null && mounted) {
                                   setState(() => _sex = v);
+                                }
                               },
                             ),
                           ),

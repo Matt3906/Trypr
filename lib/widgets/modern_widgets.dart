@@ -8,12 +8,12 @@ class GradientButton extends StatelessWidget {
   final BorderRadius borderRadius;
 
   const GradientButton({
-    Key? key,
+    super.key,
     required this.onPressed,
     required this.child,
     this.padding = const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
     this.borderRadius = const BorderRadius.all(Radius.circular(8)),
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -63,13 +63,13 @@ class GlassCard extends StatelessWidget {
   final Border? border;
 
   const GlassCard({
-    Key? key,
+    super.key,
     required this.child,
     this.padding = const EdgeInsets.all(16),
     this.borderRadius = 12,
     this.backgroundColor,
     this.border,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -99,12 +99,12 @@ class AvatarRing extends StatelessWidget {
   final VoidCallback? onTap;
 
   const AvatarRing({
-    Key? key,
+    super.key,
     required this.initials,
     this.size = 48,
     this.backgroundColor,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

@@ -4,7 +4,7 @@ import 'package:latlong2/latlong.dart' as latlng;
 
 class MapPreview extends StatelessWidget {
   final List<dynamic> waypoints;
-  const MapPreview({Key? key, required this.waypoints}) : super(key: key);
+  const MapPreview({super.key, required this.waypoints});
 
   List<latlng.LatLng> _toLatLngs() {
     final pts = <latlng.LatLng>[];

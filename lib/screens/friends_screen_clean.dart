@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class FriendsScreenClean extends StatelessWidget {
-  const FriendsScreenClean({Key? key}) : super(key: key);
+  const FriendsScreenClean({super.key});
 
   @override
   Widget build(BuildContext context) {

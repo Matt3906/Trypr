@@ -28,7 +28,7 @@ Future<String?> reverseNominatim(double lat, double lon) async {
   try {
     final resp = await html.HttpRequest.getString(url);
     final data = jsonDecode(resp) as Map<String, dynamic>;
-    return (data['display_name'] as String?) ?? null;
+    return (data['display_name'] as String?);
   } catch (e) {
     return null;
   }
