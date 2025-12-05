@@ -11,7 +11,13 @@ import 'dart:convert';
 class MapEmbed extends StatefulWidget {
   final List<Map<String, dynamic>> points;
   final void Function(double lat, double lon)? onMapTap;
-  const MapEmbed({super.key, required this.points, this.onMapTap});
+  final List<Map<String, dynamic>> secondaryPoints;
+  const MapEmbed({
+    super.key,
+    required this.points,
+    this.onMapTap,
+    this.secondaryPoints = const [],
+  });
 
   @override
   State<MapEmbed> createState() => _MapEmbedState();
@@ -19,7 +25,64 @@ class MapEmbed extends StatefulWidget {
 
 class _MapEmbedState extends State<MapEmbed> {
   List<Marker> _markers = [];
+  List<Marker> _secondaryMarkers = [];
   Polyline? _route;
+
+  IconData _iconFor(String kind, String category) {
+    if (kind == 'accommodation') return Icons.hotel;
+    switch (category) {
+      case 'Hiking':
+        return Icons.terrain;
+      case 'Biking':
+        return Icons.directions_bike;
+      case 'Walking':
+        return Icons.directions_walk;
+      case 'Museum':
+        return Icons.museum;
+      case 'Sightseeing':
+        return Icons.camera_alt;
+      case 'Exploring':
+        return Icons.explore;
+      case 'Restaurant':
+        return Icons.restaurant;
+      case 'Shopping':
+        return Icons.shopping_bag;
+      case 'Photography':
+        return Icons.photo_camera;
+      case 'Adventure':
+        return Icons.local_activity;
+      default:
+        return Icons.location_on;
+    }
+  }
+
+  Color _colorFor(String kind, String category) {
+    if (kind == 'accommodation') return Colors.purple.shade600;
+    switch (category) {
+      case 'Hiking':
+        return const Color(0xFF2E7D32);
+      case 'Biking':
+        return const Color(0xFF1565C0);
+      case 'Walking':
+        return const Color(0xFF00796B);
+      case 'Museum':
+        return const Color(0xFF6A1B9A);
+      case 'Sightseeing':
+        return const Color(0xFFF57C00);
+      case 'Exploring':
+        return const Color(0xFFC62828);
+      case 'Restaurant':
+        return const Color(0xFFD32F2F);
+      case 'Shopping':
+        return const Color(0xFF7B1FA2);
+      case 'Photography':
+        return const Color(0xFF0277BD);
+      case 'Adventure':
+        return const Color(0xFFFBC02D);
+      default:
+        return Colors.orange.shade700;
+    }
+  }
 
   @override
   void initState() {
@@ -31,14 +94,42 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   void didUpdateWidget(covariant MapEmbed oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!listEquals(oldWidget.points, widget.points)) {
+    if (
+      !listEquals(oldWidget.points, widget.points) ||
+      !listEquals(oldWidget.secondaryPoints, widget.secondaryPoints)
+    ) {
       _rebuildFromPoints();
     }
   }
 
   Future<void> _rebuildFromPoints() async {
     _markers = [];
+    _secondaryMarkers = [];
     final pts = widget.points;
+
+    _secondaryMarkers =
+        widget.secondaryPoints.map((p) {
+          final lat = _toDouble(p['lat']);
+          final lon = _toDouble(p['lon']);
+          final kind = (p['kind'] ?? '') as String;
+          final category = (p['category'] ?? '') as String;
+          final color = _colorFor(kind, category);
+          return Marker(
+            width: 42,
+            height: 42,
+            point: ll.LatLng(lat, lon),
+            builder:
+                (ctx) => Container(
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.14),
+                    shape: BoxShape.circle,
+                  ),
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(_iconFor(kind, category), color: color, size: 24),
+                ),
+          );
+        }).toList();
+
     for (var i = 0; i < pts.length; i++) {
       final p = pts[i];
       final lat = _toDouble(p['lat']);
@@ -60,7 +151,10 @@ class _MapEmbedState extends State<MapEmbed> {
         Uri url = Uri.parse(
           'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
         );
-        var resp = await http.get(url);
+        var resp = await http.get(
+          url,
+          headers: const {'User-Agent': 'trypr-app/1.0'},
+        );
         if (resp.statusCode == 200) {
           try {
             final data = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -98,7 +192,10 @@ class _MapEmbedState extends State<MapEmbed> {
           url = Uri.parse(
             'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
           );
-          resp = await http.get(url);
+          resp = await http.get(
+            url,
+            headers: const {'User-Agent': 'trypr-app/1.0'},
+          );
           if (resp.statusCode == 200) {
             final data = jsonDecode(resp.body) as Map<String, dynamic>;
             final routes = data['routes'] as List<dynamic>?;
@@ -151,7 +248,6 @@ class _MapEmbedState extends State<MapEmbed> {
   }
 
   double _toDouble(dynamic v) {
-    if (v == null) return 0.0;
     if (v is num) return v.toDouble();
     if (v is String) return double.tryParse(v) ?? 0.0;
     return 0.0;
@@ -182,8 +278,8 @@ class _MapEmbedState extends State<MapEmbed> {
     }
 
     final center = ll.LatLng(
-      (widget.points.last['lat'] ?? 0.0) as double,
-      (widget.points.last['lon'] ?? 0.0) as double,
+      _toDouble(widget.points.last['lat']),
+      _toDouble(widget.points.last['lon']),
     );
 
     return FlutterMap(
@@ -201,6 +297,8 @@ class _MapEmbedState extends State<MapEmbed> {
           userAgentPackageName: 'com.example.trypr',
         ),
         if (_route != null) PolylineLayer(polylines: [_route!]),
+        if (_secondaryMarkers.isNotEmpty)
+          MarkerLayer(markers: _secondaryMarkers),
         MarkerLayer(markers: _markers),
       ],
     );

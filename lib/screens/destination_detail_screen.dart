@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
+import 'package:trypr/services/address_search.dart';
 
 /// Destination Detail Screen V4: Fixed text issues, calendar grid, start/end time, better saving
 class DestinationDetailScreen extends StatefulWidget {
@@ -9,6 +11,8 @@ class DestinationDetailScreen extends StatefulWidget {
   final Map<String, dynamic> destination;
   final String tripRef;
   final String? userId;
+  final int initialTabIndex;
+  final int? initialDayIndex;
 
   const DestinationDetailScreen({
     super.key,
@@ -17,6 +21,8 @@ class DestinationDetailScreen extends StatefulWidget {
     required this.destination,
     required this.tripRef,
     this.userId,
+    this.initialTabIndex = 0,
+    this.initialDayIndex,
   });
 
   @override
@@ -53,6 +59,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   final Map<int, TextEditingController> _accAddressControllers = {};
   final Map<int, TextEditingController> _accPriceControllers = {};
   final Map<int, TextEditingController> _accRatingControllers = {};
+  final Map<int, List<AddressSuggestion>> _accAddressSuggestions = {};
+  final Map<int, bool> _accAddressLoading = {};
+  final Map<int, Timer?> _accAddressDebounce = {};
 
   // Store TextEditingControllers for day titles/notes
   final Map<int, TextEditingController> _dayTitleControllers = {};
@@ -66,10 +75,21 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     _ensureItineraryLength(initialDays);
     _dayCount = initialDays;
     _weekCount = (_dayCount / 7).ceil();
-    _mainTabController = TabController(length: 3, vsync: this);
+    final initTab = widget.initialTabIndex.clamp(0, 2).toInt();
+    final initWeekIndex =
+        widget.initialDayIndex != null && _weekCount > 0
+            ? (widget.initialDayIndex! ~/ 7).clamp(0, _weekCount - 1).toInt()
+            : 0;
+
+    _mainTabController = TabController(
+      length: 3,
+      vsync: this,
+      initialIndex: initTab,
+    );
     _weekTabController = TabController(
       length: _weekCount > 0 ? _weekCount : 1,
       vsync: this,
+      initialIndex: initWeekIndex,
     );
     _initializeItinerary();
   }
@@ -83,9 +103,75 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     _accAddressControllers.forEach((_, ctrl) => ctrl.dispose());
     _accPriceControllers.forEach((_, ctrl) => ctrl.dispose());
     _accRatingControllers.forEach((_, ctrl) => ctrl.dispose());
+    _accAddressDebounce.forEach((_, t) => t?.cancel());
     _dayTitleControllers.forEach((_, ctrl) => ctrl.dispose());
     _dayNotesControllers.forEach((_, ctrl) => ctrl.dispose());
     super.dispose();
+  }
+
+  int _calculateDayCount() {
+    final String startDateStr = _destData['startDate'] ?? '';
+    final String endDateStr = _destData['endDate'] ?? '';
+
+    if (startDateStr.isEmpty || endDateStr.isEmpty) {
+      final itinerary = (_destData['itinerary'] as List?) ?? [];
+      return itinerary.length;
+    }
+
+    try {
+      final start = DateTime.parse(startDateStr);
+      final end = DateTime.parse(endDateStr);
+      return end.difference(start).inDays + 1;
+    } catch (_) {
+      final itinerary = (_destData['itinerary'] as List?) ?? [];
+      return itinerary.length;
+    }
+  }
+
+  void _ensureItineraryLength(int dayCount) {
+    final itinerary = List<Map<String, dynamic>>.from(
+      (_destData['itinerary'] as List<dynamic>? ?? []).map(
+        (d) => Map<String, dynamic>.from(d as Map),
+      ),
+    );
+
+    while (itinerary.length < dayCount) {
+      itinerary.add({
+        'title': 'Day ${itinerary.length + 1}',
+        'notes': '',
+        'activities': <Map<String, dynamic>>[],
+      });
+    }
+
+    while (itinerary.length > dayCount) {
+      final removedIndex = itinerary.length - 1;
+      itinerary.removeLast();
+      _dayTitleControllers.remove(removedIndex)?.dispose();
+      _dayNotesControllers.remove(removedIndex)?.dispose();
+    }
+
+    _destData['itinerary'] = itinerary;
+  }
+
+  void _initializeItinerary() {
+    _ensureItineraryLength(_dayCount);
+    final itinerary = List<Map<String, dynamic>>.from(
+      (_destData['itinerary'] as List<dynamic>? ?? []).map(
+        (d) => Map<String, dynamic>.from(d as Map),
+      ),
+    );
+
+    for (int i = 0; i < itinerary.length; i++) {
+      final day = itinerary[i];
+      _dayTitleControllers.putIfAbsent(
+        i,
+        () => TextEditingController(text: day['title'] ?? ''),
+      );
+      _dayNotesControllers.putIfAbsent(
+        i,
+        () => TextEditingController(text: day['notes'] ?? ''),
+      );
+    }
   }
 
   Future<void> _saveChanges() async {
@@ -95,7 +181,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       final tripRef = FirebaseFirestore.instance.doc(widget.tripRef);
       final snapshot = await tripRef.get();
       if (!snapshot.exists) {
-        if (mounted) setState(() => _saving = false);
         throw Exception('Trip document not found');
       }
 
@@ -113,104 +198,19 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
 
       await tripRef.update({'waypoints': waypoints});
 
-      if (!mounted) return;
-      final snapshot2 = await tripRef.get();
-      final tripData2 = snapshot2.data() ?? {};
-      final waypoints2 = tripData2['waypoints'] as List<dynamic>? ?? [];
-
-      if (mounted) {
-        setState(() {
-          _saving = false;
-          if (widget.destinationIndex >= 0 &&
-              widget.destinationIndex < waypoints2.length) {
-            _destData = Map<String, dynamic>.from(
-              waypoints2[widget.destinationIndex] as Map,
-            );
-          }
-        });
-      }
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✓ Destination plan saved'),
-            duration: Duration(seconds: 2),
-          ),
+          const SnackBar(content: Text('✓ Destination plan saved')),
         );
       }
-      // Return the updated destination so the caller can refresh immediately
-      Navigator.of(context).pop(_destData);
     } catch (e) {
       if (mounted) {
-        setState(() => _saving = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
       }
-    }
-  }
-
-  int _calculateDayCount() {
-    final itinerary = _destData['itinerary'] as List<dynamic>? ?? [];
-    final startDateStr = _destData['startDate'] as String? ?? '';
-    final endDateStr = _destData['endDate'] as String? ?? '';
-
-    if (startDateStr.isNotEmpty && endDateStr.isNotEmpty) {
-      try {
-        final start = DateTime.parse(startDateStr);
-        final end = DateTime.parse(endDateStr);
-        final days = end.difference(start).inDays + 1;
-        if (days > 0) return days;
-      } catch (_) {
-        // Fall back to itinerary length if parsing fails
-      }
-    }
-
-    return itinerary.length;
-  }
-
-  void _ensureItineraryLength(int dayCount) {
-    if (dayCount <= 0) return;
-
-    List<Map<String, dynamic>> itinerary = List<Map<String, dynamic>>.from(
-      (_destData['itinerary'] as List<dynamic>? ?? []).map(
-        (d) => Map<String, dynamic>.from(d as Map),
-      ),
-    );
-
-    if (itinerary.length < dayCount) {
-      for (int i = itinerary.length; i < dayCount; i++) {
-        itinerary.add({
-          'title': 'Day ${i + 1}',
-          'notes': '',
-          'activities': <Map<String, dynamic>>[],
-        });
-      }
-    } else if (itinerary.length > dayCount) {
-      itinerary = itinerary.sublist(0, dayCount);
-    }
-
-    _destData['itinerary'] = itinerary;
-  }
-
-  void _initializeItinerary() {
-    final itinerary = _destData['itinerary'] as List<dynamic>? ?? [];
-
-    // Clean up controllers no longer needed
-    final keysToRemove = _dayTitleControllers.keys
-        .where((k) => k >= itinerary.length)
-        .toList();
-    for (final k in keysToRemove) {
-      _dayTitleControllers.remove(k)?.dispose();
-      _dayNotesControllers.remove(k)?.dispose();
-    }
-
-    for (int i = 0; i < itinerary.length; i++) {
-      final day = itinerary[i] as Map<String, dynamic>;
-      _dayTitleControllers[i] =
-          TextEditingController(text: day['title'] ?? '');
-      _dayNotesControllers[i] =
-          TextEditingController(text: day['notes'] ?? '');
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -571,17 +571,113 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
           const SizedBox(height: 8),
           TextField(
             controller: _accAddressControllers[index]!,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Address',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
+              suffixIcon:
+                  _accAddressLoading[index] == true
+                      ? const Padding(
+                        padding: EdgeInsets.all(12.0),
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                      : null,
             ),
             onChanged: (v) {
-              setState(() {
-                accommodations[index]['address'] = v;
-                _destData['accommodations'] = accommodations;
-              });
+              final updated = List<Map<String, dynamic>>.from(
+                (_destData['accommodations'] as List<dynamic>? ?? []).map(
+                  (a) => Map<String, dynamic>.from(a as Map),
+                ),
+              );
+              if (index < updated.length) {
+                setState(() {
+                  updated[index]['address'] = v;
+                  updated[index].remove('lat');
+                  updated[index].remove('lon');
+                  _destData['accommodations'] = updated;
+                });
+              }
+
+              _accAddressDebounce[index]?.cancel();
+              if (v.trim().isEmpty) {
+                setState(() {
+                  _accAddressSuggestions[index] = [];
+                  _accAddressLoading[index] = false;
+                });
+                return;
+              }
+
+              _accAddressDebounce[index] = Timer(
+                const Duration(milliseconds: 350),
+                () async {
+                  setState(() => _accAddressLoading[index] = true);
+                  final results = await AddressSearchService.search(v.trim());
+                  if (!mounted) return;
+                  setState(() {
+                    _accAddressSuggestions[index] = results;
+                    _accAddressLoading[index] = false;
+                  });
+                },
+              );
             },
           ),
+          if ((_accAddressSuggestions[index]?.isNotEmpty ?? false))
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 8,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              constraints: const BoxConstraints(maxHeight: 200),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _accAddressSuggestions[index]!.length,
+                itemBuilder: (ctx, i) {
+                  final s = _accAddressSuggestions[index]![i];
+                  return ListTile(
+                    dense: true,
+                    title: Text(
+                      s.displayName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () {
+                      final updated = List<Map<String, dynamic>>.from(
+                        (_destData['accommodations'] as List<dynamic>? ?? [])
+                            .map((a) => Map<String, dynamic>.from(a as Map)),
+                      );
+                      if (index < updated.length) {
+                        setState(() {
+                          _accAddressControllers[index]!.text = s.displayName;
+                          updated[index]['address'] = s.displayName;
+                          updated[index]['lat'] = s.lat;
+                          updated[index]['lon'] = s.lon;
+                          _destData['accommodations'] = updated;
+                          _accAddressSuggestions[index] = [];
+                        });
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+          if ((_accAddressLoading[index] ?? false) &&
+              !(_accAddressSuggestions[index]?.isNotEmpty ?? false))
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: LinearProgressIndicator(minHeight: 2),
+            ),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -817,10 +913,8 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       try {
         final start = startTime.split(':');
         final end = endTime.split(':');
-        final startMinutes =
-            int.parse(start[0]) * 60 + int.parse(start[1]);
-        final endMinutes =
-            int.parse(end[0]) * 60 + int.parse(end[1]);
+        final startMinutes = int.parse(start[0]) * 60 + int.parse(start[1]);
+        final endMinutes = int.parse(end[0]) * 60 + int.parse(end[1]);
         if (endMinutes <= startMinutes) continue;
         parsedActivities.add({
           'data': a,
@@ -850,16 +944,13 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                 child: Column(
                   children:
                       hours.map((hour) {
-                        final hourStr =
-                            '${hour.toString().padLeft(2, '0')}:00';
+                        final hourStr = '${hour.toString().padLeft(2, '0')}:00';
                         return SizedBox(
                           height: hourHeight,
                           child: Center(
                             child: Text(
                               hourStr,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelSmall
+                              style: Theme.of(context).textTheme.labelSmall
                                   ?.copyWith(color: Colors.grey),
                             ),
                           ),
@@ -893,11 +984,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                       final startMinutes = pa['startMinutes'] as int;
                       final endMinutes = pa['endMinutes'] as int;
 
-                      final top =
-                          (startMinutes / 60.0) * hourHeight;
+                      final top = (startMinutes / 60.0) * hourHeight;
                       final height =
-                          ((endMinutes - startMinutes) / 60.0) *
-                              hourHeight;
+                          ((endMinutes - startMinutes) / 60.0) * hourHeight;
 
                       return Positioned(
                         left: 4,
@@ -905,7 +994,17 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                         top: top,
                         child: SizedBox(
                           height: height - 4,
-                          child: _buildActivityChip(a),
+                          child: _buildActivityChip(
+                            a,
+                            onTap:
+                                () => _showActivityDialog(
+                                  activities,
+                                  dayData,
+                                  itinerary,
+                                  dayIndex,
+                                  a,
+                                ),
+                          ),
                         ),
                       );
                     }),
@@ -919,14 +1018,15 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     );
   }
 
-  Widget _buildActivityChip(Map<String, dynamic> activity) {
+  Widget _buildActivityChip(
+    Map<String, dynamic> activity, {
+    VoidCallback? onTap,
+  }) {
     final category = activity['category'] as String? ?? 'Hiking';
     final color = travelCategories[category] ?? Colors.teal;
 
     return GestureDetector(
-      onTap: () {
-        // Can be used to edit activity later
-      },
+      onTap: onTap,
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
@@ -990,6 +1090,11 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     String selectedCategory = activity['category'] ?? 'Hiking';
     String startTime = activity['startTime'] ?? '';
     String endTime = activity['endTime'] ?? '';
+    double? locationLat = (activity['locationLat'] as num?)?.toDouble();
+    double? locationLon = (activity['locationLon'] as num?)?.toDouble();
+    List<AddressSuggestion> locationSuggestions = [];
+    bool locationLoading = false;
+    Timer? locationDebounce;
 
     showDialog(
       context: context,
@@ -1120,12 +1225,96 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                           // Location
                           TextField(
                             controller: locationCtrl,
-                            decoration: const InputDecoration(
+                            decoration: InputDecoration(
                               labelText: 'Location',
-                              border: OutlineInputBorder(),
-                              suffixIcon: Icon(Icons.location_on),
+                              border: const OutlineInputBorder(),
+                              suffixIcon:
+                                  locationLoading
+                                      ? const Padding(
+                                        padding: EdgeInsets.all(12.0),
+                                        child: SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                      )
+                                      : null,
                             ),
+                            onChanged: (v) {
+                              locationDebounce?.cancel();
+                              if (v.trim().isEmpty) {
+                                setDialogState(() {
+                                  locationSuggestions = [];
+                                  locationLoading = false;
+                                  locationLat = null;
+                                  locationLon = null;
+                                });
+                                return;
+                              }
+                              locationDebounce = Timer(
+                                const Duration(milliseconds: 350),
+                                () async {
+                                  setDialogState(() => locationLoading = true);
+                                  final results =
+                                      await AddressSearchService.search(
+                                        v.trim(),
+                                      );
+                                  if (!mounted) return;
+                                  setDialogState(() {
+                                    locationSuggestions = results;
+                                    locationLoading = false;
+                                  });
+                                },
+                              );
+                            },
                           ),
+                          if (locationSuggestions.isNotEmpty)
+                            Container(
+                              margin: const EdgeInsets.only(top: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(8),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.04),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              constraints: const BoxConstraints(maxHeight: 200),
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: locationSuggestions.length,
+                                itemBuilder: (ctx, i) {
+                                  final s = locationSuggestions[i];
+                                  return ListTile(
+                                    dense: true,
+                                    title: Text(
+                                      s.displayName,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    onTap: () {
+                                      setDialogState(() {
+                                        locationCtrl.text = s.displayName;
+                                        locationLat = s.lat;
+                                        locationLon = s.lon;
+                                        locationSuggestions = [];
+                                      });
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          if (locationLoading && locationSuggestions.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 6),
+                              child: LinearProgressIndicator(minHeight: 2),
+                            ),
                           const SizedBox(height: 12),
                           // Notes
                           TextField(
@@ -1179,12 +1368,16 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                   ),
                   actions: [
                     TextButton(
-                      onPressed: () => Navigator.pop(ctx),
+                      onPressed: () {
+                        locationDebounce?.cancel();
+                        Navigator.pop(ctx);
+                      },
                       child: const Text('Cancel'),
                     ),
                     if (isEdit)
                       TextButton(
                         onPressed: () {
+                          locationDebounce?.cancel();
                           setState(() {
                             final idx = activities.indexOf(existingActivity);
                             if (idx >= 0) {
@@ -1203,6 +1396,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                       ),
                     TextButton(
                       onPressed: () {
+                        locationDebounce?.cancel();
                         // Validate required fields
                         if (titleCtrl.text.isEmpty) {
                           ScaffoldMessenger.of(ctx).showSnackBar(
@@ -1240,6 +1434,8 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                             'location': locationCtrl.text,
                             'notes': notesCtrl.text,
                             'category': selectedCategory,
+                            if (locationLat != null) 'locationLat': locationLat,
+                            if (locationLon != null) 'locationLon': locationLon,
                           };
 
                           if (isEdit) {
@@ -1266,6 +1462,8 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   }
 
   // ============ HELPER METHODS ============
+  // ============ HELPER METHODS ============
+
   String _formatDisplayDate(String dateStr) {
     try {
       final date = DateTime.parse(dateStr);

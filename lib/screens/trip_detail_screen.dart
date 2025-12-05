@@ -60,8 +60,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       final tripRefPath =
           (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
       if (tripRefPath != null && tripRefPath.isNotEmpty) {
-        final docRef =
-            FirebaseFirestore.instance.doc(tripRefPath);
+        final docRef = FirebaseFirestore.instance.doc(tripRefPath);
         if (kDebugMode) {
           print('TripDetail: initial owner subscription -> $tripRefPath');
         }
@@ -124,8 +123,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           if (newRef.isNotEmpty && newRef != _currentSubscribedPath) {
             try {
               _docSub?.cancel();
-              final ownerRef =
-                  FirebaseFirestore.instance.doc(newRef);
+              final ownerRef = FirebaseFirestore.instance.doc(newRef);
               if (kDebugMode) {
                 print('TripDetail: switching owner subscription -> $newRef');
               }
@@ -184,6 +182,26 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         }
       });
     });
+  }
+
+  int _calculateDayCount(Map<String, dynamic> destination) {
+    final startDate = destination['startDate'] as String? ?? '';
+    final endDate = destination['endDate'] as String? ?? '';
+
+    // Try to calculate from dates first
+    if (startDate.isNotEmpty && endDate.isNotEmpty) {
+      try {
+        final start = DateTime.parse(startDate);
+        final end = DateTime.parse(endDate);
+        final days = end.difference(start).inDays + 1;
+        return days > 0 ? days : 0;
+      } catch (e) {
+        // If parsing fails, fall back to itinerary count
+      }
+    }
+
+    // Fall back to itinerary count
+    return (destination['itinerary'] as List?)?.length ?? 0;
   }
 
   Future<void> _shareTrip() async {
@@ -718,20 +736,18 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                                                         'Unassigned',
                                                                       ),
                                                                     ),
-                                                                    ...participants
-                                                                        .map(
-                                                                          (
+                                                                    ...participants.map(
+                                                                      (
+                                                                        u,
+                                                                      ) => DropdownMenuItem(
+                                                                        value:
                                                                             u,
-                                                                          ) => DropdownMenuItem(
-                                                                            value:
-                                                                                u,
-                                                                            child: Text(
-                                                                              nameCache[u] ??
-                                                                                  u,
-                                                                            ),
-                                                                          ),
-                                                                        )
-                                                                        ,
+                                                                        child: Text(
+                                                                          nameCache[u] ??
+                                                                              u,
+                                                                        ),
+                                                                      ),
+                                                                    ),
                                                                   ],
                                                                   onChanged:
                                                                       (
@@ -833,14 +849,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                               value: null,
                               child: Text('Unassigned'),
                             ),
-                            ...participants
-                                .map(
-                                  (u) => DropdownMenuItem<String?>(
-                                    value: u,
-                                    child: Text(nameCache[u] ?? u),
-                                  ),
-                                )
-                                ,
+                            ...participants.map(
+                              (u) => DropdownMenuItem<String?>(
+                                value: u,
+                                child: Text(nameCache[u] ?? u),
+                              ),
+                            ),
                           ],
                           onChanged: (v) => setState2(() => addAssignee = v),
                         ),
@@ -1049,8 +1063,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   Future<void> _openDestinationDetail(
     int index,
-    Map<String, dynamic> destination,
-  ) async {
+    Map<String, dynamic> destination, {
+    int initialTabIndex = 0,
+    int? initialDayIndex,
+  }) async {
     // Initialize destination data structure if not present
     final dest = Map<String, dynamic>.from(destination);
     dest['accommodations'] ??= [];
@@ -1085,6 +1101,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               destination: dest,
               tripRef: tripRefPath,
               userId: _user?.uid ?? '',
+              initialTabIndex: initialTabIndex,
+              initialDayIndex: initialDayIndex,
             ),
       ),
     );
@@ -1095,7 +1113,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         if (index >= 0 && index < _waypoints.length) {
           _waypoints[index] = result;
           // Keep live data in sync so preview chips update immediately
-          _liveData['waypoints'] = _waypoints.map((e) => Map<String, dynamic>.from(e)).toList();
+          _liveData['waypoints'] =
+              _waypoints.map((e) => Map<String, dynamic>.from(e)).toList();
         }
       });
     }
@@ -1350,6 +1369,65 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         'lon': (w['lon'] ?? w['longitude'] ?? w['lng'] ?? 0.0),
                         'name': w['name'] ?? '',
                       };
+                    }).toList(),
+                secondaryPoints:
+                    waypoints.asMap().entries.expand((entry) {
+                      final wIndex = entry.key;
+                      final w = entry.value as Map<String, dynamic>;
+
+                      final accs =
+                          (w['accommodations'] as List<dynamic>?) ?? [];
+                      final itinerary =
+                          (w['itinerary'] as List<dynamic>?) ?? [];
+
+                      final accMarkers = accs
+                          .asMap()
+                          .entries
+                          .where(
+                            (a) =>
+                                (a.value as Map)['lat'] != null &&
+                                (a.value as Map)['lon'] != null,
+                          )
+                          .map(
+                            (a) => {
+                              'lat': (a.value as Map)['lat'],
+                              'lon': (a.value as Map)['lon'],
+                              'kind': 'accommodation',
+                              'category': 'Accommodation',
+                              'waypointIndex': wIndex,
+                              'accommodationIndex': a.key,
+                            },
+                          );
+
+                      final activityMarkers = itinerary.asMap().entries.expand((
+                        dayEntry,
+                      ) {
+                        final dayIndex = dayEntry.key;
+                        final day = (dayEntry.value as Map<String, dynamic>);
+                        final acts =
+                            (day['activities'] as List<dynamic>?) ?? [];
+                        return acts
+                            .asMap()
+                            .entries
+                            .where(
+                              (a) =>
+                                  (a.value as Map)['locationLat'] != null &&
+                                  (a.value as Map)['locationLon'] != null,
+                            )
+                            .map(
+                              (a) => {
+                                'lat': (a.value as Map)['locationLat'],
+                                'lon': (a.value as Map)['locationLon'],
+                                'kind': 'activity',
+                                'category': (a.value as Map)['category'] ?? '',
+                                'waypointIndex': wIndex,
+                                'dayIndex': dayIndex,
+                                'activityIndex': a.key,
+                              },
+                            );
+                      });
+
+                      return [...accMarkers, ...activityMarkers];
                     }).toList(),
                 onMapTap:
                     _editing
@@ -1631,7 +1709,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                     const SizedBox(width: 8),
                                     Chip(
                                       label: Text(
-                                        '${(wp['itinerary'] as List?)?.length ?? 0} days',
+                                        '${_calculateDayCount(wp)} days',
                                         style: const TextStyle(fontSize: 12),
                                       ),
                                       padding: const EdgeInsets.all(4),
