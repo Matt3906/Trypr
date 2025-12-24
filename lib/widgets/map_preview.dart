@@ -37,22 +37,15 @@ class MapPreview extends StatelessWidget {
       );
     }
 
-    // compute simple center
-    double lat = 0, lon = 0;
-    for (final p in pts) {
-      lat += p.latitude;
-      lon += p.longitude;
-    }
-    lat /= pts.length;
-    lon /= pts.length;
-    final center = latlng.LatLng(lat, lon);
-
-    final zoom = pts.length == 1 ? 10.0 : 5.0;
+    final bounds = LatLngBounds.fromPoints(pts);
 
     return FlutterMap(
       options: MapOptions(
-        center: center,
-        zoom: zoom,
+        bounds: bounds,
+        boundsOptions: FitBoundsOptions(
+          padding: const EdgeInsets.all(24),
+          maxZoom: pts.length <= 1 ? 12 : 10,
+        ),
         // Allow panning/zooming on the card preview so users can move the map.
         interactiveFlags: InteractiveFlag.all,
       ),

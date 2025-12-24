@@ -252,7 +252,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     }
 
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
+      future: FirebaseFirestore.instance.collection('publicUsers').doc(uid).get(),
       builder: (ctx, snap) {
         if (snap.hasData && snap.data!.exists) {
           final data = snap.data!.data() ?? <String, dynamic>{};

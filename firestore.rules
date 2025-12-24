@@ -1,0 +1,179 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function tripOwnerUidFromPath() {
+      // trips live at: /users/{ownerUid}/trips/{tripId}
+      return resource.__name__.split('/')[1];
+    }
+
+    function isTripOwner(ownerUid) {
+      return signedIn() && request.auth.uid == ownerUid;
+    }
+
+    function tripDoc(ownerUid, tripId) {
+      return get(/databases/$(database)/documents/users/$(ownerUid)/trips/$(tripId));
+    }
+
+    function isTripSharedWith(ownerUid, tripId) {
+      // Backward compatible: some older data may store emails in `sharedWith`.
+      // Newer data stores UIDs. Support both to avoid permission-denied on legacy trips.
+      return signedIn()
+        && tripDoc(ownerUid, tripId).exists()
+        && (
+          (
+            (tripDoc(ownerUid, tripId).data.sharedWith is list)
+            && (tripDoc(ownerUid, tripId).data.sharedWith.hasAny([request.auth.uid]))
+          )
+          || (
+            (request.auth.token.email is string)
+            && (tripDoc(ownerUid, tripId).data.sharedWith is list)
+            && (tripDoc(ownerUid, tripId).data.sharedWith.hasAny([request.auth.token.email]))
+          )
+          || (
+            (request.auth.token.email is string)
+            && (tripDoc(ownerUid, tripId).data.sharedWithEmails is list)
+            && (tripDoc(ownerUid, tripId).data.sharedWithEmails.hasAny([request.auth.token.email]))
+          )
+        );
+    }
+
+    function canReadTrip(ownerUid, tripId) {
+      return isTripOwner(ownerUid) || isTripSharedWith(ownerUid, tripId);
+    }
+
+    function isString(v, maxLen) {
+      return (v is string) && (v.size() <= maxLen);
+    }
+
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // --------------------
+    // Users
+    // --------------------
+    match /users/{userId} {
+      // Keep user docs private by default.
+      allow read, create, update, delete: if isSelf(userId);
+
+      // User's trips
+      match /trips/{tripId} {
+        allow create: if isSelf(userId);
+        allow read: if canReadTrip(userId, tripId);
+
+        // Default to owner-only writes for safety.
+        // If you want collaborative editing, we can tighten this later with roles.
+        allow update, delete: if isSelf(userId);
+
+        // Messages subcollection (chat)
+        match /messages/{msgId} {
+          allow read: if canReadTrip(userId, tripId);
+
+          allow create: if canReadTrip(userId, tripId)
+            && request.resource.data.senderUid == request.auth.uid
+            && isString(request.resource.data.text, 2000)
+            && (request.resource.data.createdAt is timestamp);
+
+          // Prevent edits/deletes of chat history from clients.
+          allow update, delete: if false;
+        }
+
+        // Packing list subcollection
+        match /packing/{itemId} {
+          allow read: if canReadTrip(userId, tripId);
+
+          // Keep this permissive for shared collaborators but validate basic shape.
+          allow create, update: if canReadTrip(userId, tripId)
+            && isString(request.resource.data.name, 200)
+            && (request.resource.data.createdAt is timestamp);
+
+          allow delete: if canReadTrip(userId, tripId);
+        }
+
+        // Expenses subcollection (Splitwise-style)
+        match /expenses/{expenseId} {
+          allow read: if canReadTrip(userId, tripId);
+
+          allow create: if canReadTrip(userId, tripId)
+            && isString(request.resource.data.title, 200)
+            && (request.resource.data.amount is number)
+            && (request.resource.data.amount > 0)
+            && (!('paidByUid' in request.resource.data) || isString(request.resource.data.paidByUid, 128))
+            && (!('category' in request.resource.data) || isString(request.resource.data.category, 64))
+            && (request.resource.data.splitMode in ['group', 'personal'])
+            && (request.resource.data.createdAt is timestamp)
+            && isString(request.resource.data.createdByUid, 128)
+            && request.resource.data.createdByUid == request.auth.uid;
+
+          // Allow any trip participant to edit expenses, but prevent clients from
+          // changing immutable audit fields.
+          allow update: if canReadTrip(userId, tripId)
+            && isString(request.resource.data.title, 200)
+            && (request.resource.data.amount is number)
+            && (request.resource.data.amount > 0)
+            && (!('paidByUid' in request.resource.data) || isString(request.resource.data.paidByUid, 128))
+            && (!('category' in request.resource.data) || isString(request.resource.data.category, 64))
+            && (request.resource.data.splitMode in ['group', 'personal'])
+            && (request.resource.data.createdAt is timestamp)
+            && isString(request.resource.data.createdByUid, 128)
+            && (request.resource.data.createdAt == resource.data.createdAt)
+            && (request.resource.data.createdByUid == resource.data.createdByUid);
+
+          allow delete: if canReadTrip(userId, tripId);
+        }
+      }
+
+      // Recipient inbox of shared trips
+      match /sharedTrips/{tripId} {
+        allow read, delete: if isSelf(userId);
+
+        // Allow the recipient to manage their own inbox.
+        allow create, update: if isSelf(userId);
+
+        // Optionally allow the owner to create the recipient's sharedTrips doc
+        // to support your current client-side sharing flow.
+        // Note: this still allows spam (any signed-in user can create an inbox item).
+        // The real fix is a Cloud Function + rate limiting + friend checks.
+        allow create: if signedIn()
+          && request.resource.data.ownerUid == request.auth.uid
+          && request.resource.data.tripRef == ('users/' + request.auth.uid + '/trips/' + tripId)
+          && isString(request.resource.data.tripName, 200)
+          && isString(request.resource.data.ownerName, 200)
+          && (request.resource.data.createdAt is timestamp);
+      }
+    }
+
+    // --------------------
+    // Admin-gated content
+    // --------------------
+    match /admins/{uid} {
+      // Allow an admin to read their own marker doc (primarily for UI gating).
+      allow read: if signedIn() && request.auth.uid == uid;
+      // Only admins can manage admin marker docs (bootstrap by creating your own
+      // admins/{yourUid} doc in the Firebase Console).
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /verifiedTrips/{tripId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // --------------------
+    // Public user profiles (names for shared trips)
+    // --------------------
+    match /publicUsers/{uid} {
+      allow read: if signedIn();
+      allow create, update, delete: if isSelf(uid);
+    }
+  }
+}

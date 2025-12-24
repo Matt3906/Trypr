@@ -7,11 +7,14 @@ import 'package:flutter/material.dart';
 class MapEmbed extends StatelessWidget {
   final List<Map<String, dynamic>> points;
   final void Function(double lat, double lon)? onMapTap;
+  final void Function(double distanceMeters, double durationSeconds)?
+  onRouteSummary;
   final List<Map<String, dynamic>> secondaryPoints;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
+    this.onRouteSummary,
     this.secondaryPoints = const [],
   });
 

@@ -67,6 +67,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   final Map<int, TextEditingController> _dayTitleControllers = {};
   final Map<int, TextEditingController> _dayNotesControllers = {};
 
+  // Horizontal scroll controllers for each week view (itinerary)
+  final Map<int, ScrollController> _weekItineraryScrollControllers = {};
+
   @override
   void initState() {
     super.initState();
@@ -106,7 +109,15 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     _accAddressDebounce.forEach((_, t) => t?.cancel());
     _dayTitleControllers.forEach((_, ctrl) => ctrl.dispose());
     _dayNotesControllers.forEach((_, ctrl) => ctrl.dispose());
+    _weekItineraryScrollControllers.forEach((_, ctrl) => ctrl.dispose());
     super.dispose();
+  }
+
+  ScrollController _weekScrollController(int weekIndex) {
+    return _weekItineraryScrollControllers.putIfAbsent(
+      weekIndex,
+      () => ScrollController(),
+    );
   }
 
   int _calculateDayCount() {
@@ -197,6 +208,45 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       }
 
       await tripRef.update({'waypoints': waypoints});
+
+      // Auto-add accommodation costs to group split (payer assigned later).
+      // Use deterministic doc IDs to avoid duplicates on repeated saves.
+      final uid = (widget.userId ?? '').toString();
+      if (uid.isNotEmpty) {
+        final accommodations = List<Map<String, dynamic>>.from(
+          (_destData['accommodations'] as List<dynamic>? ?? []).map(
+            (a) => Map<String, dynamic>.from(a as Map),
+          ),
+        );
+
+        for (var accIndex = 0; accIndex < accommodations.length; accIndex++) {
+          final acc = accommodations[accIndex];
+          final raw = acc['price'];
+          final price =
+              raw is num
+                  ? raw.toDouble()
+                  : double.tryParse(raw?.toString() ?? '') ?? 0.0;
+
+          if (price <= 0) continue;
+
+          final accName = (acc['name'] ?? '').toString().trim();
+          final title =
+              accName.isEmpty ? 'Accommodation' : 'Accommodation: $accName';
+
+          final docId = 'acc_${widget.destinationIndex}_$accIndex';
+          await tripRef.collection('expenses').doc(docId).set({
+            'title': title,
+            'amount': price,
+            'splitMode': 'group',
+            'category': 'Accommodation',
+            'createdAt': Timestamp.now(),
+            'createdByUid': uid,
+            'source': 'accommodation',
+            'destinationIndex': widget.destinationIndex,
+            'accommodationIndex': accIndex,
+          }, SetOptions(merge: true));
+        }
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -307,67 +357,25 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
             child: Column(
               children: [
                 GradientButton(
-                  onPressed: _selectStartDate,
+                  onPressed: _selectDateRange,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.today, size: 20),
+                      const Icon(Icons.date_range, size: 20),
                       const SizedBox(width: 12),
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Arrival',
+                            'Arrival → Departure',
                             style: Theme.of(context).textTheme.labelMedium
                                 ?.copyWith(fontWeight: FontWeight.w600),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            startDateStr.isEmpty
-                                ? 'Tap to select'
-                                : _formatDisplayDate(startDateStr),
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Expanded(child: Divider()),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Icon(
-                        Icons.arrow_downward,
-                        color: const Color(0xFF00695C).withOpacity(0.5),
-                      ),
-                    ),
-                    const Expanded(child: Divider()),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                GradientButton(
-                  onPressed: _selectEndDate,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.calendar_today, size: 20),
-                      const SizedBox(width: 12),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Departure',
-                            style: Theme.of(context).textTheme.labelMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            endDateStr.isEmpty
-                                ? 'Tap to select'
-                                : _formatDisplayDate(endDateStr),
+                            (startDateStr.isEmpty || endDateStr.isEmpty)
+                                ? 'Tap to select dates'
+                                : '${_formatDisplayDate(startDateStr)} → ${_formatDisplayDate(endDateStr)}',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                         ],
@@ -780,20 +788,29 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       ),
     );
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: List.generate(daysInWeek, (localDayIndex) {
-          final globalDayIndex = startDayIndex + localDayIndex;
-          return Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: SizedBox(
-              width: cardWidth,
-              child: _buildDayCard(globalDayIndex, itinerary),
-            ),
-          );
-        }),
+    final sc = _weekScrollController(weekIndex);
+
+    return Scrollbar(
+      controller: sc,
+      thumbVisibility: true,
+      trackVisibility: true,
+      scrollbarOrientation: ScrollbarOrientation.bottom,
+      child: SingleChildScrollView(
+        controller: sc,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: List.generate(daysInWeek, (localDayIndex) {
+            final globalDayIndex = startDayIndex + localDayIndex;
+            return Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: SizedBox(
+                width: cardWidth,
+                child: _buildDayCard(globalDayIndex, itinerary),
+              ),
+            );
+          }),
+        ),
       ),
     );
   }
@@ -1473,52 +1490,68 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     }
   }
 
-  Future<void> _selectStartDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2030),
+  static DateTime _stripTime(DateTime dt) =>
+      DateTime(dt.year, dt.month, dt.day);
+
+  static String _ymd(DateTime dt) =>
+      dt.toIso8601String().split('T').first; // yyyy-MM-dd
+
+  Future<void> _selectDateRange() async {
+    final now = _stripTime(DateTime.now());
+
+    DateTimeRange initial = DateTimeRange(
+      start: now,
+      end: now.add(const Duration(days: 2)),
     );
-    if (picked != null) {
-      setState(() {
-        _destData['startDate'] = picked.toIso8601String().split('T')[0];
-        final days = _calculateDayCount();
-        _ensureItineraryLength(days);
-        _dayCount = days;
-        _weekCount = (_dayCount / 7).ceil();
-        _weekTabController.dispose();
-        _weekTabController = TabController(
-          length: _weekCount > 0 ? _weekCount : 1,
-          vsync: this,
+
+    try {
+      final s = (_destData['startDate'] ?? '').toString();
+      final e = (_destData['endDate'] ?? '').toString();
+      if (s.isNotEmpty && e.isNotEmpty) {
+        initial = DateTimeRange(
+          start: _stripTime(DateTime.parse(s)),
+          end: _stripTime(DateTime.parse(e)),
         );
-        _initializeItinerary();
-      });
+      }
+    } catch (_) {
+      // ignore parse errors
     }
+
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 5),
+      initialDateRange: initial,
+    );
+
+    if (picked == null) return;
+
+    final start = _stripTime(picked.start);
+    final end = _stripTime(picked.end);
+
+    setState(() {
+      _destData['startDate'] = _ymd(start);
+      _destData['endDate'] = _ymd(end);
+
+      final days = _calculateDayCount();
+      _ensureItineraryLength(days);
+      _dayCount = days;
+      _weekCount = (_dayCount / 7).ceil();
+      _weekTabController.dispose();
+      _weekTabController = TabController(
+        length: _weekCount > 0 ? _weekCount : 1,
+        vsync: this,
+      );
+      _initializeItinerary();
+    });
+  }
+
+  Future<void> _selectStartDate() async {
+    await _selectDateRange();
   }
 
   Future<void> _selectEndDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2030),
-    );
-    if (picked != null) {
-      setState(() {
-        _destData['endDate'] = picked.toIso8601String().split('T')[0];
-        final days = _calculateDayCount();
-        _ensureItineraryLength(days);
-        _dayCount = days;
-        _weekCount = (_dayCount / 7).ceil();
-        _weekTabController.dispose();
-        _weekTabController = TabController(
-          length: _weekCount > 0 ? _weekCount : 1,
-          vsync: this,
-        );
-        _initializeItinerary();
-      });
-    }
+    await _selectDateRange();
   }
 
   void _showAIAssistant(String context) {

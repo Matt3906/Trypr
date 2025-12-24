@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
@@ -67,9 +68,9 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     // errors should not be reported as a save failure since the data is already
     // persisted.
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile completed')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Profile completed')));
     }
 
     try {
@@ -78,8 +79,10 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     } catch (e, st) {
       // Navigation failed after successful save — log for debugging but do not
       // present this as a save failure to the user.
-      // ignore: avoid_print
-      print('Navigation failed after profile save: $e\n$st');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Navigation failed after profile save: $e\n$st');
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Saved but navigation failed: $e')),

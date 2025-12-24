@@ -2,11 +2,11 @@ import 'dart:math' as math;
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/widgets/trip_chat_dialog.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -28,11 +28,10 @@ class _Waypoint {
 
 class _TripBuilderScreenState extends State<TripBuilderScreen> {
   final TextEditingController _tripNameCtrl = TextEditingController();
-  final TextEditingController _daysCtrl = TextEditingController(text: '1');
   final TextEditingController _searchCtrl = TextEditingController();
 
   final List<_Waypoint> _waypoints = [];
-  DateTime? _startDate;
+  DateTimeRange? _tripRange;
   List<Map<String, dynamic>> _searchResults = [];
   StreamSubscription? _windowMsgSub;
   StreamSubscription<User?>? _authSub;
@@ -42,6 +41,149 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   User? _currentUser;
   bool _isSaving = false;
   DocumentReference<Map<String, dynamic>>? _lastSavedTripRef;
+
+  int get _totalTripDays {
+    final r = _tripRange;
+    if (r == null) return 0;
+    return r.end.difference(r.start).inDays + 1;
+  }
+
+  int get _assignedNights {
+    var total = 0;
+    for (final w in _waypoints) {
+      total += w.nights;
+    }
+    return total;
+  }
+
+  int get _remainingNights {
+    final total = _totalTripDays;
+    if (total == 0) return 0;
+    return total - _assignedNights;
+  }
+
+  bool get _hasValidAllocation {
+    final total = _totalTripDays;
+    if (total == 0) return true;
+    return _assignedNights == total;
+  }
+
+  String _ymd(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
+  }
+
+  DateTime _stripTime(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  Future<int?> _promptNights({required String locationName, int? max}) async {
+    final maxNights = (max ?? 30).clamp(1, 365);
+    var value = 1;
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('How many nights?'),
+          content: StatefulBuilder(
+            builder: (ctx2, setState2) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    locationName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Text('Nights:'),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButton<int>(
+                          value: value,
+                          isExpanded: true,
+                          items: List.generate(
+                            maxNights,
+                            (i) => DropdownMenuItem(
+                              value: i + 1,
+                              child: Text('${i + 1} night${i == 0 ? '' : 's'}'),
+                            ),
+                          ),
+                          onChanged: (v) {
+                            if (v == null) return;
+                            setState2(() => value = v);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_tripRange != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(
+                        'Remaining nights in trip: ${_remainingNights.clamp(0, 999)}',
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(value),
+              child: const Text('Add'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _addWaypointWithPrompt(
+    String name,
+    double lat,
+    double lon,
+  ) async {
+    if (!mounted) return;
+
+    final range = _tripRange;
+    if (range == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a trip date range first')),
+      );
+      return;
+    }
+
+    final remaining = _remainingNights;
+    if (remaining <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No nights left in the selected date range'),
+        ),
+      );
+      return;
+    }
+
+    final nights = await _promptNights(locationName: name, max: remaining);
+    if (nights == null) return;
+
+    if (!mounted) return;
+    setState(() {
+      final wp = _Waypoint(name, lat, lon);
+      wp.nights = nights;
+      _waypoints.add(wp);
+      _searchResults = [];
+      _searchCtrl.clear();
+    });
+  }
 
   // Small sample lookup so we don't need external geocoding packages
   final Map<String, _Waypoint> _sampleLookup = {
@@ -84,50 +226,54 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       builder: (ctx) {
         return AlertDialog(
           title: const Text('Share trip with friends'),
-          content: SizedBox(
-            width: 520,
-            child: StatefulBuilder(
-              builder: (ctx2, setState) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (friends.isEmpty) const Text('No friends to share with'),
-                    if (friends.isNotEmpty)
-                      SizedBox(
-                        height: 280,
-                        child: ListView.builder(
-                          itemCount: friends.length,
-                          itemBuilder: (ctx3, i) {
-                            final f = friends[i];
-                            final uid = (f['uid'] ?? f['id'])?.toString();
-                            final label =
-                                (f['displayName'] ??
-                                        f['name'] ??
-                                        f['email'] ??
-                                        uid ??
-                                        'Friend')
-                                    .toString();
-                            return CheckboxListTile(
-                              value: uid != null && selected.contains(uid),
-                              onChanged: (v) {
-                                if (uid == null) return;
-                                setState(() {
-                                  if (v == true) {
-                                    selected.add(uid);
-                                  } else {
-                                    selected.remove(uid);
-                                  }
-                                });
-                              },
-                              title: Text(label),
-                              subtitle: Text((f['email'] ?? '').toString()),
-                            );
-                          },
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: SizedBox(
+              width: double.maxFinite,
+              child: StatefulBuilder(
+                builder: (ctx2, setState) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (friends.isEmpty)
+                        const Text('No friends to share with'),
+                      if (friends.isNotEmpty)
+                        SizedBox(
+                          height: 280,
+                          child: ListView.builder(
+                            itemCount: friends.length,
+                            itemBuilder: (ctx3, i) {
+                              final f = friends[i];
+                              final uid = (f['uid'] ?? f['id'])?.toString();
+                              final label =
+                                  (f['displayName'] ??
+                                          f['name'] ??
+                                          f['email'] ??
+                                          uid ??
+                                          'Friend')
+                                      .toString();
+                              return CheckboxListTile(
+                                value: uid != null && selected.contains(uid),
+                                onChanged: (v) {
+                                  if (uid == null) return;
+                                  setState(() {
+                                    if (v == true) {
+                                      selected.add(uid);
+                                    } else {
+                                      selected.remove(uid);
+                                    }
+                                  });
+                                },
+                                title: Text(label),
+                                subtitle: Text((f['email'] ?? '').toString()),
+                              );
+                            },
+                          ),
                         ),
-                      ),
-                  ],
-                );
-              },
+                    ],
+                  );
+                },
+              ),
             ),
           ),
           actions: [
@@ -184,100 +330,150 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   ) async {
     final me = FirebaseAuth.instance.currentUser;
     if (me == null) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        final addCtl = TextEditingController();
-        return AlertDialog(
-          title: const Text('Packing list'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream:
-                        tripRef
-                            .collection('packing')
-                            .orderBy('createdAt')
-                            .snapshots(),
-                    builder: (ctx2, snap) {
-                      if (!snap.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      final docs = snap.data!.docs;
-                      if (docs.isEmpty) {
-                        return const Center(child: Text('No packing items'));
-                      }
-                      return ListView.separated(
-                        itemCount: docs.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (ctx3, i) {
-                          final d = docs[i];
-                          final data = d.data();
-                          final name = (data['name'] ?? '').toString();
-                          final checkedBy = List<String>.from(
-                            data['checkedBy'] ?? [],
-                          );
-                          final checked = checkedBy.contains(me.uid);
-                          return CheckboxListTile(
-                            value: checked,
-                            onChanged: (v) async {
-                              if (v == true) {
-                                await d.reference.update({
-                                  'checkedBy': FieldValue.arrayUnion([me.uid]),
-                                });
-                              } else {
-                                await d.reference.update({
-                                  'checkedBy': FieldValue.arrayRemove([me.uid]),
-                                });
-                              }
-                            },
-                            title: Text(name),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
+
+    final addCtl = TextEditingController();
+    final qtyCtl = TextEditingController(text: '1');
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          final dialogHeight =
+              (MediaQuery.sizeOf(ctx).height * 0.75)
+                  .clamp(320.0, 560.0)
+                  .toDouble();
+
+          return AlertDialog(
+            title: const Text('Packing list'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: SizedBox(
+                width: double.maxFinite,
+                height: dialogHeight,
+                child: Column(
                   children: [
                     Expanded(
-                      child: TextField(
-                        controller: addCtl,
-                        decoration: const InputDecoration(hintText: 'Add item'),
+                      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                        stream:
+                            tripRef
+                                .collection('packing')
+                                .orderBy('createdAt')
+                                .snapshots(),
+                        builder: (ctx2, snap) {
+                          if (!snap.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+                          final docs = snap.data!.docs;
+                          if (docs.isEmpty) {
+                            return const Center(
+                              child: Text('No packing items'),
+                            );
+                          }
+                          return ListView.separated(
+                            itemCount: docs.length,
+                            separatorBuilder:
+                                (_, __) => const Divider(height: 1),
+                            itemBuilder: (ctx3, i) {
+                              final d = docs[i];
+                              final data = d.data();
+                              final name = (data['name'] ?? '').toString();
+                              final qtyRaw = data['quantity'];
+                              final qty =
+                                  (qtyRaw is num)
+                                      ? qtyRaw.toInt()
+                                      : (int.tryParse(qtyRaw?.toString() ?? '') ??
+                                          1);
+                              final checkedBy = List<String>.from(
+                                data['checkedBy'] ?? [],
+                              );
+                              final checked = checkedBy.contains(me.uid);
+                              return CheckboxListTile(
+                                value: checked,
+                                onChanged: (v) async {
+                                  if (v == true) {
+                                    await d.reference.update({
+                                      'checkedBy': FieldValue.arrayUnion([
+                                        me.uid,
+                                      ]),
+                                    });
+                                  } else {
+                                    await d.reference.update({
+                                      'checkedBy': FieldValue.arrayRemove([
+                                        me.uid,
+                                      ]),
+                                    });
+                                  }
+                                },
+                                title: Text(name),
+                                subtitle:
+                                    qty > 1
+                                        ? Text('Qty: $qty')
+                                        : null,
+                              );
+                            },
+                          );
+                        },
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final t = addCtl.text.trim();
-                        if (t.isEmpty) return;
-                        await tripRef.collection('packing').add({
-                          'name': t,
-                          'createdAt': FieldValue.serverTimestamp(),
-                          'checkedBy': [],
-                        });
-                        addCtl.clear();
-                      },
-                      child: const Text('Add'),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: addCtl,
+                            decoration: const InputDecoration(
+                              hintText: 'Add item',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 92,
+                          child: TextField(
+                            controller: qtyCtl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              hintText: 'Qty',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: () async {
+                            final t = addCtl.text.trim();
+                            if (t.isEmpty) return;
+                            final q = int.tryParse(qtyCtl.text.trim());
+                            await tripRef.collection('packing').add({
+                              'name': t,
+                              if (q != null && q > 1) 'quantity': q,
+                              'createdAt': FieldValue.serverTimestamp(),
+                              'checkedBy': <String>[],
+                            });
+                            addCtl.clear();
+                            qtyCtl.text = '1';
+                          },
+                          child: const Text('Add'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      addCtl.dispose();
+      qtyCtl.dispose();
+    }
   }
 
   Future<void> _openTripChat(
@@ -285,120 +481,12 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   ) async {
     final me = FirebaseAuth.instance.currentUser;
     if (me == null) return;
-    await showDialog<void>(
+
+    await TripChatDialog.show(
       context: context,
-      builder: (ctx) {
-        final msgCtl = TextEditingController();
-        final imgCtl = TextEditingController();
-        return AlertDialog(
-          title: const Text('Trip chat'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream:
-                        tripRef
-                            .collection('messages')
-                            .orderBy('createdAt')
-                            .snapshots(),
-                    builder: (ctx2, snap) {
-                      if (!snap.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      final docs = snap.data!.docs;
-                      if (docs.isEmpty) {
-                        return const Center(child: Text('No messages yet'));
-                      }
-                      return ListView.builder(
-                        itemCount: docs.length,
-                        itemBuilder: (ctx3, i) {
-                          final d = docs[i];
-                          final data = d.data();
-                          final sender = (data['senderUid'] ?? '').toString();
-                          final text = (data['text'] ?? '').toString();
-                          final imageUrl = (data['imageUrl'] ?? '').toString();
-                          return ListTile(
-                            title: Text(sender == me.uid ? 'You' : sender),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (text.isNotEmpty) Text(text),
-                                if (imageUrl.isNotEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 6.0),
-                                    child: Image.network(
-                                      imageUrl,
-                                      width: 200,
-                                      errorBuilder:
-                                          (_, __, ___) => const Text(
-                                            'Image failed to load',
-                                          ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: msgCtl,
-                  decoration: const InputDecoration(hintText: 'Message'),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: imgCtl,
-                        decoration: const InputDecoration(
-                          hintText: 'Image URL (optional)',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final t = msgCtl.text.trim();
-                        final img = imgCtl.text.trim();
-                        if (t.isEmpty && img.isEmpty) return;
-                        if (kDebugMode) {
-                          print(
-                            'TripBuilder chat send -> target: ${tripRef.path}',
-                          );
-                        }
-                        await tripRef.collection('messages').add({
-                          'senderUid': me.uid,
-                          'senderName': me.displayName ?? '',
-                          'text': t,
-                          'imageUrl':
-                              img.isNotEmpty ? img : FieldValue.delete(),
-                          'createdAt': FieldValue.serverTimestamp(),
-                        });
-                        msgCtl.clear();
-                        imgCtl.clear();
-                      },
-                      child: const Text('Send'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
+      tripRef: tripRef,
+      me: me,
+      allowImageUrl: true,
     );
   }
 
@@ -422,13 +510,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final k = key.toLowerCase().trim();
     final s = _sampleLookup[k];
     if (s != null) {
-      final wp = _Waypoint(s.name, s.lat, s.lon);
-      wp.nights = 1;
-      setState(() => _waypoints.add(wp));
+      _addWaypointWithPrompt(s.name, s.lat, s.lon);
     }
   }
-
-  int _parseDays() => int.tryParse(_daysCtrl.text) ?? 1;
 
   void _removeWaypoint(int index) {
     setState(() {
@@ -449,7 +533,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     }
     // Listen for map click messages posted from the web map instance.
     try {
-      _windowMsgSub = html.window.onMessage.listen((event) {
+      _windowMsgSub = html.window.onMessage.listen((event) async {
         try {
           final dataRaw = event.data;
           if (dataRaw is String) {
@@ -459,25 +543,21 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 final lat = (decoded['lat'] ?? 0.0) as num;
                 final lon = (decoded['lon'] ?? 0.0) as num;
                 // Try reverse geocoding (web only). If it fails, fallback to "Dropped Pin".
+                String name = 'Dropped Pin';
                 try {
-                  reverseNominatim(lat.toDouble(), lon.toDouble()).then((name) {
-                    final wp = _Waypoint(
-                      name ?? 'Dropped Pin',
-                      lat.toDouble(),
-                      lon.toDouble(),
-                    );
-                    wp.nights = math.min(_waypoints.length + 1, _parseDays());
-                    setState(() {
-                      _waypoints.add(wp);
-                    });
-                  });
-                } catch (_) {
-                  setState(() {
-                    _waypoints.add(
-                      _Waypoint('Dropped Pin', lat.toDouble(), lon.toDouble()),
-                    );
-                  });
-                }
+                  final resolved = await reverseNominatim(
+                    lat.toDouble(),
+                    lon.toDouble(),
+                  );
+                  if (resolved != null && resolved.trim().isNotEmpty) {
+                    name = resolved;
+                  }
+                } catch (_) {}
+                await _addWaypointWithPrompt(
+                  name,
+                  lat.toDouble(),
+                  lon.toDouble(),
+                );
               } else if (decoded['type'] == 'route_summary') {
                 final dist = (decoded['distance'] ?? 0) as num;
                 final dur = (decoded['duration'] ?? 0) as num;
@@ -531,7 +611,32 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         const group = L.featureGroup(markers);
         map.fitBounds(group.getBounds().pad(0.2));
         if (latlngs.length>1) {
-          L.polyline(latlngs, {color: 'blue', weight:3, opacity:0.7}).addTo(map);
+          // Try OSRM road-following route first.
+          const coords = pts.map(function(p) { return (p.lon + ',' + p.lat); }).join(';');
+          const url = 'https://router.project-osrm.org/route/v1/driving/' + coords + '?overview=full&geometries=geojson';
+          fetch(url)
+            .then(r => r.ok ? r.json() : Promise.reject(new Error('OSRM ' + r.status)))
+            .then(data => {
+              const route = (data.routes && data.routes[0]) ? data.routes[0] : null;
+              if (route && route.geometry && route.geometry.coordinates) {
+                const line = route.geometry.coordinates.map(c => [c[1], c[0]]);
+                L.polyline(line, {color: 'blue', weight:3, opacity:0.8}).addTo(map);
+                try {
+                  // Inform the opener so the app can display road distance / duration.
+                  window.opener && window.opener.postMessage(JSON.stringify({
+                    type: 'route_summary',
+                    distance: route.distance || 0,
+                    duration: route.duration || 0
+                  }), '*');
+                } catch (_) {}
+              } else {
+                L.polyline(latlngs, {color: 'blue', weight:3, opacity:0.7}).addTo(map);
+              }
+            })
+            .catch(_ => {
+              // Fallback: straight polyline between points.
+              L.polyline(latlngs, {color: 'blue', weight:3, opacity:0.7}).addTo(map);
+            });
         }
       }
     } catch(e) { document.body.innerHTML = '<pre style="color:red">Map init error: '+e+'</pre>'; }
@@ -556,7 +661,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     _authSub?.cancel();
     _searchDebounce?.cancel();
     _tripNameCtrl.dispose();
-    _daysCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -565,476 +669,620 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   Widget build(BuildContext context) {
     final user = _currentUser ?? FirebaseAuth.instance.currentUser;
 
-    return Scaffold(
-      appBar: const TopTaskbar(dockProgress: 1.0),
-      body: Row(
-        children: [
-          // Left info panel
-          Container(
-            width: 340,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade50,
-              border: Border(right: BorderSide(color: Colors.grey.shade200)),
+    Widget tripInfoPanel({required bool collapsible, required bool isMobile}) {
+      final content = Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!collapsible)
+              const Text(
+                'Trip Information',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+            if (!collapsible) const SizedBox(height: 8),
+            TextField(
+              controller: _tripNameCtrl,
+              decoration: const InputDecoration(labelText: 'Trip Name'),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Trip Information',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+            const SizedBox(height: 8),
+            InputDecorator(
+              decoration: const InputDecoration(labelText: 'Trip date range'),
+              child: InkWell(
+                onTap: () async {
+                  final now = _stripTime(DateTime.now());
+                  final initial =
+                      _tripRange ??
+                      DateTimeRange(
+                        start: now,
+                        end: now.add(const Duration(days: 6)),
+                      );
+                  final picked = await showDateRangePicker(
+                    context: context,
+                    firstDate: DateTime(now.year - 5),
+                    lastDate: DateTime(now.year + 5),
+                    initialDateRange: initial,
+                  );
+                  if (picked != null && mounted) {
+                    final r = DateTimeRange(
+                      start: _stripTime(picked.start),
+                      end: _stripTime(picked.end),
+                    );
+                    setState(() => _tripRange = r);
+                  }
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12.0),
+                  child: Text(
+                    _tripRange == null
+                        ? 'Select start and end dates'
+                        : '${_ymd(_tripRange!.start)} → ${_ymd(_tripRange!.end)} ($_totalTripDays days)',
+                  ),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _tripNameCtrl,
-                  decoration: const InputDecoration(labelText: 'Trip Name'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (_tripRange != null)
+              Text(
+                'Nights assigned: $_assignedNights / $_totalTripDays',
+                style: TextStyle(
+                  fontSize: 13,
+                  color:
+                      _hasValidAllocation
+                          ? Colors.black54
+                          : Colors.red.shade700,
+                  fontWeight: FontWeight.w600,
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: InputDecorator(
-                        decoration: const InputDecoration(
-                          labelText: 'Start date',
-                        ),
-                        child: InkWell(
-                          onTap: () async {
-                            final now = DateTime.now();
-                            final picked = await showDatePicker(
-                              context: context,
-                              initialDate: _startDate ?? now,
-                              firstDate: DateTime(now.year - 5),
-                              lastDate: DateTime(now.year + 5),
+              ),
+            if (_tripRange != null && !_hasValidAllocation)
+              Padding(
+                padding: const EdgeInsets.only(top: 4.0),
+                child: Text(
+                  'Adjust nights so they match the trip length.',
+                  style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                ),
+              ),
+            const SizedBox(height: 12),
+            Text(
+              'Total: ${((_roadDistanceKm ?? _totalKm)).toStringAsFixed(2)} km',
+              style: const TextStyle(fontSize: 16),
+            ),
+            if (_routeDurationMin != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6.0),
+                child: Text(
+                  'Estimated drive time: ${_routeDurationMin!.toStringAsFixed(0)} min',
+                  style: const TextStyle(fontSize: 13, color: Colors.black54),
+                ),
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              'Segments (kms between):',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            if (_waypoints.isEmpty)
+              const Text(
+                'No points yet. Use the search in the main pane to add locations.',
+              )
+            else
+              SizedBox(
+                height: isMobile ? 220 : 260,
+                child: ListView.builder(
+                  itemCount: _waypoints.length,
+                  itemBuilder: (ctx, i) {
+                    final next =
+                        i + 1 < _waypoints.length ? _waypoints[i + 1] : null;
+                    double segKm = 0.0;
+                    if (next != null) {
+                      segKm = _haversine(
+                        _waypoints[i].lat,
+                        _waypoints[i].lon,
+                        next.lat,
+                        next.lon,
+                      );
+                    }
+                    final nights = _waypoints[i].nights;
+                    int offsetDays = 0;
+                    for (var j = 0; j < i; j++) {
+                      offsetDays += _waypoints[j].nights;
+                    }
+                    String dateStr = '';
+                    if (_tripRange != null) {
+                      final start = _tripRange!.start.add(
+                        Duration(days: offsetDays),
+                      );
+                      final end = start.add(
+                        Duration(days: math.max(0, nights - 1)),
+                      );
+                      dateStr = ' — ${_ymd(start)} → ${_ymd(end)}';
+                    }
+
+                    final maxNightsForRow =
+                        _tripRange == null
+                            ? 30
+                            : math.max(
+                              1,
+                              _totalTripDays - (_assignedNights - nights),
                             );
-                            if (picked != null && mounted) {
-                              setState(() => _startDate = picked);
-                            }
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12.0),
-                            child: Text(
-                              _startDate != null
-                                  ? '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')}'
-                                  : 'Select start date',
+                    return ListTile(
+                      dense: true,
+                      leading: CircleAvatar(child: Text('${i + 1}')),
+                      title: Text(_waypoints[i].name),
+                      subtitle: Text(
+                        '$nights night${nights == 1 ? '' : 's'}$dateStr — ${next != null ? '${segKm.toStringAsFixed(2)} km to next' : 'Last point'}',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 90,
+                            child: DropdownButton<int>(
+                              value: nights,
+                              isExpanded: true,
+                              items: List.generate(
+                                maxNightsForRow,
+                                (idx) => DropdownMenuItem(
+                                  value: idx + 1,
+                                  child: Text(
+                                    '${idx + 1} night${idx == 0 ? '' : 's'}',
+                                  ),
+                                ),
+                              ),
+                              onChanged: (v) {
+                                if (v == null) return;
+                                setState(() => _waypoints[i].nights = v);
+                              },
                             ),
                           ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _daysCtrl,
-                  decoration: const InputDecoration(labelText: 'Trip Days'),
-                  keyboardType: TextInputType.number,
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Total: ${((_roadDistanceKm ?? _totalKm)).toStringAsFixed(2)} km',
-                  style: const TextStyle(fontSize: 16),
-                ),
-                if (_routeDurationMin != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6.0),
-                    child: Text(
-                      'Estimated drive time: ${_routeDurationMin!.toStringAsFixed(0)} min',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.black54,
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Segments (kms between):',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child:
-                      _waypoints.isEmpty
-                          ? const Text(
-                            'No points yet. Use the search in the main pane to add locations.',
-                          )
-                          : ListView.builder(
-                            itemCount: _waypoints.length,
-                            itemBuilder: (ctx, i) {
-                              final next =
-                                  i + 1 < _waypoints.length
-                                      ? _waypoints[i + 1]
-                                      : null;
-                              double segKm = 0.0;
-                              if (next != null) {
-                                segKm = _haversine(
-                                  _waypoints[i].lat,
-                                  _waypoints[i].lon,
-                                  next.lat,
-                                  next.lon,
-                                );
-                              }
-                              final nights = _waypoints[i].nights;
-                              // compute arrival offset by summing nights of earlier stops
-                              int offsetDays = 0;
-                              for (var j = 0; j < i; j++) {
-                                offsetDays += _waypoints[j].nights;
-                              }
-                              String dateStr = '';
-                              if (_startDate != null) {
-                                final dt = _startDate!.add(
-                                  Duration(days: offsetDays),
-                                );
-                                dateStr =
-                                    ' — ${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-                              }
-                              return ListTile(
-                                dense: true,
-                                leading: CircleAvatar(child: Text('${i + 1}')),
-                                title: Text(_waypoints[i].name),
-                                subtitle: Text(
-                                  '${nights} night${nights == 1 ? '' : 's'}$dateStr — ${next != null
-                                          ? '${segKm.toStringAsFixed(2)} km to next'
-                                          : 'Last point'}',
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      width: 90,
-                                      child: DropdownButton<int>(
-                                        value: nights,
-                                        isExpanded: true,
-                                        items: List.generate(
-                                          math.max(1, _parseDays()),
-                                          (idx) => DropdownMenuItem(
-                                            value: idx + 1,
-                                            child: Text(
-                                              '${idx + 1} night${idx == 0 ? '' : 's'}',
-                                            ),
-                                          ),
-                                        ),
-                                        onChanged: (v) {
-                                          if (v == null) return;
-                                          setState(
-                                            () => _waypoints[i].nights = v,
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.delete_outline),
-                                      onPressed: () => _removeWaypoint(i),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => _removeWaypoint(i),
                           ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
-                const SizedBox(height: 8),
-                if (user == null)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 8.0),
-                    child: Text(
-                      'Sign in to save trips',
-                      style: TextStyle(color: Colors.black54),
-                    ),
-                  ),
+              ),
+            const SizedBox(height: 8),
+            if (user == null)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8.0),
+                child: Text(
+                  'Sign in to save trips',
+                  style: TextStyle(color: Colors.black54),
+                ),
+              ),
+            ElevatedButton.icon(
+              onPressed:
+                  (user == null ||
+                          _tripRange == null ||
+                          _waypoints.isEmpty ||
+                          !_hasValidAllocation ||
+                          _isSaving)
+                      ? null
+                      : () async {
+                        if (_waypoints.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Add at least one waypoint'),
+                            ),
+                          );
+                          return;
+                        }
+                        if (_tripRange == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Select a trip date range first'),
+                            ),
+                          );
+                          return;
+                        }
+                        if (!_hasValidAllocation) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Adjust nights to match the trip length',
+                              ),
+                            ),
+                          );
+                          return;
+                        }
+                        setState(() => _isSaving = true);
+                        final name = _tripNameCtrl.text.trim();
+                        final range = _tripRange!;
+                        final tripStart = range.start;
+                        final tripEnd = range.end;
+                        final data = {
+                          'name': name,
+                          'days': _totalTripDays,
+                          'totalDays': _totalTripDays,
+                          'startDate': _ymd(tripStart),
+                          'endDate': _ymd(tripEnd),
+                          'createdAt': FieldValue.serverTimestamp(),
+                          'totalKm': _totalKm,
+                          'waypoints':
+                              _waypoints.asMap().entries.map((e) {
+                                final idx = e.key;
+                                final w = e.value;
+                                int offset = 0;
+                                for (var j = 0; j < idx; j++) {
+                                  offset += _waypoints[j].nights;
+                                }
+                                final start = tripStart.add(
+                                  Duration(days: offset),
+                                );
+                                final end = start.add(
+                                  Duration(days: math.max(0, w.nights - 1)),
+                                );
+                                final m = {
+                                  'name': w.name,
+                                  'lat': w.lat,
+                                  'lon': w.lon,
+                                  'nights': w.nights,
+                                  'startDate': _ymd(start),
+                                  'endDate': _ymd(end),
+                                };
+                                return m;
+                              }).toList(),
+                        };
+                        try {
+                          final uid = FirebaseAuth.instance.currentUser!.uid;
+                          final ref = await FirebaseFirestore.instance
+                              .collection('users')
+                              .doc(uid)
+                              .collection('trips')
+                              .add(data);
+                          _lastSavedTripRef = ref;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Trip saved to My Trips'),
+                            ),
+                          );
+                        } catch (e) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Save failed: $e')),
+                          );
+                        } finally {
+                          setState(() => _isSaving = false);
+                        }
+                      },
+              icon:
+                  _isSaving
+                      ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                      : const Icon(Icons.save),
+              label: Text(_isSaving ? 'Saving...' : 'Save Trip'),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
                 ElevatedButton.icon(
                   onPressed:
-                      (user == null || _waypoints.isEmpty || _isSaving)
+                      _lastSavedTripRef == null
                           ? null
-                          : () async {
-                            if (_waypoints.isEmpty) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Add at least one waypoint'),
-                                ),
-                              );
-                              return;
-                            }
-                            setState(() => _isSaving = true);
-                            final name = _tripNameCtrl.text.trim();
-                            final data = {
-                              'name': name,
-                              'days': int.tryParse(_daysCtrl.text) ?? 1,
-                              'createdAt': FieldValue.serverTimestamp(),
-                              'totalKm': _totalKm,
-                              'waypoints':
-                                  _waypoints.asMap().entries.map((e) {
-                                    final idx = e.key;
-                                    final w = e.value;
-                                    final m = {
-                                      'name': w.name,
-                                      'lat': w.lat,
-                                      'lon': w.lon,
-                                      'nights': w.nights,
-                                    };
-                                    if (_startDate != null) {
-                                      int offset = 0;
-                                      for (var j = 0; j < idx; j++) {
-                                        offset += _waypoints[j].nights;
-                                      }
-                                      final dt = _startDate!.add(
-                                        Duration(days: offset),
-                                      );
-                                      m['date'] =
-                                          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-                                    }
-                                    return m;
-                                  }).toList(),
-                            };
-                            try {
-                              final uid =
-                                  FirebaseAuth.instance.currentUser!.uid;
-                              final ref = await FirebaseFirestore.instance
-                                  .collection('users')
-                                  .doc(uid)
-                                  .collection('trips')
-                                  .add(data);
-                              _lastSavedTripRef = ref;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Trip saved to My Trips'),
-                                ),
-                              );
-                            } catch (e) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Save failed: $e')),
-                              );
-                            } finally {
-                              setState(() => _isSaving = false);
-                            }
-                          },
-                  icon:
-                      _isSaving
-                          ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                          : const Icon(Icons.save),
-                  label: Text(_isSaving ? 'Saving...' : 'Save Trip'),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed:
-                          _lastSavedTripRef == null
-                              ? null
-                              : () => _showShareDialog(context),
-                      icon: const Icon(Icons.share),
-                      label: const Text('Share'),
-                    ),
-                  ],
+                          : () => _showShareDialog(context),
+                  icon: const Icon(Icons.share),
+                  label: const Text('Share'),
                 ),
               ],
             ),
-          ),
+          ],
+        ),
+      );
 
-          // Main search & simple visualizer pane
-          Expanded(
-            child: Column(
+      if (!collapsible) {
+        return Container(
+          width: 340,
+          decoration: BoxDecoration(
+            color: Colors.grey.shade50,
+            border: Border(right: BorderSide(color: Colors.grey.shade200)),
+          ),
+          child: content,
+        );
+      }
+
+      return ExpansionTile(
+        initiallyExpanded: false,
+        title: const Text(
+          'Trip Information',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        children: [content],
+      );
+    }
+
+    Widget searchToolbar() {
+      return LayoutBuilder(
+        builder: (ctx, box) {
+          final narrow = box.maxWidth < 520;
+          if (!narrow) {
+            return Row(
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _searchCtrl,
-                          decoration: const InputDecoration(
-                            prefixIcon: Icon(Icons.search),
-                            hintText: 'Search locations',
-                          ),
-                          onChanged: (v) {
-                            _searchDebounce?.cancel();
-                            _searchDebounce = Timer(
-                              const Duration(milliseconds: 400),
-                              () async {
-                                final q = _searchCtrl.text.trim();
-                                if (q.isEmpty) {
-                                  setState(() => _searchResults = []);
-                                  return;
-                                }
-                                final results = await searchNominatim(q);
-                                setState(() => _searchResults = results);
-                              },
-                            );
-                          },
-                          onSubmitted: (v) async {
-                            // Try web geocoding (Nominatim) first; fallback to sample lookup
-                            List<Map<String, dynamic>> results =
-                                await searchNominatim(v);
-                            if (results.isEmpty) {
-                              final match = _sampleLookup.keys.firstWhere(
-                                (k) =>
-                                    k.toLowerCase().contains(v.toLowerCase()),
-                                orElse: () => '',
-                              );
-                              if (match.isNotEmpty) {
-                                _addWaypointFromLookup(match);
-                              }
-                              return;
-                            }
-                            // Add first result by default
-                            final r = results.first;
-                            setState(() {
-                              final wp = _Waypoint(
-                                r['name'] ?? v,
-                                r['lat'] ?? 0.0,
-                                r['lon'] ?? 0.0,
-                              );
-                              wp.nights = math.min(
-                                _waypoints.length + 1,
-                                _parseDays(),
-                              );
-                              _waypoints.add(wp);
-                              _searchResults = [];
-                              _searchCtrl.clear();
-                            });
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: () {
-                          _addWaypointFromLookup(_searchCtrl.text);
-                          _searchCtrl.clear();
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Search locations',
+                    ),
+                    onChanged: (v) {
+                      _searchDebounce?.cancel();
+                      _searchDebounce = Timer(
+                        const Duration(milliseconds: 400),
+                        () async {
+                          final q = _searchCtrl.text.trim();
+                          if (q.isEmpty) {
+                            setState(() => _searchResults = []);
+                            return;
+                          }
+                          final results = await searchNominatim(q);
+                          setState(() => _searchResults = results);
                         },
-                        child: const Text('Add'),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: _openMapInNewTab,
-                        child: const Text('Open Map'),
-                      ),
-                      const SizedBox(width: 8),
-                      PopupMenuButton<String>(
-                        child: ElevatedButton(
-                          onPressed: null,
-                          child: const Text('Add from list'),
-                        ),
-                        onSelected: (v) => _addWaypointFromLookup(v),
-                        itemBuilder:
-                            (_) =>
-                                _sampleLookup.keys
-                                    .map(
-                                      (k) => PopupMenuItem(
-                                        value: k,
-                                        child: Text(k),
-                                      ),
-                                    )
-                                    .toList(),
-                      ),
-                    ],
+                      );
+                    },
+                    onSubmitted: (v) async {
+                      if (_tripRange == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Select a trip date range first'),
+                          ),
+                        );
+                        return;
+                      }
+                      List<Map<String, dynamic>> results =
+                          await searchNominatim(v);
+                      if (results.isEmpty) {
+                        final match = _sampleLookup.keys.firstWhere(
+                          (k) => k.toLowerCase().contains(v.toLowerCase()),
+                          orElse: () => '',
+                        );
+                        if (match.isNotEmpty) {
+                          _addWaypointFromLookup(match);
+                        }
+                        return;
+                      }
+                      final r = results.first;
+                      await _addWaypointWithPrompt(
+                        (r['name'] ?? v).toString(),
+                        (r['lat'] ?? 0.0) as double,
+                        (r['lon'] ?? 0.0) as double,
+                      );
+                    },
                   ),
                 ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed:
+                      _tripRange == null
+                          ? null
+                          : () {
+                            _addWaypointFromLookup(_searchCtrl.text);
+                            _searchCtrl.clear();
+                          },
+                  child: const Text('Add'),
+                ),
+                const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  onSelected: (v) => _addWaypointFromLookup(v),
+                  enabled: _tripRange != null,
+                  itemBuilder:
+                      (_) =>
+                          _sampleLookup.keys
+                              .map(
+                                (k) => PopupMenuItem(value: k, child: Text(k)),
+                              )
+                              .toList(),
+                  child: ElevatedButton(
+                    onPressed: null,
+                    child: const Text('Add from list'),
+                  ),
+                ),
+              ],
+            );
+          }
 
-                // Search results (Nominatim)
-                _searchResults.isEmpty
-                    ? const SizedBox.shrink()
-                    : Container(
-                      height: 160,
-                      margin: const EdgeInsets.symmetric(horizontal: 12.0),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(8),
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _searchCtrl,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search locations',
+                ),
+                onChanged: (v) {
+                  _searchDebounce?.cancel();
+                  _searchDebounce = Timer(
+                    const Duration(milliseconds: 400),
+                    () async {
+                      final q = _searchCtrl.text.trim();
+                      if (q.isEmpty) {
+                        setState(() => _searchResults = []);
+                        return;
+                      }
+                      final results = await searchNominatim(q);
+                      setState(() => _searchResults = results);
+                    },
+                  );
+                },
+                onSubmitted: (v) async {
+                  if (_tripRange == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Select a trip date range first'),
                       ),
-                      child: ListView.builder(
-                        itemCount: _searchResults.length,
-                        itemBuilder: (ctx, i) {
-                          final r = _searchResults[i];
-                          return ListTile(
-                            title: Text(
-                              r['name'] ??
-                                  r['display_name'] ??
-                                  'Result ${i + 1}',
-                            ),
-                            subtitle: Text(
-                              '${r['lat'] ?? '-'}, ${r['lon'] ?? '-'}',
-                            ),
-                            trailing: TextButton(
-                              onPressed: () {
-                                setState(() {
-                                  final wp = _Waypoint(
-                                    r['name'] ?? 'Point',
+                    );
+                    return;
+                  }
+                  List<Map<String, dynamic>> results = await searchNominatim(v);
+                  if (results.isEmpty) {
+                    final match = _sampleLookup.keys.firstWhere(
+                      (k) => k.toLowerCase().contains(v.toLowerCase()),
+                      orElse: () => '',
+                    );
+                    if (match.isNotEmpty) {
+                      _addWaypointFromLookup(match);
+                    }
+                    return;
+                  }
+                  final r = results.first;
+                  await _addWaypointWithPrompt(
+                    (r['name'] ?? v).toString(),
+                    (r['lat'] ?? 0.0) as double,
+                    (r['lon'] ?? 0.0) as double,
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ElevatedButton(
+                    onPressed:
+                        _tripRange == null
+                            ? null
+                            : () {
+                              _addWaypointFromLookup(_searchCtrl.text);
+                              _searchCtrl.clear();
+                            },
+                    child: const Text('Add'),
+                  ),
+                  PopupMenuButton<String>(
+                    onSelected: (v) => _addWaypointFromLookup(v),
+                    enabled: _tripRange != null,
+                    itemBuilder:
+                        (_) =>
+                            _sampleLookup.keys
+                                .map(
+                                  (k) =>
+                                      PopupMenuItem(value: k, child: Text(k)),
+                                )
+                                .toList(),
+                    child: ElevatedButton(
+                      onPressed: null,
+                      child: const Text('Add from list'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      );
+    }
+
+    Widget mainPane() {
+      return Column(
+        children: [
+          Padding(padding: const EdgeInsets.all(12.0), child: searchToolbar()),
+
+          _searchResults.isEmpty
+              ? const SizedBox.shrink()
+              : Container(
+                height: 160,
+                margin: const EdgeInsets.symmetric(horizontal: 12.0),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ListView.builder(
+                  itemCount: _searchResults.length,
+                  itemBuilder: (ctx, i) {
+                    final r = _searchResults[i];
+                    return ListTile(
+                      title: Text(
+                        r['name'] ?? r['display_name'] ?? 'Result ${i + 1}',
+                      ),
+                      subtitle: Text('${r['lat'] ?? '-'}, ${r['lon'] ?? '-'}'),
+                      trailing: TextButton(
+                        onPressed:
+                            _tripRange == null
+                                ? null
+                                : () async {
+                                  await _addWaypointWithPrompt(
+                                    (r['name'] ?? 'Point').toString(),
                                     (r['lat'] ?? 0.0) as double,
                                     (r['lon'] ?? 0.0) as double,
                                   );
-                                  wp.nights = math.min(
-                                    _waypoints.length + 1,
-                                    _parseDays(),
-                                  );
-                                  _waypoints.add(wp);
-                                  _searchResults = [];
-                                  _searchCtrl.clear();
-                                });
-                              },
-                              child: const Text('Add'),
-                            ),
-                          );
-                        },
+                                },
+                        child: const Text('Add'),
                       ),
-                    ),
-
-                // Embedded map (web) or list stub (mobile/desktop)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: MapEmbed(
-                        points:
-                            _waypoints
-                                .map(
-                                  (w) => {
-                                    'name': w.name,
-                                    'lat': w.lat,
-                                    'lon': w.lon,
-                                  },
-                                )
-                                .toList(),
-                        onMapTap: (lat, lon) async {
-                          try {
-                            final name = await reverseNominatim(lat, lon);
-                            final wp = _Waypoint(
-                              name ?? 'Dropped Pin',
-                              lat,
-                              lon,
-                            );
-                            wp.nights = math.min(
-                              _waypoints.length + 1,
-                              _parseDays(),
-                            );
-                            setState(() {
-                              _waypoints.add(wp);
-                            });
-                          } catch (_) {
-                            final wp = _Waypoint('Dropped Pin', lat, lon);
-                            wp.nights = math.min(
-                              _waypoints.length + 1,
-                              _parseDays(),
-                            );
-                            setState(() {
-                              _waypoints.add(wp);
-                            });
-                          }
-                        },
-                      ),
-                    ),
-                  ),
+                    );
+                  },
                 ),
-              ],
+              ),
+
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: MapEmbed(
+                  points:
+                      _waypoints
+                          .map(
+                            (w) => {'name': w.name, 'lat': w.lat, 'lon': w.lon},
+                          )
+                          .toList(),
+                  onMapTap: (lat, lon) async {
+                    if (_tripRange == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Select a trip date range first'),
+                        ),
+                      );
+                      return;
+                    }
+                    try {
+                      final name = await reverseNominatim(lat, lon);
+                      await _addWaypointWithPrompt(
+                        name ?? 'Dropped Pin',
+                        lat,
+                        lon,
+                      );
+                    } catch (_) {
+                      await _addWaypointWithPrompt('Dropped Pin', lat, lon);
+                    }
+                  },
+                ),
+              ),
             ),
           ),
         ],
+      );
+    }
+
+    return Scaffold(
+      appBar: const TopTaskbar(dockProgress: 1.0),
+      body: LayoutBuilder(
+        builder: (ctx, box) {
+          final isMobile = box.maxWidth < 900;
+          if (isMobile) {
+            return Column(
+              children: [
+                tripInfoPanel(collapsible: true, isMobile: true),
+                Expanded(child: mainPane()),
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              tripInfoPanel(collapsible: false, isMobile: false),
+              Expanded(child: mainPane()),
+            ],
+          );
+        },
       ),
     );
   }

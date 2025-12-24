@@ -946,7 +946,7 @@ class _EditProfileSheet extends StatefulWidget {
   final String uid;
   final Map<String, dynamic> data;
 
-  const _EditProfileSheet({super.key, required this.uid, required this.data});
+  const _EditProfileSheet({required this.uid, required this.data});
 
   @override
   State<_EditProfileSheet> createState() => _EditProfileSheetState();

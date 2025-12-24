@@ -11,11 +11,14 @@ import 'dart:convert';
 class MapEmbed extends StatefulWidget {
   final List<Map<String, dynamic>> points;
   final void Function(double lat, double lon)? onMapTap;
+  final void Function(double distanceMeters, double durationSeconds)?
+  onRouteSummary;
   final List<Map<String, dynamic>> secondaryPoints;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
+    this.onRouteSummary,
     this.secondaryPoints = const [],
   });
 
@@ -94,10 +97,8 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   void didUpdateWidget(covariant MapEmbed oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (
-      !listEquals(oldWidget.points, widget.points) ||
-      !listEquals(oldWidget.secondaryPoints, widget.secondaryPoints)
-    ) {
+    if (!listEquals(oldWidget.points, widget.points) ||
+        !listEquals(oldWidget.secondaryPoints, widget.secondaryPoints)) {
       _rebuildFromPoints();
     }
   }
@@ -151,15 +152,15 @@ class _MapEmbedState extends State<MapEmbed> {
         Uri url = Uri.parse(
           'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
         );
-        var resp = await http.get(
-          url,
-          headers: const {'User-Agent': 'trypr-app/1.0'},
-        );
+        var resp = await http.get(url);
         if (resp.statusCode == 200) {
           try {
             final data = jsonDecode(resp.body) as Map<String, dynamic>;
             final routes = data['routes'] as List<dynamic>?;
             if (routes != null && routes.isNotEmpty) {
+              final route0 = routes[0] as Map<String, dynamic>;
+              final dist = (route0['distance'] as num?)?.toDouble();
+              final dur = (route0['duration'] as num?)?.toDouble();
               final geom = routes[0]['geometry'] as Map<String, dynamic>;
               final coordsList =
                   (geom['coordinates'] as List<dynamic>).cast<List<dynamic>>();
@@ -179,6 +180,9 @@ class _MapEmbedState extends State<MapEmbed> {
                   color: Colors.blue,
                 );
               });
+              if (dist != null && dur != null) {
+                widget.onRouteSummary?.call(dist, dur);
+              }
               return;
             }
           } catch (_) {
@@ -192,14 +196,14 @@ class _MapEmbedState extends State<MapEmbed> {
           url = Uri.parse(
             'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
           );
-          resp = await http.get(
-            url,
-            headers: const {'User-Agent': 'trypr-app/1.0'},
-          );
+          resp = await http.get(url);
           if (resp.statusCode == 200) {
             final data = jsonDecode(resp.body) as Map<String, dynamic>;
             final routes = data['routes'] as List<dynamic>?;
             if (routes != null && routes.isNotEmpty) {
+              final route0 = routes[0] as Map<String, dynamic>;
+              final dist = (route0['distance'] as num?)?.toDouble();
+              final dur = (route0['duration'] as num?)?.toDouble();
               final geom = routes[0]['geometry'] as Map<String, dynamic>;
               final coordsList =
                   (geom['coordinates'] as List<dynamic>).cast<List<dynamic>>();
@@ -219,6 +223,9 @@ class _MapEmbedState extends State<MapEmbed> {
                   color: Colors.blue,
                 );
               });
+              if (dist != null && dur != null) {
+                widget.onRouteSummary?.call(dist, dur);
+              }
               return;
             }
           }
@@ -258,8 +265,10 @@ class _MapEmbedState extends State<MapEmbed> {
       await _rebuildFromPoints();
     } catch (err, st) {
       // don't let map errors crash the app; log and clear state
-      // ignore: avoid_print
-      print('Map rebuild failed: $err\n$st');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Map rebuild failed: $err\n$st');
+      }
       if (mounted) {
         setState(() {
           _markers = [];
@@ -277,15 +286,24 @@ class _MapEmbedState extends State<MapEmbed> {
       );
     }
 
-    final center = ll.LatLng(
-      _toDouble(widget.points.last['lat']),
-      _toDouble(widget.points.last['lon']),
-    );
+    final mainPts =
+        widget.points
+            .map((p) => ll.LatLng(_toDouble(p['lat']), _toDouble(p['lon'])))
+            .toList();
+    final secondaryPts =
+        widget.secondaryPoints
+            .map((p) => ll.LatLng(_toDouble(p['lat']), _toDouble(p['lon'])))
+            .toList();
+    final allPts = <ll.LatLng>[...mainPts, ...secondaryPts];
+    final bounds = LatLngBounds.fromPoints(allPts);
 
     return FlutterMap(
       options: MapOptions(
-        center: center,
-        zoom: 6.0,
+        bounds: bounds,
+        boundsOptions: FitBoundsOptions(
+          padding: const EdgeInsets.all(24),
+          maxZoom: allPts.length <= 1 ? 12 : 10,
+        ),
         onTap: (tapPos, latlng) {
           widget.onMapTap?.call(latlng.latitude, latlng.longitude);
         },

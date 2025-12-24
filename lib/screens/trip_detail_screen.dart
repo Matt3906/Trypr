@@ -5,6 +5,9 @@ import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/screens/destination_detail_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:trypr/widgets/trip_chat_dialog.dart';
+import 'package:trypr/widgets/trip_expenses_dialog.dart';
+import 'package:trypr/services/name_lookup.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -238,50 +241,54 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       builder: (ctx) {
         return AlertDialog(
           title: const Text('Share trip with friends'),
-          content: SizedBox(
-            width: 520,
-            child: StatefulBuilder(
-              builder: (ctx2, setState2) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (friends.isEmpty) const Text('No friends to share with'),
-                    if (friends.isNotEmpty)
-                      SizedBox(
-                        height: 280,
-                        child: ListView.builder(
-                          itemCount: friends.length,
-                          itemBuilder: (ctx3, i) {
-                            final f = friends[i];
-                            final uid = (f['uid'] ?? f['id'])?.toString();
-                            final label =
-                                (f['displayName'] ??
-                                        f['name'] ??
-                                        f['email'] ??
-                                        uid ??
-                                        'Friend')
-                                    .toString();
-                            return CheckboxListTile(
-                              value: uid != null && selected.contains(uid),
-                              onChanged: (v) {
-                                if (uid == null) return;
-                                setState2(() {
-                                  if (v == true) {
-                                    selected.add(uid);
-                                  } else {
-                                    selected.remove(uid);
-                                  }
-                                });
-                              },
-                              title: Text(label),
-                              subtitle: Text((f['email'] ?? '').toString()),
-                            );
-                          },
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: SizedBox(
+              width: double.maxFinite,
+              child: StatefulBuilder(
+                builder: (ctx2, setState2) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (friends.isEmpty)
+                        const Text('No friends to share with'),
+                      if (friends.isNotEmpty)
+                        SizedBox(
+                          height: 280,
+                          child: ListView.builder(
+                            itemCount: friends.length,
+                            itemBuilder: (ctx3, i) {
+                              final f = friends[i];
+                              final uid = (f['uid'] ?? f['id'])?.toString();
+                              final label =
+                                  (f['displayName'] ??
+                                          f['name'] ??
+                                          f['email'] ??
+                                          uid ??
+                                          'Friend')
+                                      .toString();
+                              return CheckboxListTile(
+                                value: uid != null && selected.contains(uid),
+                                onChanged: (v) {
+                                  if (uid == null) return;
+                                  setState2(() {
+                                    if (v == true) {
+                                      selected.add(uid);
+                                    } else {
+                                      selected.remove(uid);
+                                    }
+                                  });
+                                },
+                                title: Text(label),
+                                subtitle: Text((f['email'] ?? '').toString()),
+                              );
+                            },
+                          ),
                         ),
-                      ),
-                  ],
-                );
-              },
+                    ],
+                  );
+                },
+              ),
             ),
           ),
           actions: [
@@ -325,10 +332,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       });
                     } catch (e, st) {
                       // invite write failed — attempt to copy trip into recipient's trips as fallback
-                      // ignore: avoid_print
-                      print(
-                        'Invite write to $uid failed, attempting copy: $e\n$st',
-                      );
+                      if (kDebugMode) {
+                        // ignore: avoid_print
+                        print(
+                          'Invite write to $uid failed, attempting copy: $e\n$st',
+                        );
+                      }
                       try {
                         await FirebaseFirestore.instance
                             .collection('users')
@@ -357,8 +366,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         } catch (_) {}
                       } catch (e2, st2) {
                         failed.add(uid);
-                        // ignore: avoid_print
-                        print('Copy to $uid failed: $e2\n$st2');
+                        if (kDebugMode) {
+                          // ignore: avoid_print
+                          print('Copy to $uid failed: $e2\n$st2');
+                        }
                       }
                     }
                   }
@@ -379,14 +390,18 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         ),
                       );
                     }
-                    // ignore: avoid_print
-                    print(
-                      'Share completed with failures for uids: ${failed.join(', ')}',
-                    );
+                    if (kDebugMode) {
+                      // ignore: avoid_print
+                      print(
+                        'Share completed with failures for uids: ${failed.join(', ')}',
+                      );
+                    }
                   }
                 } catch (e, st) {
-                  // ignore: avoid_print
-                  print('Share failed: $e\n$st');
+                  if (kDebugMode) {
+                    // ignore: avoid_print
+                    print('Share failed: $e\n$st');
+                  }
                   if (mounted) {
                     ScaffoldMessenger.of(
                       context,
@@ -527,370 +542,360 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
     final nameCache = <String, String>{};
 
-    Future<void> ensureNames(List<String> uids) async {
-      final missing = uids.where((u) => !nameCache.containsKey(u)).toList();
-      for (final uid in missing) {
-        try {
-          final doc =
-              await FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(uid)
-                  .get();
-          final data = doc.data() ?? {};
-          final name =
-              (data['displayName'] ?? data['name'] ?? data['email'] ?? uid)
-                  .toString();
-          nameCache[uid] = name;
-        } catch (_) {
-          nameCache[uid] = uid;
-        }
-      }
-    }
+    final participants = collectParticipants();
+    await ensureNameCache(
+      nameCache,
+      participants,
+      currentUidForFriendsFallback: me.uid,
+    );
 
     await showDialog<void>(
       context: context,
       builder: (ctx) {
         String scopeView = 'group'; // 'group' or 'private'
         final addCtl = TextEditingController();
-        String addScope = 'group';
+        final qtyCtl = TextEditingController(text: '1');
         String? addAssignee;
-        final participants = collectParticipants();
-        ensureNames(participants);
 
         return StatefulBuilder(
           builder: (ctx2, setState2) {
+            final dialogHeight =
+                (MediaQuery.sizeOf(ctx2).height * 0.8)
+                    .clamp(360.0, 620.0)
+                    .toDouble();
             return AlertDialog(
               title: const Text('Packing list'),
-              content: SizedBox(
-                width: 520,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        ChoiceChip(
-                          label: const Text('Group'),
-                          selected: scopeView == 'group',
-                          onSelected:
-                              (v) => setState2(() => scopeView = 'group'),
-                        ),
-                        const SizedBox(width: 8),
-                        ChoiceChip(
-                          label: const Text('Private'),
-                          selected: scopeView == 'private',
-                          onSelected:
-                              (v) => setState2(() => scopeView = 'private'),
-                        ),
-                        const Spacer(),
-                        Text('Participants: ${participants.length}'),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                        stream:
-                            tripRef
-                                .collection('packing')
-                                .orderBy('createdAt')
-                                .snapshots(),
-                        builder: (ctx3, snap) {
-                          if (!snap.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
-                          }
-                          final docs = snap.data!.docs;
-                          final visible =
-                              docs.where((d) {
-                                final data = d.data();
-                                final pTo = data['privateTo'];
-                                if (scopeView == 'group') return pTo == null;
-                                return pTo != null && pTo == me.uid;
-                              }).toList();
-                          if (visible.isEmpty) {
-                            return const Center(
-                              child: Text('No packing items'),
-                            );
-                          }
-                          return ListView.separated(
-                            itemCount: visible.length,
-                            separatorBuilder:
-                                (_, __) => const Divider(height: 1),
-                            itemBuilder: (ctx4, i) {
-                              final d = visible[i];
-                              final data = d.data();
-                              final name = (data['name'] ?? '').toString();
-                              final checkedBy = List<String>.from(
-                                data['checkedBy'] ?? [],
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: SizedBox(
+                  width: double.maxFinite,
+                  height: dialogHeight,
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          ChoiceChip(
+                            label: const Text('Group'),
+                            selected: scopeView == 'group',
+                            onSelected:
+                                (v) => setState2(() => scopeView = 'group'),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('Private'),
+                            selected: scopeView == 'private',
+                            onSelected:
+                                (v) => setState2(() => scopeView = 'private'),
+                          ),
+                          const Spacer(),
+                          Text('Participants: ${participants.length}'),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: StreamBuilder<
+                          QuerySnapshot<Map<String, dynamic>>
+                        >(
+                          stream:
+                              tripRef
+                                  .collection('packing')
+                                  .orderBy('createdAt')
+                                  .snapshots(),
+                          builder: (ctx3, snap) {
+                            if (!snap.hasData) {
+                              return const Center(
+                                child: CircularProgressIndicator(),
                               );
-                              final checked = checkedBy.contains(me.uid);
-                              final assignee =
-                                  (data['assigneeUid'] ?? '').toString();
-                              final privateTo = data['privateTo'] as String?;
-                              final canEdit =
-                                  (scopeView == 'group') ||
-                                  (privateTo == me.uid);
-                              final assigneeName =
-                                  assignee.isNotEmpty
-                                      ? (nameCache[assignee] ?? assignee)
-                                      : '';
-                              if (assignee.isNotEmpty &&
-                                  !nameCache.containsKey(assignee)) {
-                                // fire-and-forget load
-                                FirebaseFirestore.instance
-                                    .collection('users')
-                                    .doc(assignee)
-                                    .get()
-                                    .then((doc) {
-                                      final ddata = doc.data() ?? {};
-                                      final n =
-                                          (ddata['displayName'] ??
-                                                  ddata['name'] ??
-                                                  ddata['email'] ??
-                                                  assignee)
-                                              .toString();
-                                      if (mounted) {
-                                        setState(() => nameCache[assignee] = n);
-                                      }
-                                    })
-                                    .catchError((_) {});
-                              }
+                            }
+                            final docs = snap.data!.docs;
+                            final visible =
+                                docs.where((d) {
+                                  final data = d.data();
+                                  final pTo = data['privateTo'];
+                                  if (scopeView == 'group') return pTo == null;
+                                  return pTo != null && pTo == me.uid;
+                                }).toList();
+                            if (visible.isEmpty) {
+                              return const Center(
+                                child: Text('No packing items'),
+                              );
+                            }
+                            return ListView.separated(
+                              itemCount: visible.length,
+                              separatorBuilder:
+                                  (_, __) => const Divider(height: 1),
+                              itemBuilder: (ctx4, i) {
+                                final d = visible[i];
+                                final data = d.data();
+                                final name = (data['name'] ?? '').toString();
+                                final qtyRaw = data['quantity'];
+                                final qty =
+                                    (qtyRaw is num)
+                                        ? qtyRaw.toInt()
+                                        : (int.tryParse(qtyRaw?.toString() ?? '') ??
+                                            1);
+                                final checkedBy = List<String>.from(
+                                  data['checkedBy'] ?? [],
+                                );
+                                final checked = checkedBy.contains(me.uid);
+                                final assignee =
+                                    (data['assigneeUid'] ?? '').toString();
+                                final privateTo = data['privateTo'] as String?;
+                                final canEdit =
+                                    (scopeView == 'group') ||
+                                    (privateTo == me.uid);
+                                final assigneeName =
+                                    assignee.isNotEmpty
+                                        ? (nameCache[assignee] ?? assignee)
+                                        : '';
 
-                              return CheckboxListTile(
-                                value: checked,
-                                onChanged: (v) async {
-                                  if (v == true) {
-                                    await d.reference.update({
-                                      'checkedBy': FieldValue.arrayUnion([
-                                        me.uid,
-                                      ]),
-                                    });
-                                  } else {
-                                    await d.reference.update({
-                                      'checkedBy': FieldValue.arrayRemove([
-                                        me.uid,
-                                      ]),
-                                    });
-                                  }
-                                },
-                                title: Row(
-                                  children: [
-                                    Expanded(child: Text(name)),
-                                    if (assigneeName.isNotEmpty)
-                                      Padding(
-                                        padding: const EdgeInsets.only(
-                                          left: 8.0,
+                                return CheckboxListTile(
+                                  value: checked,
+                                  onChanged: (v) async {
+                                    if (v == true) {
+                                      await d.reference.update({
+                                        'checkedBy': FieldValue.arrayUnion([
+                                          me.uid,
+                                        ]),
+                                      });
+                                    } else {
+                                      await d.reference.update({
+                                        'checkedBy': FieldValue.arrayRemove([
+                                          me.uid,
+                                        ]),
+                                      });
+                                    }
+                                  },
+                                  title: Row(
+                                    children: [
+                                      Expanded(child: Text(name)),
+                                      if (qty > 1)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            left: 8.0,
+                                          ),
+                                          child: Chip(
+                                            label: Text('x$qty'),
+                                          ),
                                         ),
-                                        child: Chip(label: Text(assigneeName)),
-                                      ),
-                                  ],
-                                ),
-                                subtitle:
-                                    canEdit
-                                        ? Row(
-                                          children: [
-                                            TextButton.icon(
-                                              onPressed: () async {
-                                                // open assignee editor
-                                                final chosen = await showDialog<
-                                                  String?
-                                                >(
-                                                  context: ctx2,
-                                                  builder: (ctx3) {
-                                                    String? sel =
-                                                        assignee.isNotEmpty
-                                                            ? assignee
-                                                            : null;
-                                                    return AlertDialog(
-                                                      title: const Text(
-                                                        'Assign item',
-                                                      ),
-                                                      content: SizedBox(
-                                                        width: 360,
-                                                        child: StatefulBuilder(
-                                                          builder: (
-                                                            ctx4,
-                                                            setState4,
-                                                          ) {
-                                                            return Column(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                DropdownButton<
-                                                                  String?
-                                                                >(
-                                                                  value: sel,
-                                                                  hint: const Text(
-                                                                    'Unassigned',
-                                                                  ),
-                                                                  isExpanded:
-                                                                      true,
-                                                                  items: [
-                                                                    const DropdownMenuItem<
-                                                                      String?
-                                                                    >(
-                                                                      value:
-                                                                          null,
-                                                                      child: Text(
-                                                                        'Unassigned',
-                                                                      ),
+                                      if (assigneeName.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            left: 8.0,
+                                          ),
+                                          child: Chip(
+                                            label: Text(assigneeName),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  subtitle:
+                                      canEdit
+                                          ? Row(
+                                            children: [
+                                              TextButton.icon(
+                                                onPressed: () async {
+                                                  // open assignee editor
+                                                  final chosen = await showDialog<
+                                                    String?
+                                                  >(
+                                                    context: ctx2,
+                                                    builder: (ctx3) {
+                                                      String? sel =
+                                                          assignee.isNotEmpty
+                                                              ? assignee
+                                                              : null;
+                                                      return AlertDialog(
+                                                        title: const Text(
+                                                          'Assign item',
+                                                        ),
+                                                        content: SizedBox(
+                                                          width: 360,
+                                                          child: StatefulBuilder(
+                                                            builder: (
+                                                              ctx4,
+                                                              setState4,
+                                                            ) {
+                                                              return Column(
+                                                                mainAxisSize:
+                                                                    MainAxisSize
+                                                                        .min,
+                                                                children: [
+                                                                  DropdownButton<
+                                                                    String?
+                                                                  >(
+                                                                    value: sel,
+                                                                    hint: const Text(
+                                                                      'Unassigned',
                                                                     ),
-                                                                    ...participants.map(
-                                                                      (
-                                                                        u,
-                                                                      ) => DropdownMenuItem(
+                                                                    isExpanded:
+                                                                        true,
+                                                                    items: [
+                                                                      const DropdownMenuItem<
+                                                                        String?
+                                                                      >(
                                                                         value:
-                                                                            u,
+                                                                            null,
                                                                         child: Text(
-                                                                          nameCache[u] ??
-                                                                              u,
+                                                                          'Unassigned',
                                                                         ),
                                                                       ),
-                                                                    ),
-                                                                  ],
-                                                                  onChanged:
-                                                                      (
-                                                                        v,
-                                                                      ) => setState4(
-                                                                        () =>
-                                                                            sel =
-                                                                                v,
+                                                                      ...participants.map(
+                                                                        (
+                                                                          u,
+                                                                        ) => DropdownMenuItem(
+                                                                          value:
+                                                                              u,
+                                                                          child: Text(
+                                                                            nameCache[u] ??
+                                                                                u,
+                                                                          ),
+                                                                        ),
                                                                       ),
-                                                                ),
-                                                              ],
-                                                            );
-                                                          },
-                                                        ),
-                                                      ),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed:
-                                                              () =>
-                                                                  Navigator.of(
-                                                                    ctx3,
-                                                                  ).pop(null),
-                                                          child: const Text(
-                                                            'Cancel',
+                                                                    ],
+                                                                    onChanged:
+                                                                        (
+                                                                          v,
+                                                                        ) => setState4(
+                                                                          () =>
+                                                                              sel = v,
+                                                                        ),
+                                                                  ),
+                                                                ],
+                                                              );
+                                                            },
                                                           ),
                                                         ),
-                                                        TextButton(
-                                                          onPressed:
-                                                              () =>
-                                                                  Navigator.of(
-                                                                    ctx3,
-                                                                  ).pop(sel),
-                                                          child: const Text(
-                                                            'Save',
+                                                        actions: [
+                                                          TextButton(
+                                                            onPressed:
+                                                                () =>
+                                                                    Navigator.of(
+                                                                      ctx3,
+                                                                    ).pop(null),
+                                                            child: const Text(
+                                                              'Cancel',
+                                                            ),
                                                           ),
-                                                        ),
-                                                      ],
-                                                    );
-                                                  },
-                                                );
-                                                if (chosen != null) {
-                                                  await d.reference.update({
-                                                    'assigneeUid': chosen,
-                                                  });
-                                                  if (mounted) setState2(() {});
-                                                }
-                                              },
-                                              icon: const Icon(
-                                                Icons.person_outline,
+                                                          TextButton(
+                                                            onPressed:
+                                                                () =>
+                                                                    Navigator.of(
+                                                                      ctx3,
+                                                                    ).pop(sel),
+                                                            child: const Text(
+                                                              'Save',
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      );
+                                                    },
+                                                  );
+                                                  if (chosen != null) {
+                                                    await d.reference.update({
+                                                      'assigneeUid': chosen,
+                                                    });
+                                                    if (mounted)
+                                                      setState2(() {});
+                                                  }
+                                                },
+                                                icon: const Icon(
+                                                  Icons.person_outline,
+                                                ),
+                                                label: Text(
+                                                  assigneeName.isNotEmpty
+                                                      ? 'Assigned: $assigneeName'
+                                                      : 'Assign',
+                                                ),
                                               ),
-                                              label: Text(
-                                                assigneeName.isNotEmpty
-                                                    ? 'Assigned: $assigneeName'
-                                                    : 'Assign',
-                                              ),
-                                            ),
-                                          ],
-                                        )
-                                        : null,
-                              );
-                            },
-                          );
-                        },
+                                            ],
+                                          )
+                                          : null,
+                                );
+                              },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: addCtl,
-                            decoration: const InputDecoration(
-                              hintText: 'Add item',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        DropdownButton<String>(
-                          value: addScope,
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'group',
-                              child: Text('Group'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'private',
-                              child: Text('Private'),
-                            ),
-                          ],
-                          onChanged:
-                              (v) => setState2(() => addScope = v ?? 'group'),
-                        ),
-                        const SizedBox(width: 8),
-                        DropdownButton<String?>(
-                          value: addAssignee,
-                          hint: const Text('Assignee'),
-                          items: [
-                            const DropdownMenuItem<String?>(
-                              value: null,
-                              child: Text('Unassigned'),
-                            ),
-                            ...participants.map(
-                              (u) => DropdownMenuItem<String?>(
-                                value: u,
-                                child: Text(nameCache[u] ?? u),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: addCtl,
+                              decoration: const InputDecoration(
+                                hintText: 'Add item',
                               ),
                             ),
-                          ],
-                          onChanged: (v) => setState2(() => addAssignee = v),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: () async {
-                            final t = addCtl.text.trim();
-                            if (t.isEmpty) return;
-                            final data = <String, dynamic>{
-                              'name': t,
-                              'createdAt': FieldValue.serverTimestamp(),
-                              'checkedBy': [],
-                            };
-                            if (addScope == 'private') {
-                              data['privateTo'] = me.uid;
-                            }
-                            if (addAssignee != null) {
-                              data['assigneeUid'] = addAssignee;
-                              data['assigneeName'] =
-                                  nameCache[addAssignee] ?? addAssignee;
-                            }
-                            if (kDebugMode) {
-                              print(
-                                'Packing add -> target: ${tripRef.path} data: $data',
-                              );
-                            }
-                            await tripRef.collection('packing').add(data);
-                            addCtl.clear();
-                            addAssignee = null;
-                            if (mounted) setState2(() {});
-                          },
-                          child: const Text('Add'),
-                        ),
-                      ],
-                    ),
-                  ],
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 92,
+                            child: TextField(
+                              controller: qtyCtl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                hintText: 'Qty',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          DropdownButton<String?>(
+                            value: addAssignee,
+                            hint: const Text('Assignee'),
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                value: null,
+                                child: Text('Unassigned'),
+                              ),
+                              ...participants.map(
+                                (u) => DropdownMenuItem<String?>(
+                                  value: u,
+                                  child: Text(nameCache[u] ?? u),
+                                ),
+                              ),
+                            ],
+                            onChanged: (v) => setState2(() => addAssignee = v),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: () async {
+                              final t = addCtl.text.trim();
+                              if (t.isEmpty) return;
+                              final q = int.tryParse(qtyCtl.text.trim());
+                              final data = <String, dynamic>{
+                                'name': t,
+                                'createdAt': FieldValue.serverTimestamp(),
+                                'checkedBy': [],
+                              };
+                              if (q != null && q > 1) {
+                                data['quantity'] = q;
+                              }
+                              if (scopeView == 'private') {
+                                data['privateTo'] = me.uid;
+                              }
+                              if (addAssignee != null) {
+                                data['assigneeUid'] = addAssignee;
+                                data['assigneeName'] =
+                                    nameCache[addAssignee] ?? addAssignee;
+                              }
+                              if (kDebugMode) {
+                                print(
+                                  'Packing add -> target: ${tripRef.path} data: $data',
+                                );
+                              }
+                              await tripRef.collection('packing').add(data);
+                              addCtl.clear();
+                              qtyCtl.text = '1';
+                              addAssignee = null;
+                              if (mounted) setState2(() {});
+                            },
+                            child: const Text('Add'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -920,133 +925,53 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           .collection('trips')
           .doc(widget.docId);
     }
-    await showDialog<void>(
+    await TripChatDialog.show(context: context, tripRef: tripRef, me: me);
+  }
+
+  Future<void> _openExpensesDialog() async {
+    final me = _user;
+    if (me == null) return;
+
+    DocumentReference<Map<String, dynamic>> tripRef;
+    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    if (refPath != null && refPath.isNotEmpty) {
+      tripRef = FirebaseFirestore.instance.doc(refPath);
+    } else {
+      tripRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(me.uid)
+          .collection('trips')
+          .doc(widget.docId);
+    }
+
+    List<String> collectParticipants() {
+      final parts = <String>{};
+      try {
+        final p = tripRef.path.split('/');
+        if (p.length >= 2 && p[0] == 'users') {
+          parts.add(p[1]);
+        }
+      } catch (_) {}
+
+      final shared =
+          (_liveData['sharedWith'] as List<dynamic>?) ??
+          (widget.data['sharedWith'] as List<dynamic>?) ??
+          [];
+      for (final s in shared) {
+        try {
+          parts.add(s.toString());
+        } catch (_) {}
+      }
+
+      if (me.uid.isNotEmpty) parts.add(me.uid);
+      return parts.toList();
+    }
+
+    await TripExpensesDialog.show(
       context: context,
-      builder: (ctx) {
-        final msgCtl = TextEditingController();
-        return AlertDialog(
-          title: const Text('Trip chat'),
-          content: SizedBox(
-            width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream:
-                        tripRef
-                            .collection('messages')
-                            .orderBy('createdAt')
-                            .snapshots(),
-                    builder: (ctx2, snap) {
-                      if (!snap.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      final docs = snap.data!.docs;
-                      if (docs.isEmpty) {
-                        return const Center(child: Text('No messages yet'));
-                      }
-                      return ListView.builder(
-                        itemCount: docs.length,
-                        itemBuilder: (ctx3, i) {
-                          final d = docs[i];
-                          final data = d.data();
-                          final senderUid =
-                              (data['senderUid'] ?? '').toString();
-                          final text = (data['text'] ?? '').toString();
-                          // Prefer explicit senderName written on messages (faster),
-                          // otherwise fall back to cache or async lookup of the user doc.
-                          String display =
-                              senderUid == me.uid ? 'You' : senderUid;
-                          final explicit =
-                              (data['senderName'] ?? '').toString();
-                          if (explicit.isNotEmpty) {
-                            display = explicit;
-                          } else if (senderUid != me.uid) {
-                            final cached = _nameCache[senderUid];
-                            if (cached != null) {
-                              display = cached;
-                            } else {
-                              // fire-and-forget fetch displayName
-                              FirebaseFirestore.instance
-                                  .collection('users')
-                                  .doc(senderUid)
-                                  .get()
-                                  .then((doc) {
-                                    final ddata = doc.data() ?? {};
-                                    final name =
-                                        (ddata['displayName'] ??
-                                                ddata['name'] ??
-                                                ddata['email'] ??
-                                                senderUid)
-                                            .toString();
-                                    if (mounted) {
-                                      setState(
-                                        () => _nameCache[senderUid] = name,
-                                      );
-                                    }
-                                  })
-                                  .catchError((_) {});
-                            }
-                          }
-                          return ListTile(
-                            title: Text(display),
-                            subtitle: text.isNotEmpty ? Text(text) : null,
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: msgCtl,
-                        decoration: const InputDecoration(hintText: 'Message'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final t = msgCtl.text.trim();
-                        if (t.isEmpty) return;
-                        try {
-                          // Debug: log the target path so we can confirm where messages are written
-                          if (kDebugMode) {
-                            print('Trip chat send -> target: ${tripRef.path}');
-                          }
-                          await tripRef.collection('messages').add({
-                            'senderUid': me.uid,
-                            'senderName': me.displayName ?? '',
-                            'text': t,
-                            'createdAt': FieldValue.serverTimestamp(),
-                          });
-                          msgCtl.clear();
-                        } catch (e) {
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Send failed: $e')),
-                            );
-                          }
-                        }
-                      },
-                      child: const Text('Send'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
+      tripRef: tripRef,
+      currentUid: me.uid,
+      participants: collectParticipants(),
     );
   }
 
@@ -1183,99 +1108,103 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           builder: (ctx2, setStateDialog) {
             return AlertDialog(
               title: const Text('Edit waypoint'),
-              content: SizedBox(
-                width: 560,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Name field (allows quick rename)
-                    TextField(
-                      controller: localNameCtrl,
-                      decoration: const InputDecoration(labelText: 'Name'),
-                    ),
-                    const SizedBox(height: 8),
-                    // Search box for picking a place (updates coords automatically)
-                    TextField(
-                      controller: searchCtrl,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.search),
-                        hintText: 'Search place to update location',
-                        suffix:
-                            localLoading
-                                ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                                : null,
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
+                child: SizedBox(
+                  width: double.maxFinite,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Name field (allows quick rename)
+                      TextField(
+                        controller: localNameCtrl,
+                        decoration: const InputDecoration(labelText: 'Name'),
                       ),
-                      onChanged: (v) {
-                        if (localDebounce?.isActive ?? false) {
-                          localDebounce?.cancel();
-                        }
-                        localDebounce = Timer(
-                          const Duration(milliseconds: 350),
-                          () async {
-                            await doSearch(v);
-                            setStateDialog(() {});
-                          },
-                        );
-                      },
-                    ),
-                    if (localSuggestions.isNotEmpty)
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 200),
-                        margin: const EdgeInsets.only(top: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          border: Border.all(color: Colors.grey.shade300),
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.06),
-                              blurRadius: 8,
-                            ),
-                          ],
+                      const SizedBox(height: 8),
+                      // Search box for picking a place (updates coords automatically)
+                      TextField(
+                        controller: searchCtrl,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.search),
+                          hintText: 'Search place to update location',
+                          suffix:
+                              localLoading
+                                  ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                  : null,
                         ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: localSuggestions.length,
-                          itemBuilder: (sctx, i) {
-                            final p = localSuggestions[i];
-                            final display = (p['display_name'] ?? '') as String;
-                            return ListTile(
-                              title: Text(
-                                display,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
+                        onChanged: (v) {
+                          if (localDebounce?.isActive ?? false) {
+                            localDebounce?.cancel();
+                          }
+                          localDebounce = Timer(
+                            const Duration(milliseconds: 350),
+                            () async {
+                              await doSearch(v);
+                              setStateDialog(() {});
+                            },
+                          );
+                        },
+                      ),
+                      if (localSuggestions.isNotEmpty)
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 200),
+                          margin: const EdgeInsets.only(top: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.06),
+                                blurRadius: 8,
                               ),
-                              onTap: () {
-                                final lat =
-                                    double.tryParse(
-                                      (p['lat'] ?? '').toString(),
-                                    ) ??
-                                    current['lat'] ??
-                                    0.0;
-                                final lon =
-                                    double.tryParse(
-                                      (p['lon'] ?? '').toString(),
-                                    ) ??
-                                    current['lon'] ??
-                                    0.0;
-                                // update waypoint immediately and close
-                                _waypoints[index]['name'] = display;
-                                _waypoints[index]['lat'] = lat;
-                                _waypoints[index]['lon'] = lon;
-                                if (mounted) setState(() {});
-                                Navigator.of(ctx).pop(true);
-                              },
-                            );
-                          },
+                            ],
+                          ),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: localSuggestions.length,
+                            itemBuilder: (sctx, i) {
+                              final p = localSuggestions[i];
+                              final display =
+                                  (p['display_name'] ?? '') as String;
+                              return ListTile(
+                                title: Text(
+                                  display,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onTap: () {
+                                  final lat =
+                                      double.tryParse(
+                                        (p['lat'] ?? '').toString(),
+                                      ) ??
+                                      current['lat'] ??
+                                      0.0;
+                                  final lon =
+                                      double.tryParse(
+                                        (p['lon'] ?? '').toString(),
+                                      ) ??
+                                      current['lon'] ??
+                                      0.0;
+                                  // update waypoint immediately and close
+                                  _waypoints[index]['name'] = display;
+                                  _waypoints[index]['lat'] = lat;
+                                  _waypoints[index]['lon'] = lon;
+                                  if (mounted) setState(() {});
+                                  Navigator.of(ctx).pop(true);
+                                },
+                              );
+                            },
+                          ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -1336,6 +1265,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             onPressed: _openPackingList,
           ),
           IconButton(
+            icon: const Icon(Icons.pie_chart),
+            tooltip: 'Expenses',
+            onPressed: _openExpensesDialog,
+          ),
+          IconButton(
             icon: const Icon(Icons.chat),
             tooltip: 'Open chat',
             onPressed: _openTripChat,
@@ -1373,7 +1307,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 secondaryPoints:
                     waypoints.asMap().entries.expand((entry) {
                       final wIndex = entry.key;
-                      final w = entry.value as Map<String, dynamic>;
+                      final w = entry.value;
 
                       final accs =
                           (w['accommodations'] as List<dynamic>?) ?? [];

@@ -16,7 +16,7 @@ class MyTripsScreen extends StatefulWidget {
 class _Hoverable extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
-  const _Hoverable({super.key, required this.child, this.onTap});
+  const _Hoverable({required this.child, this.onTap});
 
   @override
   State<_Hoverable> createState() => _HoverableState();
@@ -253,50 +253,54 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       builder: (ctx) {
         return AlertDialog(
           title: const Text('Share trip with friends'),
-          content: SizedBox(
-            width: 520,
-            child: StatefulBuilder(
-              builder: (ctx2, setState2) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (friends.isEmpty) const Text('No friends to share with'),
-                    if (friends.isNotEmpty)
-                      SizedBox(
-                        height: 280,
-                        child: ListView.builder(
-                          itemCount: friends.length,
-                          itemBuilder: (ctx3, i) {
-                            final f = friends[i];
-                            final uid = (f['uid'] ?? f['id'])?.toString();
-                            final label =
-                                (f['displayName'] ??
-                                        f['name'] ??
-                                        f['email'] ??
-                                        uid ??
-                                        'Friend')
-                                    .toString();
-                            return CheckboxListTile(
-                              value: uid != null && selected.contains(uid),
-                              onChanged: (v) {
-                                if (uid == null) return;
-                                setState2(() {
-                                  if (v == true) {
-                                    selected.add(uid);
-                                  } else {
-                                    selected.remove(uid);
-                                  }
-                                });
-                              },
-                              title: Text(label),
-                              subtitle: Text((f['email'] ?? '').toString()),
-                            );
-                          },
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: SizedBox(
+              width: double.maxFinite,
+              child: StatefulBuilder(
+                builder: (ctx2, setState2) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (friends.isEmpty)
+                        const Text('No friends to share with'),
+                      if (friends.isNotEmpty)
+                        SizedBox(
+                          height: 280,
+                          child: ListView.builder(
+                            itemCount: friends.length,
+                            itemBuilder: (ctx3, i) {
+                              final f = friends[i];
+                              final uid = (f['uid'] ?? f['id'])?.toString();
+                              final label =
+                                  (f['displayName'] ??
+                                          f['name'] ??
+                                          f['email'] ??
+                                          uid ??
+                                          'Friend')
+                                      .toString();
+                              return CheckboxListTile(
+                                value: uid != null && selected.contains(uid),
+                                onChanged: (v) {
+                                  if (uid == null) return;
+                                  setState2(() {
+                                    if (v == true) {
+                                      selected.add(uid);
+                                    } else {
+                                      selected.remove(uid);
+                                    }
+                                  });
+                                },
+                                title: Text(label),
+                                subtitle: Text((f['email'] ?? '').toString()),
+                              );
+                            },
+                          ),
                         ),
-                      ),
-                  ],
-                );
-              },
+                    ],
+                  );
+                },
+              ),
             ),
           ),
           actions: [
@@ -552,329 +556,340 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                               itemCount: docs.length,
                               itemBuilder: (ctx, i) {
                                 final d = docs[i];
-                              final data = d.data();
-                              final name = data['name'] ?? 'Untitled Trip';
-                              final created = data['createdAt'];
-                              final totalKm = (data['totalKm'] ?? 0) as num;
-                              final waypoints =
-                                  (data['waypoints'] as List<dynamic>?) ?? [];
+                                final data = d.data();
+                                final name = data['name'] ?? 'Untitled Trip';
+                                final created = data['createdAt'];
+                                final totalKm = (data['totalKm'] ?? 0) as num;
+                                final waypoints =
+                                    (data['waypoints'] as List<dynamic>?) ?? [];
 
-                              return ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: _Hoverable(
-                                  onTap: () {
-                                    Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                        builder:
-                                            (_) => TripDetailScreen(
-                                              docId: d.id,
-                                              data: data,
-                                            ),
-                                      ),
-                                    );
-                                  },
-                                  child: Material(
-                                    color: Colors.white,
-                                    elevation: 4,
-                                    child: Stack(
-                                      children: [
-                                        LayoutBuilder(
-                                          builder: (tileCtx, tileConstraints) {
-                                            // allocate footer as a proportion of available height
-                                            final available =
-                                                tileConstraints
-                                                        .maxHeight
-                                                        .isFinite
-                                                    ? tileConstraints.maxHeight
-                                                    : 320.0;
-                                            final footerHeight = (available *
-                                                    0.28)
-                                                .clamp(56.0, 140.0);
-                                            final mapHeight = (available -
-                                                    footerHeight)
-                                                .clamp(40.0, double.infinity);
+                                return ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: _Hoverable(
+                                    onTap: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder:
+                                              (_) => TripDetailScreen(
+                                                docId: d.id,
+                                                data: data,
+                                              ),
+                                        ),
+                                      );
+                                    },
+                                    child: Material(
+                                      color: Colors.white,
+                                      elevation: 4,
+                                      child: Stack(
+                                        children: [
+                                          LayoutBuilder(
+                                            builder: (
+                                              tileCtx,
+                                              tileConstraints,
+                                            ) {
+                                              // allocate footer as a proportion of available height
+                                              final available =
+                                                  tileConstraints
+                                                          .maxHeight
+                                                          .isFinite
+                                                      ? tileConstraints
+                                                          .maxHeight
+                                                      : 320.0;
+                                              final footerHeight = (available *
+                                                      0.28)
+                                                  .clamp(56.0, 140.0);
+                                              final mapHeight = (available -
+                                                      footerHeight)
+                                                  .clamp(40.0, double.infinity);
 
-                                            return Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.stretch,
-                                              children: [
-                                                SizedBox(
-                                                  height: mapHeight,
-                                                  child: ClipRRect(
-                                                    borderRadius:
-                                                        const BorderRadius.vertical(
-                                                          top: Radius.circular(
-                                                            12,
+                                              return Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.stretch,
+                                                children: [
+                                                  SizedBox(
+                                                    height: mapHeight,
+                                                    child: ClipRRect(
+                                                      borderRadius:
+                                                          const BorderRadius.vertical(
+                                                            top:
+                                                                Radius.circular(
+                                                                  12,
+                                                                ),
+                                                          ),
+                                                      child: MapEmbed(
+                                                        points:
+                                                            waypoints
+                                                                .map(
+                                                                  (w) => {
+                                                                    'lat':
+                                                                        (w['lat'] ??
+                                                                            w['latitude'] ??
+                                                                            0.0),
+                                                                    'lon':
+                                                                        (w['lon'] ??
+                                                                            w['longitude'] ??
+                                                                            w['lng'] ??
+                                                                            0.0),
+                                                                    'name':
+                                                                        w['name'] ??
+                                                                        '',
+                                                                  },
+                                                                )
+                                                                .toList(),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  Container(
+                                                    height: footerHeight,
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                          12.0,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      border: Border.all(
+                                                        color:
+                                                            Colors
+                                                                .grey
+                                                                .shade300,
+                                                      ),
+                                                      borderRadius:
+                                                          const BorderRadius.vertical(
+                                                            bottom:
+                                                                Radius.circular(
+                                                                  12,
+                                                                ),
+                                                          ),
+                                                    ),
+                                                    child: Row(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .center,
+                                                      children: [
+                                                        Expanded(
+                                                          child: Column(
+                                                            crossAxisAlignment:
+                                                                CrossAxisAlignment
+                                                                    .start,
+                                                            children: [
+                                                              Text(
+                                                                name,
+                                                                style: const TextStyle(
+                                                                  fontSize: 16,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .bold,
+                                                                ),
+                                                              ),
+                                                              const SizedBox(
+                                                                height: 6,
+                                                              ),
+                                                              Row(
+                                                                children: [
+                                                                  Icon(
+                                                                    Icons
+                                                                        .calendar_today,
+                                                                    size: 14,
+                                                                    color:
+                                                                        Colors
+                                                                            .grey[600],
+                                                                  ),
+                                                                  const SizedBox(
+                                                                    width: 6,
+                                                                  ),
+                                                                  Text(
+                                                                    created !=
+                                                                            null
+                                                                        ? _prettyDate(
+                                                                          created,
+                                                                        )
+                                                                        : '—',
+                                                                    style: TextStyle(
+                                                                      color:
+                                                                          Colors
+                                                                              .grey[700],
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ],
                                                           ),
                                                         ),
-                                                    child: MapEmbed(
-                                                      points:
-                                                          waypoints
-                                                              .map(
-                                                                (w) => {
-                                                                  'lat':
-                                                                      (w['lat'] ??
-                                                                          w['latitude'] ??
-                                                                          0.0),
-                                                                  'lon':
-                                                                      (w['lon'] ??
-                                                                          w['longitude'] ??
-                                                                          w['lng'] ??
-                                                                          0.0),
-                                                                  'name':
-                                                                      w['name'] ??
-                                                                      '',
-                                                                },
-                                                              )
-                                                              .toList(),
-                                                    ),
-                                                  ),
-                                                ),
-                                                Container(
-                                                  height: footerHeight,
-                                                  padding: const EdgeInsets.all(
-                                                    12.0,
-                                                  ),
-                                                  decoration: BoxDecoration(
-                                                    border: Border.all(
-                                                      color:
-                                                          Colors.grey.shade300,
-                                                    ),
-                                                    borderRadius:
-                                                        const BorderRadius.vertical(
-                                                          bottom:
-                                                              Radius.circular(
-                                                                12,
-                                                              ),
-                                                        ),
-                                                  ),
-                                                  child: Row(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .center,
-                                                    children: [
-                                                      Expanded(
-                                                        child: Column(
+                                                        Column(
                                                           crossAxisAlignment:
                                                               CrossAxisAlignment
-                                                                  .start,
+                                                                  .end,
                                                           children: [
-                                                            Text(
-                                                              name,
-                                                              style: const TextStyle(
-                                                                fontSize: 16,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
+                                                            Chip(
+                                                              label: Text(
+                                                                '${waypoints.length} stops',
                                                               ),
                                                             ),
                                                             const SizedBox(
                                                               height: 6,
                                                             ),
-                                                            Row(
-                                                              children: [
-                                                                Icon(
-                                                                  Icons
-                                                                      .calendar_today,
-                                                                  size: 14,
-                                                                  color:
-                                                                      Colors
-                                                                          .grey[600],
-                                                                ),
-                                                                const SizedBox(
-                                                                  width: 6,
-                                                                ),
-                                                                Text(
-                                                                  created !=
-                                                                          null
-                                                                      ? _prettyDate(
-                                                                        created,
-                                                                      )
-                                                                      : '—',
-                                                                  style: TextStyle(
-                                                                    color:
-                                                                        Colors
-                                                                            .grey[700],
-                                                                  ),
-                                                                ),
-                                                              ],
+                                                            Text(
+                                                              '${totalKm.toStringAsFixed(1)} km',
+                                                              style: const TextStyle(
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                              ),
                                                             ),
                                                           ],
                                                         ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              );
+                                            },
+                                          ),
+                                          // shared badge (left) — shows when trip is shared or was shared from someone
+                                          Builder(
+                                            builder: (ctx) {
+                                              final isShared =
+                                                  ((data['sharedWith'] as List?)
+                                                          ?.isNotEmpty ??
+                                                      false) ||
+                                                  (data['sharedFrom'] != null &&
+                                                      data['sharedFrom']
+                                                          .toString()
+                                                          .isNotEmpty);
+                                              if (!isShared) {
+                                                return const SizedBox.shrink();
+                                              }
+                                              return Positioned(
+                                                top: 8,
+                                                left: 8,
+                                                child: Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 6,
                                                       ),
-                                                      Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .end,
-                                                        children: [
-                                                          Chip(
-                                                            label: Text(
-                                                              '${waypoints.length} stops',
-                                                            ),
-                                                          ),
-                                                          const SizedBox(
-                                                            height: 6,
-                                                          ),
-                                                          Text(
-                                                            '${totalKm.toStringAsFixed(1)} km',
-                                                            style:
-                                                                const TextStyle(
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w600,
-                                                                ),
-                                                          ),
-                                                        ],
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue.shade600,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                    boxShadow: [
+                                                      BoxShadow(
+                                                        color: Colors.black
+                                                            .withOpacity(0.12),
+                                                        blurRadius: 6,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: const [
+                                                      Icon(
+                                                        Icons.people,
+                                                        size: 14,
+                                                        color: Colors.white,
+                                                      ),
+                                                      SizedBox(width: 6),
+                                                      Text(
+                                                        'Shared',
+                                                        style: TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 12,
+                                                        ),
                                                       ),
                                                     ],
                                                   ),
                                                 ),
-                                              ],
-                                            );
-                                          },
-                                        ),
-                                        // shared badge (left) — shows when trip is shared or was shared from someone
-                                        Builder(
-                                          builder: (ctx) {
-                                            final isShared =
-                                                ((data['sharedWith'] as List?)
-                                                        ?.isNotEmpty ??
-                                                    false) ||
-                                                (data['sharedFrom'] != null &&
-                                                    data['sharedFrom']
-                                                        .toString()
-                                                        .isNotEmpty);
-                                            if (!isShared) {
-                                              return const SizedBox.shrink();
-                                            }
-                                            return Positioned(
-                                              top: 8,
-                                              left: 8,
-                                              child: Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 6,
-                                                    ),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.blue.shade600,
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
-                                                  boxShadow: [
-                                                    BoxShadow(
-                                                      color: Colors.black
-                                                          .withOpacity(0.12),
-                                                      blurRadius: 6,
-                                                    ),
-                                                  ],
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: const [
-                                                    Icon(
-                                                      Icons.people,
-                                                      size: 14,
-                                                      color: Colors.white,
-                                                    ),
-                                                    SizedBox(width: 6),
-                                                    Text(
-                                                      'Shared',
-                                                      style: TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: 12,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                        Positioned(
-                                          top: 8,
-                                          right: 8,
-                                          child: PopupMenuButton<String>(
-                                            onSelected: (v) async {
-                                              if (v == 'delete') {
-                                                final ok = await showDialog<
-                                                  bool
-                                                >(
-                                                  context: context,
-                                                  builder:
-                                                      (ctx) => AlertDialog(
-                                                        title: const Text(
-                                                          'Delete trip?',
-                                                        ),
-                                                        content: const Text(
-                                                          'This will permanently delete the trip.',
-                                                        ),
-                                                        actions: [
-                                                          TextButton(
-                                                            onPressed:
-                                                                () =>
-                                                                    Navigator.of(
-                                                                      ctx,
-                                                                    ).pop(
-                                                                      false,
-                                                                    ),
-                                                            child: const Text(
-                                                              'Cancel',
-                                                            ),
+                                              );
+                                            },
+                                          ),
+                                          Positioned(
+                                            top: 8,
+                                            right: 8,
+                                            child: PopupMenuButton<String>(
+                                              onSelected: (v) async {
+                                                if (v == 'delete') {
+                                                  final ok = await showDialog<
+                                                    bool
+                                                  >(
+                                                    context: context,
+                                                    builder:
+                                                        (ctx) => AlertDialog(
+                                                          title: const Text(
+                                                            'Delete trip?',
                                                           ),
-                                                          TextButton(
-                                                            onPressed:
-                                                                () =>
-                                                                    Navigator.of(
-                                                                      ctx,
-                                                                    ).pop(true),
-                                                            child: const Text(
-                                                              'Delete',
-                                                            ),
+                                                          content: const Text(
+                                                            'This will permanently delete the trip.',
                                                           ),
-                                                        ],
+                                                          actions: [
+                                                            TextButton(
+                                                              onPressed:
+                                                                  () =>
+                                                                      Navigator.of(
+                                                                        ctx,
+                                                                      ).pop(
+                                                                        false,
+                                                                      ),
+                                                              child: const Text(
+                                                                'Cancel',
+                                                              ),
+                                                            ),
+                                                            TextButton(
+                                                              onPressed:
+                                                                  () =>
+                                                                      Navigator.of(
+                                                                        ctx,
+                                                                      ).pop(
+                                                                        true,
+                                                                      ),
+                                                              child: const Text(
+                                                                'Delete',
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                  );
+                                                  if (ok == true) {
+                                                    await _deleteTrip(d.id);
+                                                    ScaffoldMessenger.of(
+                                                      context,
+                                                    ).showSnackBar(
+                                                      const SnackBar(
+                                                        content: Text(
+                                                          'Trip deleted',
+                                                        ),
                                                       ),
-                                                );
-                                                if (ok == true) {
-                                                  await _deleteTrip(d.id);
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    const SnackBar(
-                                                      content: Text(
-                                                        'Trip deleted',
-                                                      ),
-                                                    ),
+                                                    );
+                                                  }
+                                                } else if (v == 'share') {
+                                                  await _shareTripFromMyTrips(
+                                                    d.id,
+                                                    data,
                                                   );
                                                 }
-                                              } else if (v == 'share') {
-                                                await _shareTripFromMyTrips(
-                                                  d.id,
-                                                  data,
-                                                );
-                                              }
-                                            },
-                                            itemBuilder:
-                                                (_) => [
-                                                  const PopupMenuItem(
-                                                    value: 'share',
-                                                    child: Text('Share'),
-                                                  ),
-                                                  const PopupMenuItem(
-                                                    value: 'delete',
-                                                    child: Text('Delete'),
-                                                  ),
-                                                ],
+                                              },
+                                              itemBuilder:
+                                                  (_) => [
+                                                    const PopupMenuItem(
+                                                      value: 'share',
+                                                      child: Text('Share'),
+                                                    ),
+                                                    const PopupMenuItem(
+                                                      value: 'delete',
+                                                      child: Text('Delete'),
+                                                    ),
+                                                  ],
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                              );
-                            },
+                                );
+                              },
+                            ),
                           ),
-                        ),
                       ],
                     );
                   },

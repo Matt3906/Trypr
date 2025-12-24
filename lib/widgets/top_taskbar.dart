@@ -36,6 +36,7 @@ class TopTaskbar extends StatefulWidget implements PreferredSizeWidget {
 class _TopTaskbarState extends State<TopTaskbar> {
   bool get _signedIn => AuthState.instance.signedIn.value;
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _userDoc;
+  VoidCallback? _signedInListener;
 
   @override
   void initState() {
@@ -46,7 +47,8 @@ class _TopTaskbarState extends State<TopTaskbar> {
           FirebaseFirestore.instance.collection('users').doc(u.uid).snapshots();
       _ensureUserDoc(u);
     }
-    AuthState.instance.signedIn.addListener(() {
+    _signedInListener = () {
+      if (!mounted) return;
       final uu = FirebaseAuth.instance.currentUser;
       setState(() {
         _userDoc =
@@ -56,9 +58,21 @@ class _TopTaskbarState extends State<TopTaskbar> {
                     .doc(uu.uid)
                     .snapshots()
                 : null;
-        if (uu != null) _ensureUserDoc(uu);
+        if (uu != null) {
+          _ensureUserDoc(uu);
+        }
       });
-    });
+    };
+    AuthState.instance.signedIn.addListener(_signedInListener!);
+  }
+
+  @override
+  void dispose() {
+    final l = _signedInListener;
+    if (l != null) {
+      AuthState.instance.signedIn.removeListener(l);
+    }
+    super.dispose();
   }
 
   Future<void> _ensureUserDoc(User u) async {
@@ -81,6 +95,17 @@ class _TopTaskbarState extends State<TopTaskbar> {
         upd['displayNameLower'] = '';
       }
       await doc.set(upd, SetOptions(merge: true));
+      // Also maintain a public profile doc for displaying names in shared trips.
+      // This avoids needing read access to /users/{uid} for other users.
+      final pub = FirebaseFirestore.instance
+          .collection('publicUsers')
+          .doc(u.uid);
+      await pub.set({
+        'displayName': dn,
+        'displayNameLower': dn.toLowerCase(),
+        'email': (u.email ?? '').toLowerCase(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     } catch (_) {
       // ignore errors here; this is best-effort to populate user doc for friend search
     }
@@ -89,116 +114,186 @@ class _TopTaskbarState extends State<TopTaskbar> {
   @override
   Widget build(BuildContext context) {
     final dp = widget.dockProgress.clamp(0.0, 1.0);
+    final w = MediaQuery.sizeOf(context).width;
+    final isMobile = w < 640;
+    final horizontalPadding = w < 420 ? 12.0 : 18.0;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeInOut,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
       color: Color.lerp(Colors.transparent, Colors.white, dp),
       child: SafeArea(
         child: Row(
           children: [
-            SizedBox(
-              height: 36,
-              child: Stack(
-                alignment: Alignment.centerLeft,
-                children: [
-                  Opacity(
-                    opacity: (1.0 - dp).clamp(0.0, 1.0),
-                    child: Image.asset(
-                      'images/Trypr Logo_White.png',
-                      fit: BoxFit.contain,
-                      errorBuilder:
-                          (ctx2, err, st) => Text(
-                            'Trypr',
-                            style: GoogleFonts.poppins(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                              color: Color.lerp(
-                                Colors.white,
-                                Colors.black87,
-                                dp,
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+                child: SizedBox(
+                  height: 36,
+                  child: Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      Opacity(
+                        opacity: (1.0 - dp).clamp(0.0, 1.0),
+                        child: Image.asset(
+                          'images/Trypr Logo_White.png',
+                          fit: BoxFit.contain,
+                          errorBuilder:
+                              (ctx2, err, st) => Text(
+                                'Trypr',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color.lerp(
+                                    Colors.white,
+                                    Colors.black87,
+                                    dp,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
+                        ),
+                      ),
+                      Opacity(
+                        opacity: (dp).clamp(0.0, 1.0),
+                        child: Image.asset(
+                          'images/Trypr Logo_Black.png',
+                          fit: BoxFit.contain,
+                          errorBuilder:
+                              (ctx2, err, st) => Text(
+                                'Trypr',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color.lerp(
+                                    Colors.white,
+                                    Colors.black87,
+                                    dp,
+                                  ),
+                                ),
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (!isMobile) ...[
+              SizedBox(width: w < 420 ? 10 : 18),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      children: [
+                        _NavItem(
+                          label: 'My Trips',
+                          color:
+                              Color.lerp(Colors.white70, Colors.black87, dp)!,
+                          onPressed:
+                              () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const MyTripsScreen(),
+                                ),
+                              ),
+                        ),
+                        _NavItem(
+                          label: 'Trip Builder',
+                          color:
+                              Color.lerp(Colors.white70, Colors.black87, dp)!,
+                          onPressed:
+                              () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const TripBuilderScreen(),
+                                ),
+                              ),
+                        ),
+                        _NavItem(
+                          label: 'Verified Trips',
+                          color:
+                              Color.lerp(Colors.white70, Colors.black87, dp)!,
+                          onPressed:
+                              () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const VerifiedTripsScreen(),
+                                ),
+                              ),
+                        ),
+                        _NavItem(
+                          label: 'About',
+                          color:
+                              Color.lerp(Colors.white70, Colors.black87, dp)!,
+                          onPressed:
+                              () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const AboutScreen(),
+                                ),
+                              ),
+                        ),
+                      ],
                     ),
                   ),
-                  Opacity(
-                    opacity: (dp).clamp(0.0, 1.0),
-                    child: Image.asset(
-                      'images/Trypr Logo_Black.png',
-                      fit: BoxFit.contain,
-                      errorBuilder:
-                          (ctx2, err, st) => Text(
-                            'Trypr',
-                            style: GoogleFonts.poppins(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                              color: Color.lerp(
-                                Colors.white,
-                                Colors.black87,
-                                dp,
-                              ),
-                            ),
-                          ),
-                    ),//Penis
-                  ),
-                ],
+                ),
               ),
-            ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
-                  _NavItem(
-                    label: 'Home',
-                    color: Color.lerp(Colors.white70, Colors.black87, dp)!,
-                    onPressed:
-                        () => Navigator.of(context).popUntil((r) => r.isFirst),
-                  ),
-                  _NavItem(
-                    label: 'My Trips',
-                    color: Color.lerp(Colors.white70, Colors.black87, dp)!,
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const MyTripsScreen(),
-                          ),
+            ] else ...[
+              const Spacer(),
+              PopupMenuButton<String>(
+                tooltip: 'Menu',
+                icon: Icon(
+                  Icons.menu,
+                  color: Color.lerp(Colors.white, Colors.black87, dp),
+                ),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'my_trips':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const MyTripsScreen(),
                         ),
-                  ),
-                  _NavItem(
-                    label: 'Trip Builder',
-                    color: Color.lerp(Colors.white70, Colors.black87, dp)!,
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const TripBuilderScreen(),
-                          ),
+                      );
+                      return;
+                    case 'trip_builder':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const TripBuilderScreen(),
                         ),
-                  ),
-                  _NavItem(
-                    label: 'Verified Trips',
-                    color: Color.lerp(Colors.white70, Colors.black87, dp)!,
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const VerifiedTripsScreen(),
-                          ),
+                      );
+                      return;
+                    case 'verified_trips':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const VerifiedTripsScreen(),
                         ),
-                  ),
-                  _NavItem(
-                    label: 'About',
-                    color: Color.lerp(Colors.white70, Colors.black87, dp)!,
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const AboutScreen(),
-                          ),
-                        ),
-                  ),
-                ],
+                      );
+                      return;
+                    case 'about':
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const AboutScreen()),
+                      );
+                      return;
+                  }
+                },
+                itemBuilder:
+                    (ctx) => const [
+                      PopupMenuItem(value: 'my_trips', child: Text('My Trips')),
+                      PopupMenuItem(
+                        value: 'trip_builder',
+                        child: Text('Trip Builder'),
+                      ),
+                      PopupMenuItem(
+                        value: 'verified_trips',
+                        child: Text('Verified Trips'),
+                      ),
+                      PopupMenuItem(value: 'about', child: Text('About')),
+                    ],
               ),
-            ),
+              const SizedBox(width: 8),
+            ],
             StreamBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
               stream: _userDoc,
               builder: (ctx, snap) {
@@ -237,90 +332,89 @@ class _TopTaskbarState extends State<TopTaskbar> {
                     child: PopupMenuButton<String>(
                       padding: EdgeInsets.zero,
                       child: avatarChild,
-                    onSelected: (value) async {
-                      if (value == 'sign_in') {
-                        final res = await Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const SignInScreen(),
-                          ),
-                        );
-                        if (res == true) {
-                          (widget.onSignInStateChanged ??
-                              AuthState.instance.setSignedIn)(true);
-                        }
-                      } else if (value == 'create_account') {
-                        final res = await Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const CreateAccountScreen(),
-                          ),
-                        );
-                        if (res == true) {
-                          (widget.onSignInStateChanged ??
-                              AuthState.instance.setSignedIn)(true);
-                        }
-                      } else if (value == 'view_account') {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const AccountScreen(),
-                          ),
-                        );
-                      } else if (value == 'friends') {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const FriendsScreen(),
-                          ),
-                        );
-                      } else if (value == 'sign_out') {
-                        try {
-                          await FirebaseAuth.instance.signOut();
-                        } catch (_) {}
-                        (widget.onSignInStateChanged ??
-                            AuthState.instance.setSignedIn)(false);
-                        // Navigate back to sign-in clearing the stack so the
-                        // application state resets to a fresh view.
-                        if (mounted) {
-                          Navigator.of(context).pushNamedAndRemoveUntil(
-                            '/sign-in',
-                            (route) => false,
+                      onSelected: (value) async {
+                        if (value == 'sign_in') {
+                          final res = await Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SignInScreen(),
+                            ),
                           );
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Signed out')),
+                          if (res == true) {
+                            (widget.onSignInStateChanged ??
+                                AuthState.instance.setSignedIn)(true);
+                          }
+                        } else if (value == 'create_account') {
+                          final res = await Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const CreateAccountScreen(),
+                            ),
                           );
+                          if (res == true) {
+                            (widget.onSignInStateChanged ??
+                                AuthState.instance.setSignedIn)(true);
+                          }
+                        } else if (value == 'view_account') {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const AccountScreen(),
+                            ),
+                          );
+                        } else if (value == 'friends') {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const FriendsScreen(),
+                            ),
+                          );
+                        } else if (value == 'sign_out') {
+                          try {
+                            await FirebaseAuth.instance.signOut();
+                          } catch (_) {}
+                          (widget.onSignInStateChanged ??
+                              AuthState.instance.setSignedIn)(false);
+                          // Navigate back to sign-in clearing the stack so the
+                          // application state resets to a fresh view.
+                          if (mounted) {
+                            Navigator.of(
+                              context,
+                            ).pushNamedAndRemoveUntil('/', (route) => false);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Signed out')),
+                            );
+                          }
                         }
-                      }
-                    },
-                    itemBuilder: (ctx2) {
-                      if (!_signedIn) {
+                      },
+                      itemBuilder: (ctx2) {
+                        if (!_signedIn) {
+                          return [
+                            const PopupMenuItem(
+                              value: 'sign_in',
+                              child: Text('Sign in'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'create_account',
+                              child: Text('Create account'),
+                            ),
+                          ];
+                        }
                         return [
                           const PopupMenuItem(
-                            value: 'sign_in',
-                            child: Text('Sign in'),
+                            value: 'view_account',
+                            child: Text('View account'),
                           ),
                           const PopupMenuItem(
-                            value: 'create_account',
-                            child: Text('Create account'),
+                            value: 'friends',
+                            child: Text('Friends'),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: 'sign_out',
+                            child: Text('Sign out'),
                           ),
                         ];
-                      }
-                      return [
-                        const PopupMenuItem(
-                          value: 'view_account',
-                          child: Text('View account'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'friends',
-                          child: Text('Friends'),
-                        ),
-                        const PopupMenuDivider(),
-                        const PopupMenuItem(
-                          value: 'sign_out',
-                          child: Text('Sign out'),
-                        ),
-                      ];
-                    },
-                      ),
+                      },
                     ),
-                  );
+                  ),
+                );
               },
             ),
           ],
@@ -335,7 +429,6 @@ class _NavItem extends StatelessWidget {
   final Color color;
   final VoidCallback? onPressed;
   const _NavItem({
-    super.key,
     required this.label,
     this.color = Colors.white70,
     this.onPressed,
