@@ -197,7 +197,7 @@ class TripExpensesDialog {
                                 children: [
                                   Expanded(
                                     child: DropdownButtonFormField<String>(
-                                      value:
+                                      initialValue:
                                           categories.contains(editCategory)
                                               ? editCategory
                                               : 'Other',
@@ -225,7 +225,7 @@ class TripExpensesDialog {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: DropdownButtonFormField<String>(
-                                      value:
+                                      initialValue:
                                           payerOptions.contains(editPaidBy)
                                               ? editPaidBy
                                               : '',
@@ -376,7 +376,9 @@ class TripExpensesDialog {
                         const SizedBox(width: 8),
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            value: payerOptions.contains(paidBy) ? paidBy : '',
+                            isExpanded: true,
+                            initialValue:
+                                payerOptions.contains(paidBy) ? paidBy : '',
                             items:
                                 payerOptions
                                     .map(
@@ -386,6 +388,8 @@ class TripExpensesDialog {
                                           uid.isEmpty
                                               ? 'Unassigned'
                                               : (nameCache[uid] ?? uid),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
                                     )
@@ -403,7 +407,8 @@ class TripExpensesDialog {
                         const SizedBox(width: 8),
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            value:
+                            isExpanded: true,
+                            initialValue:
                                 categories.contains(category)
                                     ? category
                                     : 'Other',
@@ -412,7 +417,11 @@ class TripExpensesDialog {
                                     .map(
                                       (c) => DropdownMenuItem<String>(
                                         value: c,
-                                        child: Text(c),
+                                        child: Text(
+                                          c,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
                                       ),
                                     )
                                     .toList(),

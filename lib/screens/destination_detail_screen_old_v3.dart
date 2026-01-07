@@ -1,3 +1,5 @@
+// ignore_for_file: unused_element, unused_field, unused_local_variable
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -80,7 +82,8 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   }
 
   void _initializeItinerary() {
-    if (_destData['itinerary'] == null || (_destData['itinerary'] as List).isEmpty) {
+    if (_destData['itinerary'] == null ||
+        (_destData['itinerary'] as List).isEmpty) {
       final itinerary = <Map<String, dynamic>>[];
       for (int i = 0; i < _dayCount; i++) {
         itinerary.add({
@@ -126,9 +129,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -521,8 +524,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       return Center(
         child: Text(
           'Set dates first to plan your itinerary',
-          style: Theme.of(context).textTheme.bodyMedium
-              ?.copyWith(color: Colors.grey),
+          style: Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: Colors.grey),
         ),
       );
     }
@@ -536,14 +540,11 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
           unselectedLabelColor: Colors.grey,
           indicatorColor: const Color(0xFF00695C),
           isScrollable: true,
-          tabs: List.generate(
-            _weekCount,
-            (i) {
-              final startDay = i * 7 + 1;
-              final endDay = ((i + 1) * 7).clamp(0, _dayCount);
-              return Tab(text: 'Week ${i + 1} (Days $startDay-$endDay)');
-            },
-          ),
+          tabs: List.generate(_weekCount, (i) {
+            final startDay = i * 7 + 1;
+            final endDay = ((i + 1) * 7).clamp(0, _dayCount);
+            return Tab(text: 'Week ${i + 1} (Days $startDay-$endDay)');
+          }),
         ),
         // Week tabview
         Expanded(
@@ -573,16 +574,13 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
-        children: List.generate(
-          daysInWeek,
-          (localDayIndex) {
-            final globalDayIndex = startDayIndex + localDayIndex;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 24),
-              child: _buildDayCard(globalDayIndex, itinerary),
-            );
-          },
-        ),
+        children: List.generate(daysInWeek, (localDayIndex) {
+          final globalDayIndex = startDayIndex + localDayIndex;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: _buildDayCard(globalDayIndex, itinerary),
+          );
+        }),
       ),
     );
   }
@@ -673,12 +671,13 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
             ),
           // Add activity button
           GradientButton(
-            onPressed: () => _showActivityDialog(
-              activities,
-              dayData,
-              itinerary,
-              dayIndex,
-            ),
+            onPressed:
+                () => _showActivityDialog(
+                  activities,
+                  dayData,
+                  itinerary,
+                  dayIndex,
+                ),
             child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -705,13 +704,14 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     final color = travelCategories[category] ?? Colors.teal;
 
     return GestureDetector(
-      onTap: () => _showActivityDialog(
-        activities,
-        dayData,
-        itinerary,
-        dayIndex,
-        activity,
-      ),
+      onTap:
+          () => _showActivityDialog(
+            activities,
+            dayData,
+            itinerary,
+            dayIndex,
+            activity,
+          ),
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.all(12),
@@ -737,14 +737,16 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                 children: [
                   Text(
                     activity['title'] ?? 'Untitled',
-                    style: Theme.of(context).textTheme.titleSmall
-                        ?.copyWith(fontWeight: FontWeight.bold),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     '${activity['time'] ?? '--:--'} • ${activity['location'] ?? 'No location'}',
-                    style: Theme.of(context).textTheme.bodySmall
-                        ?.copyWith(color: Colors.grey),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.grey),
                   ),
                   if ((activity['notes'] ?? '').isNotEmpty)
                     Padding(
@@ -800,171 +802,173 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
-        content: SingleChildScrollView(
-          child: SizedBox(
-            width: 400,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Title
-                TextField(
-                  textDirection: TextDirection.ltr,
-                  controller: titleCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Activity Title',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Time picker with button
-                Row(
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
+            content: SingleChildScrollView(
+              child: SizedBox(
+                width: 400,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: TextField(
-                        textDirection: TextDirection.ltr,
-                        controller: timeCtrl,
-                        readOnly: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Time (HH:MM)',
-                          border: OutlineInputBorder(),
-                          hintText: '09:00',
-                        ),
+                    // Title
+                    TextField(
+                      textDirection: TextDirection.ltr,
+                      controller: titleCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Activity Title',
+                        border: OutlineInputBorder(),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    GradientButton(
-                      onPressed: () async {
-                        final timeOfDay = await showTimePicker(
-                          context: ctx,
-                          initialTime: TimeOfDay.now(),
-                        );
-                        if (timeOfDay != null) {
-                          final formattedTime =
-                              '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
-                          setState(() {
-                            timeCtrl.text = formattedTime;
-                          });
-                        }
+                    const SizedBox(height: 12),
+                    // Time picker with button
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            textDirection: TextDirection.ltr,
+                            controller: timeCtrl,
+                            readOnly: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Time (HH:MM)',
+                              border: OutlineInputBorder(),
+                              hintText: '09:00',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        GradientButton(
+                          onPressed: () async {
+                            final timeOfDay = await showTimePicker(
+                              context: ctx,
+                              initialTime: TimeOfDay.now(),
+                            );
+                            if (timeOfDay != null) {
+                              final formattedTime =
+                                  '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
+                              setState(() {
+                                timeCtrl.text = formattedTime;
+                              });
+                            }
+                          },
+                          child: const Icon(Icons.access_time),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // Location
+                    TextField(
+                      textDirection: TextDirection.ltr,
+                      controller: locationCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Location',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.location_on),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Notes
+                    TextField(
+                      textDirection: TextDirection.ltr,
+                      controller: notesCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Notes',
+                        border: OutlineInputBorder(),
+                      ),
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 12),
+                    // Category dropdown
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedCategory,
+                      decoration: const InputDecoration(
+                        labelText: 'Category',
+                        border: OutlineInputBorder(),
+                      ),
+                      items:
+                          travelCategories.keys.map((cat) {
+                            return DropdownMenuItem(
+                              value: cat,
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 12,
+                                    height: 12,
+                                    decoration: BoxDecoration(
+                                      color: travelCategories[cat],
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(cat),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                      onChanged: (value) {
+                        setState(() {
+                          selectedCategory = value ?? 'Hiking';
+                        });
                       },
-                      child: const Icon(Icons.access_time),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                // Location
-                TextField(
-                  textDirection: TextDirection.ltr,
-                  controller: locationCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Location',
-                    border: OutlineInputBorder(),
-                    suffixIcon: Icon(Icons.location_on),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                // Notes
-                TextField(
-                  textDirection: TextDirection.ltr,
-                  controller: notesCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Notes',
-                    border: OutlineInputBorder(),
-                  ),
-                  maxLines: 3,
-                ),
-                const SizedBox(height: 12),
-                // Category dropdown
-                DropdownButtonFormField<String>(
-                  initialValue: selectedCategory,
-                  decoration: const InputDecoration(
-                    labelText: 'Category',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: travelCategories.keys.map((cat) {
-                    return DropdownMenuItem(
-                      value: cat,
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: travelCategories[cat],
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(cat),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                  onChanged: (value) {
-                    setState(() {
-                      selectedCategory = value ?? 'Hiking';
-                    });
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          if (isEdit)
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  final idx = activities.indexOf(existingActivity);
-                  if (idx >= 0) {
-                    activities.removeAt(idx);
-                  }
-                  dayData['activities'] = activities;
-                  itinerary[dayIndex] = dayData;
-                  _destData['itinerary'] = itinerary;
-                });
-                Navigator.pop(ctx);
-              },
-              child: const Text(
-                'Delete',
-                style: TextStyle(color: Colors.red),
               ),
             ),
-          TextButton(
-            onPressed: () {
-              setState(() {
-                final newActivity = {
-                  'title': titleCtrl.text,
-                  'time': timeCtrl.text,
-                  'location': locationCtrl.text,
-                  'notes': notesCtrl.text,
-                  'category': selectedCategory,
-                };
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              if (isEdit)
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      final idx = activities.indexOf(existingActivity);
+                      if (idx >= 0) {
+                        activities.removeAt(idx);
+                      }
+                      dayData['activities'] = activities;
+                      itinerary[dayIndex] = dayData;
+                      _destData['itinerary'] = itinerary;
+                    });
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text(
+                    'Delete',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    final newActivity = {
+                      'title': titleCtrl.text,
+                      'time': timeCtrl.text,
+                      'location': locationCtrl.text,
+                      'notes': notesCtrl.text,
+                      'category': selectedCategory,
+                    };
 
-                if (isEdit) {
-                  final idx = activities.indexOf(existingActivity);
-                  if (idx >= 0) {
-                    activities[idx] = newActivity;
-                  }
-                } else {
-                  activities.add(newActivity);
-                }
+                    if (isEdit) {
+                      final idx = activities.indexOf(existingActivity);
+                      if (idx >= 0) {
+                        activities[idx] = newActivity;
+                      }
+                    } else {
+                      activities.add(newActivity);
+                    }
 
-                dayData['activities'] = activities;
-                itinerary[dayIndex] = dayData;
-                _destData['itinerary'] = itinerary;
-              });
-              Navigator.pop(ctx);
-            },
-            child: const Text('Save'),
+                    dayData['activities'] = activities;
+                    itinerary[dayIndex] = dayData;
+                    _destData['itinerary'] = itinerary;
+                  });
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Save'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 

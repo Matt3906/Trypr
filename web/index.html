@@ -21,6 +21,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="description" content="A new Flutter project.">
 
+  <!-- Google Maps API key for hosted builds (alternative to --dart-define=GOOGLE_MAPS_API_KEY=...) -->
+  <meta name="google-maps-api-key" content="">
+
+  <!-- Load Google Maps JS API if the meta tag is set -->
+  <script>
+    (function () {
+      try {
+        var meta = document.querySelector('meta[name="google-maps-api-key"]');
+        var key = (meta && meta.getAttribute('content') || '').trim();
+        if (!key) return;
+
+        // Avoid double-injecting if another script already loaded the API.
+        if (window.google && window.google.maps) return;
+
+        var s = document.createElement('script');
+        s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key) + '&loading=async';
+        s.async = true;
+        s.defer = true;
+        document.head.appendChild(s);
+      } catch (e) {
+        // ignore
+      }
+    })();
+  </script>
+
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
@@ -29,6 +54,16 @@
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="assets/images/Trypr%20Logo_Black.png"/>
+
+  <!-- Ensure platform views (e.g., Google Maps) don't sit above Flutter overlays -->
+  <style>
+    flt-platform-view, flt-platform-view-slot {
+      z-index: 0 !important;
+    }
+    flt-glass-pane {
+      z-index: 1 !important;
+    }
+  </style>
 
   <title>trypr</title>
   <link rel="manifest" href="manifest.json">

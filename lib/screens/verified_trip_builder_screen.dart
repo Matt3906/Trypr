@@ -55,7 +55,23 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
   final List<String> _photoUrls = [];
   final List<_Waypoint> _waypoints = [];
 
+  // Per-day itinerary for verified trips.
+  // Stored as: [{'title': 'Day 1', 'notes': '', 'activities': [{'time':'', 'title':'', 'description':''}, ...]}, ...]
+  final List<Map<String, dynamic>> _itinerary = [];
+
   bool _saving = false;
+
+  bool _suspendMapTap = false;
+
+  Future<T?> _withMapTapSuspended<T>(Future<T?> Function() action) async {
+    if (!mounted) return null;
+    setState(() => _suspendMapTap = true);
+    try {
+      return await action();
+    } finally {
+      if (mounted) setState(() => _suspendMapTap = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -129,6 +145,109 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
       total += w.days;
     }
     return total;
+  }
+
+  Map<String, dynamic> _newDay(int dayNumber) {
+    return {
+      'title': 'Day $dayNumber',
+      'notes': '',
+      'activities': <Map<String, dynamic>>[],
+    };
+  }
+
+  void _ensureItineraryLength(int dayCount) {
+    final desired = dayCount < 0 ? 0 : dayCount;
+    while (_itinerary.length < desired) {
+      _itinerary.add(_newDay(_itinerary.length + 1));
+    }
+    while (_itinerary.length > desired) {
+      _itinerary.removeLast();
+    }
+    // Keep titles sane if days were added/removed.
+    for (var i = 0; i < _itinerary.length; i++) {
+      final day = _itinerary[i];
+      day['title'] =
+          (day['title'] as String?)?.trim().isNotEmpty == true
+              ? day['title']
+              : 'Day ${i + 1}';
+    }
+  }
+
+  Future<Map<String, String>?> _promptActivity({
+    required String dayTitle,
+    Map<String, dynamic>? initial,
+  }) {
+    final timeCtl = TextEditingController(
+      text: (initial?['time'] ?? '').toString(),
+    );
+    final titleCtl = TextEditingController(
+      text: (initial?['title'] ?? '').toString(),
+    );
+    final descCtl = TextEditingController(
+      text: (initial?['description'] ?? '').toString(),
+    );
+
+    return _withMapTapSuspended(() async {
+      final result = await showDialog<Map<String, String>>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(initial == null ? 'Add activity' : 'Edit activity'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    dayTitle,
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: timeCtl,
+                  decoration: const InputDecoration(
+                    labelText: 'Time (e.g. 9:00 AM)',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: titleCtl,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: descCtl,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Description (optional)',
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  final title = titleCtl.text.trim();
+                  if (title.isEmpty) return;
+                  Navigator.of(ctx).pop({
+                    'time': timeCtl.text.trim(),
+                    'title': title,
+                    'description': descCtl.text.trim(),
+                  });
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+      return result;
+    });
   }
 
   double get _totalKm {
@@ -282,64 +401,69 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
     setState(() => _photoUrls.add(dataUrl));
   }
 
-  Future<int?> _promptDays({required String locationName}) async {
-    var value = 2;
-    return showDialog<int>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Recommended days here'),
-          content: StatefulBuilder(
-            builder: (ctx2, setState2) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    locationName,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Text('Days:'),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: DropdownButton<int>(
-                          value: value,
-                          isExpanded: true,
-                          items: List.generate(
-                            21,
-                            (i) => DropdownMenuItem(
-                              value: i + 1,
-                              child: Text('${i + 1} day${i == 0 ? '' : 's'}'),
+  Future<int?> _promptDays({
+    required String locationName,
+    int initialValue = 2,
+  }) async {
+    var value = initialValue.clamp(1, 21);
+    return _withMapTapSuspended(
+      () => showDialog<int>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: const Text('Recommended days here'),
+            content: StatefulBuilder(
+              builder: (ctx2, setState2) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      locationName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text('Days:'),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: DropdownButton<int>(
+                            value: value,
+                            isExpanded: true,
+                            items: List.generate(
+                              21,
+                              (i) => DropdownMenuItem(
+                                value: i + 1,
+                                child: Text('${i + 1} day${i == 0 ? '' : 's'}'),
+                              ),
                             ),
+                            onChanged: (v) {
+                              if (v == null) return;
+                              setState2(() => value = v);
+                            },
                           ),
-                          onChanged: (v) {
-                            if (v == null) return;
-                            setState2(() => value = v);
-                          },
                         ),
-                      ),
-                    ],
-                  ),
-                ],
-              );
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('Cancel'),
+                      ],
+                    ),
+                  ],
+                );
+              },
             ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(value),
-              child: const Text('Add'),
-            ),
-          ],
-        );
-      },
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(value),
+                child: const Text('Add'),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -353,6 +477,7 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
     if (!mounted) return;
     setState(() {
       _waypoints.add(_Waypoint(name: name, lat: lat, lon: lon, days: days));
+      _ensureItineraryLength(_recommendedDays);
       _searchResults = [];
       _searchCtl.clear();
     });
@@ -452,6 +577,7 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
         'recommendedDays': recommendedDays,
         // Back-compat
         'days': recommendedDays,
+        'itinerary': _itinerary,
         'photos': uniquePhotos,
         'waypoints':
             _waypoints
@@ -489,6 +615,9 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final mapHeight = (screenWidth * 0.55).clamp(220.0, 340.0);
+
     final cover =
         _coverImage.trim().isNotEmpty
             ? _coverImage.trim()
@@ -728,31 +857,31 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                     ],
                     const SizedBox(height: 10),
                     SizedBox(
-                      height: 260,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: MapEmbed(
-                          points:
-                              _waypoints
-                                  .map(
-                                    (w) => {
-                                      'name': w.name,
-                                      'lat': w.lat,
-                                      'lon': w.lon,
-                                    },
-                                  )
-                                  .toList(),
-                          onMapTap: (lat, lon) async {
-                            final name = await reverseNominatim(lat, lon);
-                            await _addWaypointFromResult(
-                              name: name ?? 'Dropped Pin',
-                              lat: lat,
-                              lon: lon,
-                            );
-                          },
+                      height: mapHeight,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Material(
+                          color: Theme.of(context).colorScheme.surface,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey.shade300),
+                            ),
+                            child: IgnorePointer(
+                              ignoring: _suspendMapTap,
+                              child: MapEmbed(
+                                points:
+                                    _waypoints
+                                        .map(
+                                          (w) => {
+                                            'name': w.name,
+                                            'lat': w.lat,
+                                            'lon': w.lon,
+                                          },
+                                        )
+                                        .toList(),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -807,34 +936,243 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          DropdownButton<int>(
-                            value: w.days,
-                            items: List.generate(
-                              21,
-                              (idx) => DropdownMenuItem(
-                                value: idx + 1,
-                                child: Text('${idx + 1}d'),
-                              ),
+                          SizedBox(
+                            width: 72,
+                            child: OutlinedButton(
+                              onPressed:
+                                  _saving
+                                      ? null
+                                      : () async {
+                                        final v = await _promptDays(
+                                          locationName: w.name,
+                                          initialValue: w.days,
+                                        );
+                                        if (v == null) return;
+                                        if (!mounted) return;
+                                        setState(() {
+                                          w.days = v;
+                                          _ensureItineraryLength(
+                                            _recommendedDays,
+                                          );
+                                        });
+                                      },
+                              child: Text('${w.days}d'),
                             ),
-                            onChanged:
-                                _saving
-                                    ? null
-                                    : (v) {
-                                      if (v == null) return;
-                                      setState(() => w.days = v);
-                                    },
                           ),
                           IconButton(
                             tooltip: 'Remove stop',
                             onPressed:
                                 _saving
                                     ? null
-                                    : () =>
-                                        setState(() => _waypoints.removeAt(i)),
+                                    : () => setState(() {
+                                      _waypoints.removeAt(i);
+                                      _ensureItineraryLength(_recommendedDays);
+                                    }),
                             icon: const Icon(Icons.delete_outline),
                           ),
                         ],
                       ),
+                    );
+                  },
+                ),
+              ),
+            ],
+
+            if (_waypoints.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Text(
+                    'Itinerary (by day)',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${_itinerary.length} days',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.black54),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Card(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _itinerary.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (ctx, dayIndex) {
+                    final day = _itinerary[dayIndex];
+                    final title =
+                        (day['title'] ?? 'Day ${dayIndex + 1}').toString();
+                    final notes = (day['notes'] ?? '').toString();
+                    final activities = List<Map<String, dynamic>>.from(
+                      (day['activities'] as List<dynamic>? ?? const []).map(
+                        (a) => Map<String, dynamic>.from(a as Map),
+                      ),
+                    );
+
+                    return ExpansionTile(
+                      title: Text(title),
+                      subtitle:
+                          notes.trim().isEmpty
+                              ? Text(
+                                '${activities.length} activit${activities.length == 1 ? 'y' : 'ies'}',
+                              )
+                              : Text(
+                                notes,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        TextField(
+                          enabled: !_saving,
+                          decoration: const InputDecoration(
+                            labelText: 'Day notes (optional)',
+                          ),
+                          controller: TextEditingController(text: notes)
+                            ..selection = TextSelection.collapsed(
+                              offset: notes.length,
+                            ),
+                          onChanged: (v) {
+                            setState(() {
+                              day['notes'] = v;
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed:
+                                  _saving
+                                      ? null
+                                      : () async {
+                                        final res = await _promptActivity(
+                                          dayTitle: title,
+                                        );
+                                        if (res == null) return;
+                                        setState(() {
+                                          final list =
+                                              List<Map<String, dynamic>>.from(
+                                                day['activities']
+                                                        as List<dynamic>? ??
+                                                    const [],
+                                              );
+                                          list.add({
+                                            'time': res['time'] ?? '',
+                                            'title': res['title'] ?? '',
+                                            'description':
+                                                res['description'] ?? '',
+                                          });
+                                          day['activities'] = list;
+                                        });
+                                      },
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add activity'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        if (activities.isEmpty)
+                          const Text('No activities yet.'),
+                        if (activities.isNotEmpty)
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: activities.length,
+                            separatorBuilder:
+                                (_, __) => const Divider(height: 1),
+                            itemBuilder: (ctx2, aIndex) {
+                              final a = activities[aIndex];
+                              final aTime = (a['time'] ?? '').toString();
+                              final aTitle = (a['title'] ?? '').toString();
+                              final aDesc = (a['description'] ?? '').toString();
+
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(
+                                  aTitle.isEmpty ? 'Activity' : aTitle,
+                                ),
+                                subtitle:
+                                    (aTime.trim().isEmpty &&
+                                            aDesc.trim().isEmpty)
+                                        ? null
+                                        : Text(
+                                          [
+                                            if (aTime.trim().isNotEmpty)
+                                              aTime.trim(),
+                                            if (aDesc.trim().isNotEmpty)
+                                              aDesc.trim(),
+                                          ].join(' — '),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: 'Edit activity',
+                                      onPressed:
+                                          _saving
+                                              ? null
+                                              : () async {
+                                                final res =
+                                                    await _promptActivity(
+                                                      dayTitle: title,
+                                                      initial: a,
+                                                    );
+                                                if (res == null) return;
+                                                setState(() {
+                                                  final list = List<
+                                                    Map<String, dynamic>
+                                                  >.from(
+                                                    day['activities']
+                                                            as List<dynamic>? ??
+                                                        const [],
+                                                  );
+                                                  list[aIndex] = {
+                                                    'time': res['time'] ?? '',
+                                                    'title': res['title'] ?? '',
+                                                    'description':
+                                                        res['description'] ??
+                                                        '',
+                                                  };
+                                                  day['activities'] = list;
+                                                });
+                                              },
+                                      icon: const Icon(Icons.edit_outlined),
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Delete activity',
+                                      onPressed:
+                                          _saving
+                                              ? null
+                                              : () {
+                                                setState(() {
+                                                  final list = List<
+                                                    Map<String, dynamic>
+                                                  >.from(
+                                                    day['activities']
+                                                            as List<dynamic>? ??
+                                                        const [],
+                                                  );
+                                                  list.removeAt(aIndex);
+                                                  day['activities'] = list;
+                                                });
+                                              },
+                                      icon: const Icon(Icons.delete_outline),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                      ],
                     );
                   },
                 ),
@@ -897,11 +1235,7 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                         setState(() => _photoUrls.removeAt(i)),
                             child: const Padding(
                               padding: EdgeInsets.all(6),
-                              child: Icon(
-                                Icons.close,
-                                color: Colors.white,
-                                size: 16,
-                              ),
+                              child: Icon(Icons.close, color: Colors.white),
                             ),
                           ),
                         ),
@@ -910,14 +1244,6 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                   );
                 },
               ),
-
-            const SizedBox(height: 24),
-
-            ElevatedButton.icon(
-              onPressed: _saving ? null : _save,
-              icon: const Icon(Icons.save),
-              label: const Text('Save verified trip'),
-            ),
           ],
         ),
       ),

@@ -4,11 +4,21 @@
     {
       "label": "Flutter: Build Web",
       "type": "shell",
-      "command": "flutter build web",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1",
       "group": {
         "kind": "build",
         "isDefault": true
       },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Flutter: Run Chrome (with Maps key)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_run_chrome.ps1",
       "presentation": {
         "reveal": "always",
         "panel": "shared"
@@ -28,7 +38,7 @@
     {
       "label": "Watch: Rebuild Web on Change",
       "type": "shell",
-      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"flutter build web\"",
+      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1\"",
       "presentation": {
         "reveal": "always",
         "panel": "shared"

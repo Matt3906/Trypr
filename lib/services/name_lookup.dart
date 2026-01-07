@@ -2,11 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 Future<void> ensureNameCache(
   Map<String, String> cache,
-  List<String> uids,
-  {
+  List<String> uids, {
   String? currentUidForFriendsFallback,
-}
-) async {
+}) async {
   final missing =
       uids.where((u) => u.isNotEmpty && !cache.containsKey(u)).toList();
 

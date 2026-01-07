@@ -1,9 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:latlong2/latlong.dart';
 
 class VisitedMapScreen extends StatefulWidget {
@@ -15,6 +17,8 @@ class VisitedMapScreen extends StatefulWidget {
 
 class _VisitedMapScreenState extends State<VisitedMapScreen> {
   User? get _user => FirebaseAuth.instance.currentUser;
+
+  static const _mapsKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
 
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _userDocStream() {
     final u = _user;
@@ -139,6 +143,31 @@ class _VisitedMapScreenState extends State<VisitedMapScreen> {
   // and provides a tap handler to add regions. Country-shape toggling can be
   // added later if precise geometry data is available.
   Widget _buildMapArea(Set<String> visitedSet) {
+    if (kIsWeb) {
+      if (_mapsKey.isEmpty) {
+        return const Center(
+          child: Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              'Google Maps is not configured. Build with '
+              '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        );
+      }
+
+      return gmaps.GoogleMap(
+        initialCameraPosition: const gmaps.CameraPosition(
+          target: gmaps.LatLng(20, 0),
+          zoom: 2,
+        ),
+        onTap: (_) => _showAddDialog(),
+        mapToolbarEnabled: false,
+        myLocationButtonEnabled: false,
+      );
+    }
+
     return FlutterMap(
       options: MapOptions(
         center: LatLng(20, 0),

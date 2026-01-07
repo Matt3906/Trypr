@@ -1546,14 +1546,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
     });
   }
 
-  Future<void> _selectStartDate() async {
-    await _selectDateRange();
-  }
-
-  Future<void> _selectEndDate() async {
-    await _selectDateRange();
-  }
-
   void _showAIAssistant(String context) {
     ScaffoldMessenger.of(this.context).showSnackBar(
       SnackBar(content: Text('AI Assistant for $context coming soon!')),

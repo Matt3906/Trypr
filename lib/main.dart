@@ -11,6 +11,7 @@ import 'screens/friends_screen.dart';
 import 'screens/my_trips_screen.dart';
 import 'screens/trip_builder_screen.dart';
 import 'services/auth_state.dart';
+import 'services/google_maps_loader.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
@@ -19,6 +20,19 @@ Future<void> main() async {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.web);
   } else {
     await Firebase.initializeApp();
+  }
+
+  // Web-only: load Google Maps JS once (key provided via --dart-define).
+  // If not provided, the app still runs, but map widgets will show a hint.
+  if (kIsWeb) {
+    try {
+      await ensureGoogleMapsLoaded();
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Google Maps JS failed to load: $e');
+      }
+    }
   }
 
   // App Check helps protect Firebase resources from abuse.

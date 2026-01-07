@@ -6,7 +6,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
-import 'package:trypr/widgets/trip_chat_dialog.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -41,6 +40,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   User? _currentUser;
   bool _isSaving = false;
   DocumentReference<Map<String, dynamic>>? _lastSavedTripRef;
+
+  bool _suspendMapTap = false;
+
+  Future<T?> _withMapTapSuspended<T>(Future<T?> Function() action) async {
+    if (!mounted) return null;
+    setState(() => _suspendMapTap = true);
+    try {
+      return await action();
+    } finally {
+      if (mounted) setState(() => _suspendMapTap = false);
+    }
+  }
 
   int get _totalTripDays {
     final r = _tripRange;
@@ -77,9 +88,15 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   DateTime _stripTime(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  Future<int?> _promptNights({required String locationName, int? max}) async {
-    final maxNights = (max ?? 30).clamp(1, 365);
-    var value = 1;
+  Future<int?> _promptNights({
+    required String locationName,
+    required int max,
+    int? initialValue,
+  }) async {
+    if (!mounted) return null;
+    final maxNights = math.max(1, max);
+    int value = (initialValue ?? 1).clamp(1, maxNights);
+
     return showDialog<int>(
       context: context,
       builder: (ctx) {
@@ -221,272 +238,109 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         }).toList();
 
     final selected = <String>{};
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Share trip with friends'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: SizedBox(
-              width: double.maxFinite,
-              child: StatefulBuilder(
-                builder: (ctx2, setState) {
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (friends.isEmpty)
-                        const Text('No friends to share with'),
-                      if (friends.isNotEmpty)
-                        SizedBox(
-                          height: 280,
-                          child: ListView.builder(
-                            itemCount: friends.length,
-                            itemBuilder: (ctx3, i) {
-                              final f = friends[i];
-                              final uid = (f['uid'] ?? f['id'])?.toString();
-                              final label =
-                                  (f['displayName'] ??
-                                          f['name'] ??
-                                          f['email'] ??
-                                          uid ??
-                                          'Friend')
-                                      .toString();
-                              return CheckboxListTile(
-                                value: uid != null && selected.contains(uid),
-                                onChanged: (v) {
-                                  if (uid == null) return;
-                                  setState(() {
-                                    if (v == true) {
-                                      selected.add(uid);
-                                    } else {
-                                      selected.remove(uid);
-                                    }
-                                  });
-                                },
-                                title: Text(label),
-                                subtitle: Text((f['email'] ?? '').toString()),
-                              );
-                            },
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.of(ctx).pop();
-                if (selected.isEmpty) return;
-                try {
-                  final tripId = _lastSavedTripRef!.id;
-                  await _lastSavedTripRef!.update({
-                    'sharedWith': FieldValue.arrayUnion(selected.toList()),
-                  });
-                  for (final uid in selected) {
-                    final dest = FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(uid)
-                        .collection('sharedTrips')
-                        .doc(tripId);
-                    await dest.set({
-                      'ownerUid': me.uid,
-                      'ownerName': me.displayName ?? me.email ?? me.uid,
-                      'tripRef': _lastSavedTripRef!.path,
-                      'tripName': _tripNameCtrl.text.trim(),
-                      'createdAt': FieldValue.serverTimestamp(),
-                    });
-                  }
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Trip shared')),
-                    );
-                  }
-                } catch (err) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to share: $err')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Share'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _openPackingList(
-    DocumentReference<Map<String, dynamic>> tripRef,
-  ) async {
-    final me = FirebaseAuth.instance.currentUser;
-    if (me == null) return;
-
-    final addCtl = TextEditingController();
-    final qtyCtl = TextEditingController(text: '1');
-    try {
-      await showDialog<void>(
+    await _withMapTapSuspended(
+      () => showDialog<void>(
         context: context,
         builder: (ctx) {
-          final dialogHeight =
-              (MediaQuery.sizeOf(ctx).height * 0.75)
-                  .clamp(320.0, 560.0)
-                  .toDouble();
-
           return AlertDialog(
-            title: const Text('Packing list'),
+            title: const Text('Share trip with friends'),
             content: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
               child: SizedBox(
                 width: double.maxFinite,
-                height: dialogHeight,
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                        stream:
-                            tripRef
-                                .collection('packing')
-                                .orderBy('createdAt')
-                                .snapshots(),
-                        builder: (ctx2, snap) {
-                          if (!snap.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
-                          }
-                          final docs = snap.data!.docs;
-                          if (docs.isEmpty) {
-                            return const Center(
-                              child: Text('No packing items'),
-                            );
-                          }
-                          return ListView.separated(
-                            itemCount: docs.length,
-                            separatorBuilder:
-                                (_, __) => const Divider(height: 1),
-                            itemBuilder: (ctx3, i) {
-                              final d = docs[i];
-                              final data = d.data();
-                              final name = (data['name'] ?? '').toString();
-                              final qtyRaw = data['quantity'];
-                              final qty =
-                                  (qtyRaw is num)
-                                      ? qtyRaw.toInt()
-                                      : (int.tryParse(qtyRaw?.toString() ?? '') ??
-                                          1);
-                              final checkedBy = List<String>.from(
-                                data['checkedBy'] ?? [],
-                              );
-                              final checked = checkedBy.contains(me.uid);
-                              return CheckboxListTile(
-                                value: checked,
-                                onChanged: (v) async {
-                                  if (v == true) {
-                                    await d.reference.update({
-                                      'checkedBy': FieldValue.arrayUnion([
-                                        me.uid,
-                                      ]),
-                                    });
-                                  } else {
-                                    await d.reference.update({
-                                      'checkedBy': FieldValue.arrayRemove([
-                                        me.uid,
-                                      ]),
-                                    });
-                                  }
-                                },
-                                title: Text(name),
-                                subtitle:
-                                    qty > 1
-                                        ? Text('Qty: $qty')
-                                        : null,
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
+                child: StatefulBuilder(
+                  builder: (ctx2, setState) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(
-                          child: TextField(
-                            controller: addCtl,
-                            decoration: const InputDecoration(
-                              hintText: 'Add item',
+                        if (friends.isEmpty)
+                          const Text('No friends to share with'),
+                        if (friends.isNotEmpty)
+                          SizedBox(
+                            height: 280,
+                            child: ListView.builder(
+                              itemCount: friends.length,
+                              itemBuilder: (ctx3, i) {
+                                final f = friends[i];
+                                final uid = (f['uid'] ?? f['id'])?.toString();
+                                final label =
+                                    (f['displayName'] ??
+                                            f['name'] ??
+                                            f['email'] ??
+                                            uid ??
+                                            'Friend')
+                                        .toString();
+                                return CheckboxListTile(
+                                  value: uid != null && selected.contains(uid),
+                                  onChanged: (v) {
+                                    if (uid == null) return;
+                                    setState(() {
+                                      if (v == true) {
+                                        selected.add(uid);
+                                      } else {
+                                        selected.remove(uid);
+                                      }
+                                    });
+                                  },
+                                  title: Text(label),
+                                  subtitle: Text((f['email'] ?? '').toString()),
+                                );
+                              },
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 92,
-                          child: TextField(
-                            controller: qtyCtl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              hintText: 'Qty',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: () async {
-                            final t = addCtl.text.trim();
-                            if (t.isEmpty) return;
-                            final q = int.tryParse(qtyCtl.text.trim());
-                            await tripRef.collection('packing').add({
-                              'name': t,
-                              if (q != null && q > 1) 'quantity': q,
-                              'createdAt': FieldValue.serverTimestamp(),
-                              'checkedBy': <String>[],
-                            });
-                            addCtl.clear();
-                            qtyCtl.text = '1';
-                          },
-                          child: const Text('Add'),
-                        ),
                       ],
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Close'),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.of(ctx).pop();
+                  if (selected.isEmpty) return;
+                  try {
+                    final tripId = _lastSavedTripRef!.id;
+                    await _lastSavedTripRef!.update({
+                      'sharedWith': FieldValue.arrayUnion(selected.toList()),
+                    });
+                    for (final uid in selected) {
+                      final dest = FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(uid)
+                          .collection('sharedTrips')
+                          .doc(tripId);
+                      await dest.set({
+                        'ownerUid': me.uid,
+                        'ownerName': me.displayName ?? me.email ?? me.uid,
+                        'tripRef': _lastSavedTripRef!.path,
+                        'tripName': _tripNameCtrl.text.trim(),
+                        'createdAt': FieldValue.serverTimestamp(),
+                      });
+                    }
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Trip shared')),
+                      );
+                    }
+                  } catch (err) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed to share: $err')),
+                      );
+                    }
+                  }
+                },
+                child: const Text('Share'),
               ),
             ],
           );
         },
-      );
-    } finally {
-      addCtl.dispose();
-      qtyCtl.dispose();
-    }
-  }
-
-  Future<void> _openTripChat(
-    DocumentReference<Map<String, dynamic>> tripRef,
-  ) async {
-    final me = FirebaseAuth.instance.currentUser;
-    if (me == null) return;
-
-    await TripChatDialog.show(
-      context: context,
-      tripRef: tripRef,
-      me: me,
-      allowImageUrl: true,
+      ),
     );
   }
 
@@ -540,8 +394,10 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
             final decoded = jsonDecode(dataRaw);
             if (decoded is Map) {
               if (decoded['type'] == 'map_click') {
+                if (_suspendMapTap) return;
                 final lat = (decoded['lat'] ?? 0.0) as num;
                 final lon = (decoded['lon'] ?? 0.0) as num;
+
                 // Try reverse geocoding (web only). If it fails, fallback to "Dropped Pin".
                 String name = 'Dropped Pin';
                 try {
@@ -553,6 +409,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     name = resolved;
                   }
                 } catch (_) {}
+
                 await _addWaypointWithPrompt(
                   name,
                   lat.toDouble(),
@@ -568,91 +425,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               }
             }
           }
-        } catch (e) {
+        } catch (_) {
           // ignore malformed messages
         }
       });
     } catch (_) {
       // html.window not available on non-web; ignore.
     }
-  }
-
-  void _openMapInNewTab() {
-    final pts =
-        _waypoints
-            .map((w) => {'name': w.name, 'lat': w.lat, 'lon': w.lon})
-            .toList();
-    final markersJson = jsonEncode(pts);
-    final htmlDoc = '''<!doctype html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <style>html,body,#map{height:100%;margin:0;padding:0} .num-marker { background:#1976D2;color:white;border-radius:50%;width:28px;height:28px;line-height:28px;text-align:center;font-weight:700; }</style>
-</head>
-<body>
-  <div id="map"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    try {
-      const pts = $markersJson;
-      const map = L.map('map').setView([0,0],2);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' }).addTo(map);
-      const markers = [];
-      const latlngs = [];
-      for (let i = 0; i < pts.length; i++) {
-        const p = pts[i];
-        latlngs.push([p.lat, p.lon]);
-        const icon = L.divIcon({className: 'num-marker', html: '<div class="num-marker">'+(i+1)+'</div>', iconSize:[28,28]});
-        const m = L.marker([p.lat, p.lon], {icon: icon}).addTo(map).bindPopup('<b>' + (p.name||'Point') + '</b>');
-        markers.push(m);
-      }
-      if (markers.length > 0) {
-        const group = L.featureGroup(markers);
-        map.fitBounds(group.getBounds().pad(0.2));
-        if (latlngs.length>1) {
-          // Try OSRM road-following route first.
-          const coords = pts.map(function(p) { return (p.lon + ',' + p.lat); }).join(';');
-          const url = 'https://router.project-osrm.org/route/v1/driving/' + coords + '?overview=full&geometries=geojson';
-          fetch(url)
-            .then(r => r.ok ? r.json() : Promise.reject(new Error('OSRM ' + r.status)))
-            .then(data => {
-              const route = (data.routes && data.routes[0]) ? data.routes[0] : null;
-              if (route && route.geometry && route.geometry.coordinates) {
-                const line = route.geometry.coordinates.map(c => [c[1], c[0]]);
-                L.polyline(line, {color: 'blue', weight:3, opacity:0.8}).addTo(map);
-                try {
-                  // Inform the opener so the app can display road distance / duration.
-                  window.opener && window.opener.postMessage(JSON.stringify({
-                    type: 'route_summary',
-                    distance: route.distance || 0,
-                    duration: route.duration || 0
-                  }), '*');
-                } catch (_) {}
-              } else {
-                L.polyline(latlngs, {color: 'blue', weight:3, opacity:0.7}).addTo(map);
-              }
-            })
-            .catch(_ => {
-              // Fallback: straight polyline between points.
-              L.polyline(latlngs, {color: 'blue', weight:3, opacity:0.7}).addTo(map);
-            });
-        }
-      }
-    } catch(e) { document.body.innerHTML = '<pre style="color:red">Map init error: '+e+'</pre>'; }
-  </script>
-</body>
-</html>''';
-
-    // Create a Blob URL to avoid data URL/CSP issues
-    final blob = html.Blob([htmlDoc], 'text/html');
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    html.window.open(url, '_blank');
-    // Revoke the object URL after a delay to allow the new tab to load
-    Future.delayed(
-      const Duration(seconds: 2),
-      () => html.Url.revokeObjectUrl(url),
-    );
   }
 
   @override
@@ -697,11 +476,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         start: now,
                         end: now.add(const Duration(days: 6)),
                       );
-                  final picked = await showDateRangePicker(
-                    context: context,
-                    firstDate: DateTime(now.year - 5),
-                    lastDate: DateTime(now.year + 5),
-                    initialDateRange: initial,
+                  final picked = await _withMapTapSuspended(
+                    () => showDateRangePicker(
+                      context: context,
+                      firstDate: DateTime(now.year - 5),
+                      lastDate: DateTime(now.year + 5),
+                      initialDateRange: initial,
+                    ),
                   );
                   if (picked != null && mounted) {
                     final r = DateTimeRange(
@@ -816,23 +597,21 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           SizedBox(
-                            width: 90,
-                            child: DropdownButton<int>(
-                              value: nights,
-                              isExpanded: true,
-                              items: List.generate(
-                                maxNightsForRow,
-                                (idx) => DropdownMenuItem(
-                                  value: idx + 1,
-                                  child: Text(
-                                    '${idx + 1} night${idx == 0 ? '' : 's'}',
-                                  ),
-                                ),
-                              ),
-                              onChanged: (v) {
+                            width: 110,
+                            child: OutlinedButton(
+                              onPressed: () async {
+                                final v = await _promptNights(
+                                  locationName: _waypoints[i].name,
+                                  max: maxNightsForRow,
+                                  initialValue: nights,
+                                );
                                 if (v == null) return;
+                                if (!mounted) return;
                                 setState(() => _waypoints[i].nights = v);
                               },
+                              child: Text(
+                                '$nights night${nights == 1 ? '' : 's'}',
+                              ),
                             ),
                           ),
                           IconButton(
@@ -1068,7 +847,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 ),
                 const SizedBox(width: 8),
                 PopupMenuButton<String>(
-                  onSelected: (v) => _addWaypointFromLookup(v),
+                  onOpened: () {
+                    if (mounted) setState(() => _suspendMapTap = true);
+                  },
+                  onCanceled: () {
+                    if (mounted) setState(() => _suspendMapTap = false);
+                  },
+                  onSelected: (v) {
+                    if (mounted) setState(() => _suspendMapTap = false);
+                    _addWaypointFromLookup(v);
+                  },
                   enabled: _tripRange != null,
                   itemBuilder:
                       (_) =>
@@ -1154,7 +942,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     child: const Text('Add'),
                   ),
                   PopupMenuButton<String>(
-                    onSelected: (v) => _addWaypointFromLookup(v),
+                    onOpened: () {
+                      if (mounted) setState(() => _suspendMapTap = true);
+                    },
+                    onCanceled: () {
+                      if (mounted) setState(() => _suspendMapTap = false);
+                    },
+                    onSelected: (v) {
+                      if (mounted) setState(() => _suspendMapTap = false);
+                      _addWaypointFromLookup(v);
+                    },
                     enabled: _tripRange != null,
                     itemBuilder:
                         (_) =>
@@ -1234,26 +1031,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             (w) => {'name': w.name, 'lat': w.lat, 'lon': w.lon},
                           )
                           .toList(),
-                  onMapTap: (lat, lon) async {
-                    if (_tripRange == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Select a trip date range first'),
-                        ),
-                      );
-                      return;
-                    }
-                    try {
-                      final name = await reverseNominatim(lat, lon);
-                      await _addWaypointWithPrompt(
-                        name ?? 'Dropped Pin',
-                        lat,
-                        lon,
-                      );
-                    } catch (_) {
-                      await _addWaypointWithPrompt('Dropped Pin', lat, lon);
-                    }
-                  },
                 ),
               ),
             ),

@@ -11,7 +11,7 @@ import 'dart:math' as math;
 import 'dart:html' as html;
 
 // MAP PACKAGES
-import 'package:flutter_map/flutter_map.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:latlong2/latlong.dart';
 // 'http' used previously for remote GeoJSON fetch; now we load from assets.
 
@@ -27,6 +27,8 @@ class _AccountScreenState extends State<AccountScreen> {
   // Staged visited countries while editing the embedded map
   final Set<String> _stagedVisited = {};
   bool _isEditingVisited = false;
+
+  static const _mapsKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
 
   // MAP STATE (uses dedicated VisitedMapScreen)
 
@@ -272,28 +274,42 @@ class _AccountScreenState extends State<AccountScreen> {
     }
   }
 
-  List<Marker> _buildMarkers(Set<String> staged) {
-    final List<Marker> markers = [];
+  Set<gmaps.Marker> _buildGmapMarkers(Set<String> staged) {
+    final markers = <gmaps.Marker>{};
     for (final name in staged) {
       final key = name.trim();
       final center = _countryCentroids[key];
       if (center != null) {
         markers.add(
-          Marker(
-            width: 28,
-            height: 28,
-            point: center,
-            builder:
-                (ctx) => Container(
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.9),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 1.5),
-                  ),
-                ),
+          gmaps.Marker(
+            markerId: gmaps.MarkerId('country_$key'),
+            position: gmaps.LatLng(center.latitude, center.longitude),
+            icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+              gmaps.BitmapDescriptor.hueGreen,
+            ),
           ),
         );
       }
+    }
+    return markers;
+  }
+
+  Set<gmaps.Marker> _buildGmapMarkersForMissingPolygons(Set<String> staged) {
+    final markers = <gmaps.Marker>{};
+    for (final name in staged) {
+      final norm = _keyForMatching(name);
+      if (_countryPolygons.containsKey(norm)) continue;
+      final center = _countryCentroids[name.trim()];
+      if (center == null) continue;
+      markers.add(
+        gmaps.Marker(
+          markerId: gmaps.MarkerId('country_missingpoly_${name.trim()}'),
+          position: gmaps.LatLng(center.latitude, center.longitude),
+          icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+            gmaps.BitmapDescriptor.hueGreen,
+          ),
+        ),
+      );
     }
     return markers;
   }
@@ -313,26 +329,32 @@ class _AccountScreenState extends State<AccountScreen> {
 
   // Map color helper removed; Visited map is shown in a dedicated screen.
 
-  List<Polygon> _buildPolygonsSet(Set<String> staged) {
-    final List<Polygon> out = [];
-    final stagedKeys = staged.map(_keyForMatching).toSet();
-    _countryPolygons.forEach((norm, polyRings) {
-      final isVisited = stagedKeys.contains(norm);
+  Set<gmaps.Polygon> _buildGmapPolygonsSet(Set<String> staged) {
+    // Render ONLY visited polygons. Rendering all ~200 country polygons makes
+    // the base map look washed out (opaque fills) and can be very heavy on web.
+    final out = <gmaps.Polygon>{};
+    for (final name in staged) {
+      final norm = _keyForMatching(name);
+      final polyRings = _countryPolygons[norm];
+      if (polyRings == null) continue;
+      var ringIndex = 0;
       for (final ring in polyRings) {
+        final id = '${norm}_$ringIndex';
+        ringIndex++;
         out.add(
-          Polygon(
-            points: ring,
-            color:
-                isVisited
-                    ? Colors.green.withOpacity(0.6)
-                    : Colors.grey.shade200,
-            borderColor: Colors.grey.shade400,
-            borderStrokeWidth: 0.5,
-            isFilled: true,
+          gmaps.Polygon(
+            polygonId: gmaps.PolygonId(id),
+            points:
+                ring.map((p) => gmaps.LatLng(p.latitude, p.longitude)).toList(),
+            fillColor: Theme.of(context).colorScheme.primary.withOpacity(0.28),
+            strokeColor: Theme.of(
+              context,
+            ).colorScheme.primary.withOpacity(0.55),
+            strokeWidth: 1,
           ),
         );
       }
-    });
+    }
     return out;
   }
 
@@ -557,191 +579,182 @@ class _AccountScreenState extends State<AccountScreen> {
                                   // make map taller so top and bottom are visible
                                   height: 460,
                                   child: Card(
-                                    color: const Color(0xFFF5F7FA),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(12),
                                     ),
+                                    clipBehavior: Clip.antiAlias,
                                     child: Padding(
                                       padding: const EdgeInsets.all(8.0),
-                                      child: Column(
-                                        children: [
-                                          Expanded(
-                                            child: Builder(
-                                              builder: (ctx) {
-                                                // initialize staged set from live data on first build
-                                                if (_stagedVisited.isEmpty) {
-                                                  _stagedVisited.addAll(
-                                                    visitedSet,
-                                                  );
-                                                }
-                                                // ensure polygons are loaded (idempotent)
-                                                _loadCountryPolygons();
-                                                return FlutterMap(
-                                                  options: MapOptions(
-                                                    center: LatLng(20, 0),
-                                                    zoom: 2,
-                                                    minZoom: 2,
-                                                    maxZoom: 18,
-                                                    // Allow interactive gestures (zoom/drag/etc.).
-                                                    interactiveFlags:
-                                                        InteractiveFlag.all,
-                                                    onTap: (
-                                                      tapPos,
-                                                      latlng,
-                                                    ) async {
-                                                      // Add a visited country by tapping on its polygon.
-                                                      if (!_polygonsLoaded) {
-                                                        return;
-                                                      }
-                                                      String? foundKey;
-                                                      _countryPolygons.forEach((
-                                                        k,
-                                                        polyRings,
-                                                      ) {
-                                                        for (final ring
-                                                            in polyRings) {
-                                                          if (_pointInPolygon(
-                                                            latlng,
-                                                            ring,
-                                                          )) {
-                                                            foundKey = k;
-                                                            break;
-                                                          }
-                                                        }
-                                                        if (foundKey != null) {
-                                                          return;
-                                                        }
-                                                      });
-                                                      if (foundKey != null) {
-                                                        final display =
-                                                            _normalizeCountryName(
-                                                              foundKey!,
-                                                            );
-                                                        if (!_stagedVisited
-                                                            .contains(
-                                                              display,
-                                                            )) {
-                                                          setState(() {
-                                                            _stagedVisited.add(
-                                                              display,
-                                                            );
-                                                            _isEditingVisited =
-                                                                true;
-                                                          });
-                                                        }
-                                                      }
-                                                    },
-                                                  ),
-                                                  children: [
-                                                    TileLayer(
-                                                      urlTemplate:
-                                                          'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                                      subdomains: const [
-                                                        'a',
-                                                        'b',
-                                                        'c',
-                                                      ],
-                                                      userAgentPackageName:
-                                                          'com.example.trypr',
-                                                    ),
-                                                    if (_polygonsLoaded)
-                                                      PolygonLayer(
-                                                        polygons:
-                                                            _buildPolygonsSet(
-                                                              _stagedVisited,
-                                                            ),
-                                                      )
-                                                    else
-                                                      MarkerLayer(
-                                                        markers: _buildMarkers(
-                                                          _stagedVisited,
-                                                        ),
-                                                      ),
-                                                  ],
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              Expanded(
-                                                child: Row(
-                                                  children: [
-                                                    Expanded(
-                                                      child: LinearProgressIndicator(
-                                                        value:
-                                                            (supportedTotal() >
-                                                                    0)
-                                                                ? (_stagedVisited
-                                                                        .length /
-                                                                    supportedTotal())
-                                                                : 0,
-                                                        minHeight: 8,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 10),
-                                                    Text(
-                                                      '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
-                                                    ),
-                                                  ],
+                                      child: Builder(
+                                        builder: (ctx) {
+                                          // initialize staged set from live data on first build
+                                          if (_stagedVisited.isEmpty) {
+                                            _stagedVisited.addAll(visitedSet);
+                                          }
+                                          // ensure polygons are loaded (idempotent)
+                                          _loadCountryPolygons();
+
+                                          if (_mapsKey.isEmpty) {
+                                            return const Center(
+                                              child: Padding(
+                                                padding: EdgeInsets.all(12),
+                                                child: Text(
+                                                  'Google Maps is not configured. Build with '
+                                                  '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
+                                                  textAlign: TextAlign.center,
                                                 ),
                                               ),
-                                              const SizedBox(width: 12),
-                                              ElevatedButton(
-                                                onPressed:
-                                                    _isEditingVisited
-                                                        ? () async {
-                                                          // persist staged set to Firestore
-                                                          final u = _user;
-                                                          if (u == null) return;
-                                                          final docRef =
-                                                              FirebaseFirestore
-                                                                  .instance
-                                                                  .collection(
-                                                                    'users',
-                                                                  )
-                                                                  .doc(u.uid);
-                                                          try {
-                                                            await docRef.set(
-                                                              {
-                                                                'visitedCountries':
-                                                                    _stagedVisited
-                                                                        .toList(),
-                                                              },
-                                                              SetOptions(
-                                                                merge: true,
-                                                              ),
-                                                            );
-                                                            setState(
-                                                              () =>
-                                                                  _isEditingVisited =
-                                                                      false,
-                                                            );
-                                                          } catch (err) {
-                                                            if (mounted) {
-                                                              ScaffoldMessenger.of(
-                                                                context,
-                                                              ).showSnackBar(
-                                                                SnackBar(
-                                                                  content: Text(
-                                                                    'Failed to save: $err',
-                                                                  ),
-                                                                ),
-                                                              );
-                                                            }
-                                                          }
-                                                        }
-                                                        : null,
-                                                child: const Text('Save'),
-                                              ),
-                                            ],
+                                            );
+                                          }
+
+                                          return gmaps.GoogleMap(
+                                            initialCameraPosition:
+                                                const gmaps.CameraPosition(
+                                                  target: gmaps.LatLng(20, 0),
+                                                  zoom: 2,
+                                                ),
+                                            minMaxZoomPreference:
+                                                const gmaps.MinMaxZoomPreference(
+                                                  2,
+                                                  18,
+                                                ),
+                                            polygons:
+                                                _polygonsLoaded
+                                                    ? _buildGmapPolygonsSet(
+                                                      _stagedVisited,
+                                                    )
+                                                    : const <gmaps.Polygon>{},
+                                            markers:
+                                                _polygonsLoaded
+                                                    ? _buildGmapMarkersForMissingPolygons(
+                                                      _stagedVisited,
+                                                    )
+                                                    : _buildGmapMarkers(
+                                                      _stagedVisited,
+                                                    ),
+                                            onTap: (p) {
+                                              // Add a visited country by tapping on its polygon.
+                                              if (!_polygonsLoaded) return;
+
+                                              final latlng = LatLng(
+                                                p.latitude,
+                                                p.longitude,
+                                              );
+                                              String? foundKey;
+                                              _countryPolygons.forEach((
+                                                k,
+                                                polyRings,
+                                              ) {
+                                                for (final ring in polyRings) {
+                                                  if (_pointInPolygon(
+                                                    latlng,
+                                                    ring,
+                                                  )) {
+                                                    foundKey = k;
+                                                    break;
+                                                  }
+                                                }
+                                              });
+
+                                              if (foundKey == null) return;
+                                              final display =
+                                                  _normalizeCountryName(
+                                                    foundKey!,
+                                                  );
+                                              if (_stagedVisited.contains(
+                                                display,
+                                              )) {
+                                                return;
+                                              }
+                                              setState(() {
+                                                _stagedVisited.add(display);
+                                                _isEditingVisited = true;
+                                              });
+                                            },
+                                            mapToolbarEnabled: false,
+                                            myLocationButtonEnabled: false,
+                                            zoomControlsEnabled: false,
+                                            compassEnabled: false,
+                                            rotateGesturesEnabled: false,
+                                            tiltGesturesEnabled: false,
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: LinearProgressIndicator(
+                                              value:
+                                                  (supportedTotal() > 0)
+                                                      ? (_stagedVisited.length /
+                                                          supportedTotal())
+                                                      : 0,
+                                              minHeight: 8,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Text(
+                                            '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
                                           ),
                                         ],
                                       ),
                                     ),
+                                    const SizedBox(width: 12),
+                                    ElevatedButton(
+                                      onPressed:
+                                          _isEditingVisited
+                                              ? () async {
+                                                // persist staged set to Firestore
+                                                final u = _user;
+                                                if (u == null) return;
+                                                final docRef = FirebaseFirestore
+                                                    .instance
+                                                    .collection('users')
+                                                    .doc(u.uid);
+                                                try {
+                                                  await docRef.set({
+                                                    'visitedCountries':
+                                                        _stagedVisited.toList(),
+                                                  }, SetOptions(merge: true));
+                                                  setState(
+                                                    () =>
+                                                        _isEditingVisited =
+                                                            false,
+                                                  );
+                                                } catch (err) {
+                                                  if (!mounted) return;
+                                                  ScaffoldMessenger.of(
+                                                    context,
+                                                  ).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                        'Failed to save: $err',
+                                                      ),
+                                                    ),
+                                                  );
+                                                }
+                                              }
+                                              : null,
+                                      child: const Text('Save'),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    '${_stagedVisited.length} visited / ${supportedTotal()} supported',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
                                   ),
                                 ),
                                 const SizedBox(height: 12),

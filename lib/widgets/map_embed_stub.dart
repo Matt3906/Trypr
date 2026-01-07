@@ -31,9 +31,14 @@ class _MapEmbedState extends State<MapEmbed> {
   List<Marker> _secondaryMarkers = [];
   Polyline? _route;
 
+  String _mainSig = '';
+  String _secondarySig = '';
+
   IconData _iconFor(String kind, String category) {
     if (kind == 'accommodation') return Icons.hotel;
     switch (category) {
+      case 'Driving':
+        return Icons.directions_car;
       case 'Hiking':
         return Icons.terrain;
       case 'Biking':
@@ -62,6 +67,8 @@ class _MapEmbedState extends State<MapEmbed> {
   Color _colorFor(String kind, String category) {
     if (kind == 'accommodation') return Colors.purple.shade600;
     switch (category) {
+      case 'Driving':
+        return Colors.blueAccent;
       case 'Hiking':
         return const Color(0xFF2E7D32);
       case 'Biking':
@@ -90,6 +97,8 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   void initState() {
     super.initState();
+    _mainSig = _signature(widget.points);
+    _secondarySig = _signature(widget.secondaryPoints);
     // run rebuild defensively so exceptions don't bubble to the framework
     _safeRebuild();
   }
@@ -97,10 +106,38 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   void didUpdateWidget(covariant MapEmbed oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!listEquals(oldWidget.points, widget.points) ||
-        !listEquals(oldWidget.secondaryPoints, widget.secondaryPoints)) {
+
+    final newMain = _signature(widget.points);
+    final newSecondary = _signature(widget.secondaryPoints);
+    if (newMain != _mainSig || newSecondary != _secondarySig) {
+      _mainSig = newMain;
+      _secondarySig = newSecondary;
       _rebuildFromPoints();
     }
+  }
+
+  String _signature(List<Map<String, dynamic>> pts) {
+    if (pts.isEmpty) return '';
+    final b = StringBuffer();
+    for (final p in pts) {
+      final lat = _toDouble(p['lat']).toStringAsFixed(6);
+      final lon = _toDouble(p['lon']).toStringAsFixed(6);
+      final kind = (p['kind'] ?? '').toString();
+      final category = (p['category'] ?? '').toString();
+      final name = (p['name'] ?? '').toString();
+      b
+        ..write(lat)
+        ..write(',')
+        ..write(lon)
+        ..write('|')
+        ..write(kind)
+        ..write('|')
+        ..write(category)
+        ..write('|')
+        ..write(name)
+        ..write(';');
+    }
+    return b.toString();
   }
 
   Future<void> _rebuildFromPoints() async {
@@ -281,9 +318,7 @@ class _MapEmbedState extends State<MapEmbed> {
   @override
   Widget build(BuildContext context) {
     if (widget.points.isEmpty) {
-      return const Center(
-        child: Text('No points yet — tap map to add a point'),
-      );
+      return const Center(child: Text('No points yet'));
     }
 
     final mainPts =

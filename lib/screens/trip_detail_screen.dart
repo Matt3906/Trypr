@@ -32,7 +32,6 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   Map<String, dynamic> _liveData = {};
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _localDocSub;
-  final Map<String, String> _nameCache = {};
   String? _currentSubscribedPath;
 
   User? get _user => FirebaseAuth.instance.currentUser;
@@ -422,6 +421,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     _searchController.dispose();
     _debounce?.cancel();
     _docSub?.cancel();
+    _localDocSub?.cancel();
     super.dispose();
   }
 
@@ -632,7 +632,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 final qty =
                                     (qtyRaw is num)
                                         ? qtyRaw.toInt()
-                                        : (int.tryParse(qtyRaw?.toString() ?? '') ??
+                                        : (int.tryParse(
+                                              qtyRaw?.toString() ?? '',
+                                            ) ??
                                             1);
                                 final checkedBy = List<String>.from(
                                   data['checkedBy'] ?? [],
@@ -674,9 +676,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                           padding: const EdgeInsets.only(
                                             left: 8.0,
                                           ),
-                                          child: Chip(
-                                            label: Text('x$qty'),
-                                          ),
+                                          child: Chip(label: Text('x$qty')),
                                         ),
                                       if (assigneeName.isNotEmpty)
                                         Padding(
@@ -795,8 +795,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                                     await d.reference.update({
                                                       'assigneeUid': chosen,
                                                     });
-                                                    if (mounted)
+                                                    if (mounted) {
                                                       setState2(() {});
+                                                    }
                                                   }
                                                 },
                                                 icon: const Icon(
