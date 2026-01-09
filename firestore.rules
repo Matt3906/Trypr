@@ -175,5 +175,40 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update, delete: if isSelf(uid);
     }
+
+    // --------------------
+    // Link-based join requests
+    // --------------------
+    match /tripJoinRequests/{requestId} {
+      function isValidTripRef(ref) {
+        return (ref is string) && ref.matches('^users/[^/]+/trips/[^/]+$');
+      }
+
+      allow read: if signedIn()
+        && (
+          request.auth.uid == resource.data.ownerUid
+          || request.auth.uid == resource.data.requesterUid
+        );
+
+      // Requester creates a join request for a trip.
+      allow create: if signedIn()
+        && request.resource.data.requesterUid == request.auth.uid
+        && isValidTripRef(request.resource.data.tripRef)
+        && request.resource.data.ownerUid is string
+        && request.resource.data.tripId is string
+        && request.resource.data.requesterName is string
+        && request.resource.data.status == 'pending';
+
+      // Owner marks requests approved/denied.
+      allow update: if signedIn()
+        && request.auth.uid == resource.data.ownerUid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'status',
+          'handledAt'
+        ])
+        && request.resource.data.status in ['pending', 'approved', 'denied'];
+
+      allow delete: if false;
+    }
   }
 }

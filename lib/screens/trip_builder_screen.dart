@@ -1,9 +1,10 @@
 import 'dart:math' as math;
 import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:pointer_interceptor/pointer_interceptor.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/services/geocode.dart';
@@ -32,7 +33,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   final List<_Waypoint> _waypoints = [];
   DateTimeRange? _tripRange;
   List<Map<String, dynamic>> _searchResults = [];
-  StreamSubscription? _windowMsgSub;
   StreamSubscription<User?>? _authSub;
   Timer? _searchDebounce;
   double? _roadDistanceKm;
@@ -41,7 +41,36 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   bool _isSaving = false;
   DocumentReference<Map<String, dynamic>>? _lastSavedTripRef;
 
+  String _transportMode = 'driving';
+  bool _adjustRoute = false;
+  List<Map<String, dynamic>> _routeVia = [];
+  List<String> _routeInstructions = [];
+
+  List<String> _segmentRoutingTypes = [];
+  Map<String, dynamic>? _transitArrivalStop;
+
   bool _suspendMapTap = false;
+
+  bool _isAdventureMode(String mode) {
+    final m = mode.trim().toLowerCase();
+    return m == 'bikepacking' || m == 'backpacking';
+  }
+
+  void _ensureSegmentRoutingTypesLength() {
+    final segments = math.max(0, _waypoints.length - 1);
+    if (_segmentRoutingTypes.length == segments) return;
+    if (!mounted) return;
+    setState(() {
+      if (_segmentRoutingTypes.length > segments) {
+        _segmentRoutingTypes = _segmentRoutingTypes.take(segments).toList();
+      } else {
+        _segmentRoutingTypes = [
+          ..._segmentRoutingTypes,
+          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
+        ];
+      }
+    });
+  }
 
   Future<T?> _withMapTapSuspended<T>(Future<T?> Function() action) async {
     if (!mounted) return null;
@@ -197,6 +226,15 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       final wp = _Waypoint(name, lat, lon);
       wp.nights = nights;
       _waypoints.add(wp);
+
+      final segments = math.max(0, _waypoints.length - 1);
+      if (_segmentRoutingTypes.length < segments) {
+        _segmentRoutingTypes = [
+          ..._segmentRoutingTypes,
+          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
+        ];
+      }
+
       _searchResults = [];
       _searchCtrl.clear();
     });
@@ -371,6 +409,19 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   void _removeWaypoint(int index) {
     setState(() {
       if (index >= 0 && index < _waypoints.length) _waypoints.removeAt(index);
+
+      final segments = math.max(0, _waypoints.length - 1);
+      if (_segmentRoutingTypes.length > segments) {
+        _segmentRoutingTypes = _segmentRoutingTypes.take(segments).toList();
+      } else if (_segmentRoutingTypes.length < segments) {
+        _segmentRoutingTypes = [
+          ..._segmentRoutingTypes,
+          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
+        ];
+      }
+
+      // Via points are indexed by segment; safest is to clear.
+      _routeVia = [];
     });
   }
 
@@ -385,63 +436,69 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     } catch (_) {
       // ignore in non-supported environments
     }
-    // Listen for map click messages posted from the web map instance.
-    try {
-      _windowMsgSub = html.window.onMessage.listen((event) async {
-        try {
-          final dataRaw = event.data;
-          if (dataRaw is String) {
-            final decoded = jsonDecode(dataRaw);
-            if (decoded is Map) {
-              if (decoded['type'] == 'map_click') {
-                if (_suspendMapTap) return;
-                final lat = (decoded['lat'] ?? 0.0) as num;
-                final lon = (decoded['lon'] ?? 0.0) as num;
-
-                // Try reverse geocoding (web only). If it fails, fallback to "Dropped Pin".
-                String name = 'Dropped Pin';
-                try {
-                  final resolved = await reverseNominatim(
-                    lat.toDouble(),
-                    lon.toDouble(),
-                  );
-                  if (resolved != null && resolved.trim().isNotEmpty) {
-                    name = resolved;
-                  }
-                } catch (_) {}
-
-                await _addWaypointWithPrompt(
-                  name,
-                  lat.toDouble(),
-                  lon.toDouble(),
-                );
-              } else if (decoded['type'] == 'route_summary') {
-                final dist = (decoded['distance'] ?? 0) as num;
-                final dur = (decoded['duration'] ?? 0) as num;
-                setState(() {
-                  _roadDistanceKm = dist / 1000.0;
-                  _routeDurationMin = dur / 60.0;
-                });
-              }
-            }
-          }
-        } catch (_) {
-          // ignore malformed messages
-        }
-      });
-    } catch (_) {
-      // html.window not available on non-web; ignore.
-    }
   }
 
   @override
   void dispose() {
-    _windowMsgSub?.cancel();
     _authSub?.cancel();
     _searchDebounce?.cancel();
     _tripNameCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _setTransportMode(String mode) {
+    final m = mode.trim().toLowerCase();
+    if (m == _transportMode) return;
+    setState(() {
+      _transportMode = m;
+      _routeInstructions = [];
+      if (_transportMode != 'transit') {
+        _transitArrivalStop = null;
+      }
+    });
+  }
+
+  void _upsertViaPoint({
+    required int afterIndex,
+    required double lat,
+    required double lon,
+  }) {
+    setState(() {
+      final idx = _routeVia.indexWhere(
+        (v) =>
+            (v['afterIndex'] as Object?)?.toString() == afterIndex.toString(),
+      );
+      final entry = {'afterIndex': afterIndex, 'lat': lat, 'lon': lon};
+      if (idx >= 0) {
+        _routeVia[idx] = entry;
+      } else {
+        _routeVia = [..._routeVia, entry];
+      }
+    });
+  }
+
+  void _moveViaPoint({
+    required int viaIndex,
+    required double lat,
+    required double lon,
+  }) {
+    if (viaIndex < 0 || viaIndex >= _routeVia.length) return;
+    setState(() {
+      final current = Map<String, dynamic>.from(_routeVia[viaIndex]);
+      current['lat'] = lat;
+      current['lon'] = lon;
+      _routeVia[viaIndex] = current;
+    });
+  }
+
+  void _deleteViaPoint({required int viaIndex}) {
+    if (viaIndex < 0 || viaIndex >= _routeVia.length) return;
+    setState(() {
+      final next = List<Map<String, dynamic>>.from(_routeVia);
+      next.removeAt(viaIndex);
+      _routeVia = next;
+    });
   }
 
   @override
@@ -503,6 +560,122 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            Row(
+              children: [
+                const Text('Transportation:'),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: DropdownButton<String>(
+                    value:
+                        ({
+                              'driving',
+                              'biking',
+                              'bikepacking',
+                              'backpacking',
+                              'walking',
+                              'transit',
+                            }.contains(_transportMode))
+                            ? _transportMode
+                            : 'driving',
+                    isExpanded: true,
+                    items: [
+                      DropdownMenuItem(
+                        value: 'driving',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Car'),
+                                  ),
+                                )
+                                : const Text('Car'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'biking',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Biking'),
+                                  ),
+                                )
+                                : const Text('Biking'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'bikepacking',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Bikepacking'),
+                                  ),
+                                )
+                                : const Text('Bikepacking'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'backpacking',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Backpacking'),
+                                  ),
+                                )
+                                : const Text('Backpacking'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'transit',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Public transport'),
+                                  ),
+                                )
+                                : const Text('Public transport'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'walking',
+                        child:
+                            kIsWeb
+                                ? PointerInterceptor(
+                                  child: const SizedBox(
+                                    width: double.infinity,
+                                    child: Text('Walking'),
+                                  ),
+                                )
+                                : const Text('Walking'),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      _setTransportMode(v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            if (_transportMode == 'transit' && _routeInstructions.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Transit (suggested lines):',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    ..._routeInstructions.take(4).map((s) => Text('• $s')),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 12),
             if (_tripRange != null)
               Text(
                 'Nights assigned: $_assignedNights / $_totalTripDays',
@@ -552,6 +725,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 child: ListView.builder(
                   itemCount: _waypoints.length,
                   itemBuilder: (ctx, i) {
+                    if (_segmentRoutingTypes.length !=
+                        math.max(0, _waypoints.length - 1)) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) _ensureSegmentRoutingTypesLength();
+                      });
+                    }
+
                     final next =
                         i + 1 < _waypoints.length ? _waypoints[i + 1] : null;
                     double segKm = 0.0;
@@ -586,12 +766,85 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               1,
                               _totalTripDays - (_assignedNights - nights),
                             );
+
+                    final isSegmentRow = next != null;
+                    final segType =
+                        (isSegmentRow && i < _segmentRoutingTypes.length)
+                            ? _segmentRoutingTypes[i]
+                            : 'calculated';
                     return ListTile(
                       dense: true,
                       leading: CircleAvatar(child: Text('${i + 1}')),
                       title: Text(_waypoints[i].name),
-                      subtitle: Text(
-                        '$nights night${nights == 1 ? '' : 's'}$dateStr — ${next != null ? '${segKm.toStringAsFixed(2)} km to next' : 'Last point'}',
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '$nights night${nights == 1 ? '' : 's'}$dateStr — ${next != null ? '${segKm.toStringAsFixed(2)} km to next' : 'Last point'}',
+                          ),
+                          if (isSegmentRow)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6.0),
+                              child: Row(
+                                children: [
+                                  const Text(
+                                    'Routing:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: DropdownButton<String>(
+                                      value:
+                                          ({'calculated', 'direct'}.contains(
+                                                segType.trim().toLowerCase(),
+                                              ))
+                                              ? segType
+                                              : 'calculated',
+                                      isExpanded: true,
+                                      items: [
+                                        DropdownMenuItem(
+                                          value: 'calculated',
+                                          child:
+                                              kIsWeb
+                                                  ? PointerInterceptor(
+                                                    child: const SizedBox(
+                                                      width: double.infinity,
+                                                      child: Text('Calculated'),
+                                                    ),
+                                                  )
+                                                  : const Text('Calculated'),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'direct',
+                                          child:
+                                              kIsWeb
+                                                  ? PointerInterceptor(
+                                                    child: const SizedBox(
+                                                      width: double.infinity,
+                                                      child: Text('Direct'),
+                                                    ),
+                                                  )
+                                                  : const Text('Direct'),
+                                        ),
+                                      ],
+                                      onChanged: (v) {
+                                        if (v == null) return;
+                                        setState(() {
+                                          if (i >= 0 &&
+                                              i < _segmentRoutingTypes.length) {
+                                            _segmentRoutingTypes[i] = v;
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
                       ),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -681,6 +934,8 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           'endDate': _ymd(tripEnd),
                           'createdAt': FieldValue.serverTimestamp(),
                           'totalKm': _totalKm,
+                          'transportMode': _transportMode,
+                          'routeVia': _routeVia,
                           'waypoints':
                               _waypoints.asMap().entries.map((e) {
                                 final idx = e.key;
@@ -708,11 +963,21 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         };
                         try {
                           final uid = FirebaseAuth.instance.currentUser!.uid;
+                          final requiresGearList = _isAdventureMode(
+                            _transportMode,
+                          );
                           final ref = await FirebaseFirestore.instance
                               .collection('users')
                               .doc(uid)
                               .collection('trips')
-                              .add(data);
+                              .add({
+                                ...data,
+                                'requires_gear_list': requiresGearList,
+                                'segmentRoutingTypes': _segmentRoutingTypes,
+                                if (_transportMode == 'transit' &&
+                                    _transitArrivalStop != null)
+                                  'transitArrivalStop': _transitArrivalStop,
+                              });
                           _lastSavedTripRef = ref;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -957,8 +1222,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         (_) =>
                             _sampleLookup.keys
                                 .map(
-                                  (k) =>
-                                      PopupMenuItem(value: k, child: Text(k)),
+                                  (k) => PopupMenuItem(
+                                    value: k,
+                                    child:
+                                        kIsWeb
+                                            ? PointerInterceptor(
+                                              child: SizedBox(
+                                                width: double.infinity,
+                                                child: Text(k),
+                                              ),
+                                            )
+                                            : Text(k),
+                                  ),
                                 )
                                 .toList(),
                     child: ElevatedButton(
@@ -978,6 +1253,27 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       return Column(
         children: [
           Padding(padding: const EdgeInsets.all(12.0), child: searchToolbar()),
+
+          if (_waypoints.length >= 2)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12.0),
+              child: Row(
+                children: [
+                  Switch(
+                    value: _adjustRoute,
+                    onChanged: (v) {
+                      setState(() => _adjustRoute = v);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Adjust route line (tap route to add a via point)',
+                    ),
+                  ),
+                ],
+              ),
+            ),
 
           _searchResults.isEmpty
               ? const SizedBox.shrink()
@@ -1024,13 +1320,99 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   border: Border.all(color: Colors.grey.shade300),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: MapEmbed(
-                  points:
-                      _waypoints
-                          .map(
-                            (w) => {'name': w.name, 'lat': w.lat, 'lon': w.lon},
-                          )
-                          .toList(),
+                child: IgnorePointer(
+                  ignoring: _suspendMapTap,
+                  child: Stack(
+                    children: [
+                      MapEmbed(
+                        points:
+                            _waypoints
+                                .map(
+                                  (w) => {
+                                    'name': w.name,
+                                    'lat': w.lat,
+                                    'lon': w.lon,
+                                  },
+                                )
+                                .toList(),
+                        transportMode: _transportMode,
+                        routeVia: _routeVia,
+                        segmentRoutingTypes: _segmentRoutingTypes,
+                        onRouteInstructions: (lines) {
+                          if (!mounted) return;
+                          setState(() => _routeInstructions = lines);
+                        },
+                        onTransitArrivalStop: (arrivalStop) {
+                          if (!mounted) return;
+                          setState(() => _transitArrivalStop = arrivalStop);
+                        },
+                        onRouteSummary: (distanceMeters, durationSeconds) {
+                          if (!mounted) return;
+                          setState(() {
+                            _roadDistanceKm = distanceMeters / 1000.0;
+                            _routeDurationMin = durationSeconds / 60.0;
+                          });
+                        },
+                        onMapTap:
+                            (!_adjustRoute)
+                                ? (lat, lon) async {
+                                  if (_tripRange == null) {
+                                    if (!mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Select a trip date range first',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  String name = 'Dropped Pin';
+                                  try {
+                                    final resolved = await reverseNominatim(
+                                      lat,
+                                      lon,
+                                    );
+                                    if (resolved != null &&
+                                        resolved.trim().isNotEmpty) {
+                                      name = resolved;
+                                    }
+                                  } catch (_) {}
+
+                                  await _addWaypointWithPrompt(name, lat, lon);
+                                }
+                                : null,
+                        onRouteTapAddVia:
+                            (_adjustRoute)
+                                ? (afterIndex, lat, lon) => _upsertViaPoint(
+                                  afterIndex: afterIndex,
+                                  lat: lat,
+                                  lon: lon,
+                                )
+                                : null,
+                        onViaDragEnd:
+                            (_adjustRoute)
+                                ? (viaIndex, lat, lon) => _moveViaPoint(
+                                  viaIndex: viaIndex,
+                                  lat: lat,
+                                  lon: lon,
+                                )
+                                : null,
+                        onViaTapDelete:
+                            (_adjustRoute)
+                                ? (viaIndex) =>
+                                    _deleteViaPoint(viaIndex: viaIndex)
+                                : null,
+                      ),
+                      if (kIsWeb && _suspendMapTap)
+                        Positioned.fill(
+                          child: PointerInterceptor(
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -1,6 +1,7 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
@@ -112,8 +113,124 @@ class MyApp extends StatelessWidget {
           },
         );
       },
-      home: const HomeScreen(),
+      home: const _JoinTripLinkHandler(child: HomeScreen()),
       debugShowCheckedModeBanner: false,
     );
   }
+}
+
+class _JoinTripLinkHandler extends StatefulWidget {
+  const _JoinTripLinkHandler({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_JoinTripLinkHandler> createState() => _JoinTripLinkHandlerState();
+}
+
+class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
+  bool _handled = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _maybeHandleJoinLink();
+  }
+
+  @override
+  void didUpdateWidget(covariant _JoinTripLinkHandler oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _maybeHandleJoinLink();
+  }
+
+  Map<String, String>? _parseTripRef(String tripRef) {
+    final parts = tripRef.split('/');
+    if (parts.length != 4) return null;
+    if (parts[0] != 'users' || parts[2] != 'trips') return null;
+    if (parts[1].trim().isEmpty || parts[3].trim().isEmpty) return null;
+    return {'ownerUid': parts[1], 'tripId': parts[3]};
+  }
+
+  void _snack(String message) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    });
+  }
+
+  Future<void> _maybeHandleJoinLink() async {
+    if (_handled) return;
+    if (!kIsWeb) return;
+
+    final joinTrip = Uri.base.queryParameters['joinTrip'];
+    if (joinTrip == null || joinTrip.trim().isEmpty) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return; // wait until user signs in
+
+    _handled = true;
+
+    final parsed = _parseTripRef(joinTrip.trim());
+    if (parsed == null) {
+      _snack('Invalid trip link');
+      return;
+    }
+
+    final ownerUid = parsed['ownerUid']!;
+    final tripId = parsed['tripId']!;
+
+    try {
+      String requesterName = (user.displayName ?? '').trim();
+      if (requesterName.isEmpty) {
+        final pub =
+            await FirebaseFirestore.instance
+                .collection('publicUsers')
+                .doc(user.uid)
+                .get();
+        requesterName = (pub.data()?['name'] ?? '').toString().trim();
+      }
+      if (requesterName.isEmpty) requesterName = 'Someone';
+
+      final tripDocRef = FirebaseFirestore.instance.doc(joinTrip.trim());
+      final joinReqId = '${ownerUid}_${tripId}_${user.uid}';
+      final joinReqRef = FirebaseFirestore.instance
+          .collection('tripJoinRequests')
+          .doc(joinReqId);
+
+      await FirebaseFirestore.instance.runTransaction((tx) async {
+        final tripSnap = await tx.get(tripDocRef);
+        if (!tripSnap.exists) {
+          throw StateError('Trip not found');
+        }
+
+        final existing = await tx.get(joinReqRef);
+        if (existing.exists) {
+          return;
+        }
+
+        tx.set(joinReqRef, {
+          'tripRef': joinTrip.trim(),
+          'ownerUid': ownerUid,
+          'tripId': tripId,
+          'requesterUid': user.uid,
+          'requesterName': requesterName,
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      });
+
+      _snack('Join request sent');
+    } catch (e) {
+      _snack('Could not send join request');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Join link handling failed: $e');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

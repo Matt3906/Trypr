@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:ui' as ui;
+import 'dart:math' as math;
 
 import 'dart:html' as html;
 
@@ -14,12 +15,28 @@ class MapEmbed extends StatelessWidget {
   final void Function(double lat, double lon)? onMapTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
+  final void Function(List<String> lines)? onRouteInstructions;
+  final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final String transportMode;
+  final List<Map<String, dynamic>> routeVia;
+  final List<String> segmentRoutingTypes;
+  final void Function(int afterIndex, double lat, double lon)? onRouteTapAddVia;
+  final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
+  final void Function(int viaIndex)? onViaTapDelete;
   final List<Map<String, dynamic>> secondaryPoints;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
     this.onRouteSummary,
+    this.onRouteInstructions,
+    this.onTransitArrivalStop,
+    this.transportMode = 'driving',
+    this.routeVia = const [],
+    this.segmentRoutingTypes = const [],
+    this.onRouteTapAddVia,
+    this.onViaDragEnd,
+    this.onViaTapDelete,
     this.secondaryPoints = const [],
   });
 
@@ -60,6 +77,15 @@ class MapEmbed extends StatelessWidget {
       secondaryPoints: secondaryPoints,
       onMapTap: onMapTap,
       onRouteSummary: onRouteSummary,
+      onRouteInstructions: onRouteInstructions,
+      onTransitArrivalStop: onTransitArrivalStop,
+      transportMode: transportMode,
+      routeVia: routeVia,
+      segmentRoutingTypes: segmentRoutingTypes,
+      onRouteTapAddVia: onRouteTapAddVia,
+      onViaDragEnd: onViaDragEnd,
+      onViaTapDelete: onViaTapDelete,
+      mapsKey: mapsKey,
     );
   }
 }
@@ -70,12 +96,30 @@ class _MapEmbedWebStateful extends StatefulWidget {
   final void Function(double lat, double lon)? onMapTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
+  final void Function(List<String> lines)? onRouteInstructions;
+  final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final String transportMode;
+  final List<Map<String, dynamic>> routeVia;
+  final List<String> segmentRoutingTypes;
+  final void Function(int afterIndex, double lat, double lon)? onRouteTapAddVia;
+  final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
+  final void Function(int viaIndex)? onViaTapDelete;
+  final String mapsKey;
 
   const _MapEmbedWebStateful({
     required this.points,
     required this.secondaryPoints,
     required this.onMapTap,
     required this.onRouteSummary,
+    required this.onRouteInstructions,
+    required this.onTransitArrivalStop,
+    required this.transportMode,
+    required this.routeVia,
+    required this.segmentRoutingTypes,
+    required this.onRouteTapAddVia,
+    required this.onViaDragEnd,
+    required this.onViaTapDelete,
+    required this.mapsKey,
   });
 
   @override
@@ -84,8 +128,11 @@ class _MapEmbedWebStateful extends StatefulWidget {
 
 class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   gmaps.GoogleMapController? _controller;
+  String? _controllerKeySig;
   Set<gmaps.Marker> _markers = const {};
   Set<gmaps.Polyline> _polylines = const {};
+
+  int _suppressMapTapUntilMs = 0;
 
   late final String _instanceId = identityHashCode(this).toRadixString(16);
 
@@ -93,7 +140,114 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   String _secondarySig = '';
   int _rebuildSeq = 0;
 
+  List<String> _lastInstructions = const [];
+
   final _markerIconCache = _MarkerIconCache();
+
+  String _mapKeySig() {
+    return '${_instanceId}_${_mainSig}_${_secondarySig}_${widget.transportMode}_${_viaSignature(widget.routeVia)}_${_segmentRoutingSignature(widget.segmentRoutingTypes)}';
+  }
+
+  bool _isAdventureMode(String mode) {
+    final m = mode.trim().toLowerCase();
+    return m == 'bikepacking' || m == 'backpacking';
+  }
+
+  String _segmentRoutingSignature(List<String> types) {
+    if (types.isEmpty) return '';
+    return types.map((t) => t.trim().toLowerCase()).join(',');
+  }
+
+  String _segmentRoutingTypeFor(int segmentIndex) {
+    if (segmentIndex < 0) return 'calculated';
+    if (segmentIndex >= widget.segmentRoutingTypes.length) return 'calculated';
+    final v = widget.segmentRoutingTypes[segmentIndex].trim().toLowerCase();
+    return (v == 'direct') ? 'direct' : 'calculated';
+  }
+
+  Color _standardRouteColor(String mode) {
+    if (_isAdventureMode(mode)) {
+      // Garmin-style High-Vis Green
+      return const Color(0xFF00E676);
+    }
+    return Colors.blue;
+  }
+
+  Color? _parseHexColor(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+    if (s.startsWith('#')) s = s.substring(1);
+    if (s.length == 6) {
+      final v = int.tryParse('FF$s', radix: 16);
+      if (v == null) return null;
+      return Color(v);
+    }
+    if (s.length == 8) {
+      final v = int.tryParse(s, radix: 16);
+      if (v == null) return null;
+      return Color(v);
+    }
+    return null;
+  }
+
+  double _haversineMeters(gmaps.LatLng a, gmaps.LatLng b) {
+    const r = 6371000.0;
+    final dLat = (b.latitude - a.latitude) * (math.pi / 180.0);
+    final dLon = (b.longitude - a.longitude) * (math.pi / 180.0);
+    final lat1 = a.latitude * (math.pi / 180.0);
+    final lat2 = b.latitude * (math.pi / 180.0);
+    final sinDLat = math.sin(dLat / 2);
+    final sinDLon = math.sin(dLon / 2);
+    final aa =
+        sinDLat * sinDLat + math.cos(lat1) * math.cos(lat2) * sinDLon * sinDLon;
+    final c = 2 * math.atan2(math.sqrt(aa), math.sqrt(1 - aa));
+    return r * c;
+  }
+
+  List<gmaps.LatLng> _decodeGooglePolyline(String encoded) {
+    final points = <gmaps.LatLng>[];
+    var index = 0;
+    var lat = 0;
+    var lng = 0;
+
+    while (index < encoded.length) {
+      var result = 0;
+      var shift = 0;
+      int b;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20 && index < encoded.length);
+      final dLat = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1);
+      lat += dLat;
+
+      result = 0;
+      shift = 0;
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20 && index < encoded.length);
+      final dLng = ((result & 1) != 0) ? ~(result >> 1) : (result >> 1);
+      lng += dLng;
+
+      points.add(gmaps.LatLng(lat / 1e5, lng / 1e5));
+    }
+
+    return points;
+  }
+
+  String _stripHtml(String raw) {
+    return raw
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('  ', ' ')
+        .trim();
+  }
 
   IconData _iconFor(String kindRaw, String categoryRaw) {
     final kind = kindRaw.trim().toLowerCase();
@@ -232,11 +386,141 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
     final newMain = _signature(widget.points);
     final newSecondary = _signature(widget.secondaryPoints);
-    if (newMain != _mainSig || newSecondary != _secondarySig) {
+    final newVia = _viaSignature(widget.routeVia);
+    final oldVia = _viaSignature(oldWidget.routeVia);
+    final newSeg = _segmentRoutingSignature(widget.segmentRoutingTypes);
+    final oldSeg = _segmentRoutingSignature(oldWidget.segmentRoutingTypes);
+
+    if (newMain != _mainSig ||
+        newSecondary != _secondarySig ||
+        widget.transportMode.trim().toLowerCase() !=
+            oldWidget.transportMode.trim().toLowerCase() ||
+        newVia != oldVia ||
+        newSeg != oldSeg) {
       _mainSig = newMain;
       _secondarySig = newSecondary;
+      _controller = null;
+      _controllerKeySig = null;
       _rebuild();
     }
+  }
+
+  String _viaSignature(List<Map<String, dynamic>> via) {
+    if (via.isEmpty) return '';
+    final b = StringBuffer();
+    for (final v in via) {
+      final after = (v['afterIndex'] as num?)?.toInt() ?? -1;
+      final lat = (v['lat'] as num?)?.toDouble() ?? 0.0;
+      final lon = (v['lon'] as num?)?.toDouble() ?? 0.0;
+      b
+        ..write(after)
+        ..write(':')
+        ..write(lat.toStringAsFixed(6))
+        ..write(',')
+        ..write(lon.toStringAsFixed(6))
+        ..write(';');
+    }
+    return b.toString();
+  }
+
+  List<Map<String, dynamic>> _expandedPointsWithVia() {
+    final pts = widget.points;
+    if (pts.length < 2 || widget.routeVia.isEmpty) return pts;
+
+    final byAfter = <int, List<Map<String, dynamic>>>{};
+    for (final v in widget.routeVia) {
+      final after = (v['afterIndex'] as num?)?.toInt();
+      if (after == null || after < 0 || after >= pts.length - 1) continue;
+      byAfter.putIfAbsent(after, () => []).add({
+        'lat': (v['lat'] as num?)?.toDouble() ?? 0.0,
+        'lon': (v['lon'] as num?)?.toDouble() ?? 0.0,
+        'name': 'Via',
+      });
+    }
+
+    if (byAfter.isEmpty) return pts;
+
+    final out = <Map<String, dynamic>>[];
+    for (var i = 0; i < pts.length; i++) {
+      out.add(pts[i]);
+      if (i < pts.length - 1) {
+        final list = byAfter[i];
+        if (list != null) out.addAll(list);
+      }
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _segmentPoints({required int afterIndex}) {
+    final pts = widget.points;
+    if (pts.length < 2) return const [];
+    if (afterIndex < 0 || afterIndex >= pts.length - 1) return const [];
+
+    final out = <Map<String, dynamic>>[pts[afterIndex]];
+    for (final v in widget.routeVia) {
+      final after = (v['afterIndex'] as num?)?.toInt();
+      if (after != afterIndex) continue;
+      out.add({
+        'lat': (v['lat'] as num?)?.toDouble() ?? 0.0,
+        'lon': (v['lon'] as num?)?.toDouble() ?? 0.0,
+        'name': 'Via',
+      });
+    }
+    out.add(pts[afterIndex + 1]);
+    return out;
+  }
+
+  double _distPointToSegmentSq(gmaps.LatLng p, gmaps.LatLng a, gmaps.LatLng b) {
+    // Equirectangular projection for short distances.
+    final lat0 = (a.latitude + b.latitude) / 2.0;
+    final cosLat = math.cos(lat0 * (math.pi / 180.0));
+
+    final px = p.longitude * cosLat;
+    final py = p.latitude;
+    final ax = a.longitude * cosLat;
+    final ay = a.latitude;
+    final bx = b.longitude * cosLat;
+    final by = b.latitude;
+
+    final abx = bx - ax;
+    final aby = by - ay;
+    final apx = px - ax;
+    final apy = py - ay;
+
+    final abLen2 = abx * abx + aby * aby;
+    if (abLen2 <= 1e-12) {
+      final dx = px - ax;
+      final dy = py - ay;
+      return dx * dx + dy * dy;
+    }
+
+    var t = (apx * abx + apy * aby) / abLen2;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+
+    final cx = ax + abx * t;
+    final cy = ay + aby * t;
+    final dx = px - cx;
+    final dy = py - cy;
+    return dx * dx + dy * dy;
+  }
+
+  int _nearestSegmentAfterIndex(gmaps.LatLng tap) {
+    final pts = widget.points;
+    if (pts.length < 2) return 0;
+
+    var best = double.infinity;
+    var bestAfter = 0;
+    for (var i = 0; i < pts.length - 1; i++) {
+      final a = gmaps.LatLng(_latOf(pts[i]), _lonOf(pts[i]));
+      final b = gmaps.LatLng(_latOf(pts[i + 1]), _lonOf(pts[i + 1]));
+      final d = _distPointToSegmentSq(tap, a, b);
+      if (d < best) {
+        best = d;
+        bestAfter = i;
+      }
+    }
+    return bestAfter;
   }
 
   String _signature(List<Map<String, dynamic>> pts) {
@@ -295,6 +579,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
     final markers = <gmaps.Marker>{};
 
+    final viaIconFuture = _markerIconCache.viaDot(dpr: dpr);
+
     Future<gmaps.BitmapDescriptor> buildMainIcon(int index) async {
       try {
         return await _markerIconCache.numbered(
@@ -343,6 +629,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     if (!mounted || seq != _rebuildSeq) return;
     final secondaryIcons = await Future.wait(secondaryIconFutures);
     if (!mounted || seq != _rebuildSeq) return;
+    final viaIcon = await viaIconFuture;
+    if (!mounted || seq != _rebuildSeq) return;
 
     for (var i = 0; i < main.length; i++) {
       final p = main[i];
@@ -363,6 +651,10 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           ),
           icon: mainIcons[i],
           anchor: const Offset(0.5, 0.5),
+          onTap: () {
+            _suppressMapTapUntilMs =
+                DateTime.now().millisecondsSinceEpoch + 300;
+          },
         ),
       );
     }
@@ -390,6 +682,48 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
                     ? category
                     : (kind.isNotEmpty ? kind : null),
           ),
+          onTap: () {
+            _suppressMapTapUntilMs =
+                DateTime.now().millisecondsSinceEpoch + 300;
+          },
+        ),
+      );
+    }
+
+    // Route shaping via markers (optional)
+    for (var i = 0; i < widget.routeVia.length; i++) {
+      final v = widget.routeVia[i];
+      final lat = (v['lat'] as num?)?.toDouble();
+      final lon = (v['lon'] as num?)?.toDouble();
+      if (lat == null || lon == null) continue;
+      markers.add(
+        gmaps.Marker(
+          markerId: gmaps.MarkerId('${_instanceId}_via_$i'),
+          position: gmaps.LatLng(lat, lon),
+          draggable: widget.onViaDragEnd != null,
+          icon: viaIcon,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow:
+              (widget.onViaTapDelete != null)
+                  ? gmaps.InfoWindow(
+                    title: 'Delete via point',
+                    snippet: 'Tap here to remove',
+                    onTap: () {
+                      _suppressMapTapUntilMs =
+                          DateTime.now().millisecondsSinceEpoch + 300;
+                      widget.onViaTapDelete?.call(i);
+                    },
+                  )
+                  : const gmaps.InfoWindow(title: ''),
+          onDragEnd: (p) {
+            _suppressMapTapUntilMs =
+                DateTime.now().millisecondsSinceEpoch + 300;
+            widget.onViaDragEnd?.call(i, p.latitude, p.longitude);
+          },
+          onTap: () {
+            _suppressMapTapUntilMs =
+                DateTime.now().millisecondsSinceEpoch + 300;
+          },
         ),
       );
     }
@@ -407,79 +741,350 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   }
 
   Future<void> _updateRoutePolyline({required int seq}) async {
-    final pts = widget.points;
-    if (pts.length < 2) {
+    final basePts = widget.points;
+    if (basePts.length < 2) {
       if (!mounted || seq != _rebuildSeq) return;
       setState(() => _polylines = const {});
       return;
     }
 
-    try {
-      final coords = pts.map((p) => '${_lonOf(p)},${_latOf(p)}').join(';');
-      final url = Uri.parse(
-        'https://router.project-osrm.org/route/v1/driving/$coords?overview=full&geometries=geojson',
-      );
-      final resp = await http.get(url);
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body) as Map<String, dynamic>;
-        final routes = data['routes'] as List<dynamic>?;
-        if (routes != null && routes.isNotEmpty) {
+    final mode = widget.transportMode.trim().toLowerCase();
+    final standardColor = _standardRouteColor(mode);
+
+    final outPolylines = <gmaps.Polyline>{};
+    var distSum = 0.0;
+    var durSum = 0.0;
+    final instr = <String>[];
+
+    Map<String, dynamic>? lastArrivalStop;
+
+    for (var seg = 0; seg < basePts.length - 1; seg++) {
+      if (!mounted || seq != _rebuildSeq) return;
+
+      final segType = _segmentRoutingTypeFor(seg);
+      final segPoints = _segmentPoints(afterIndex: seg);
+      if (segPoints.length < 2) continue;
+
+      final segLatLngs =
+          segPoints.map((p) => gmaps.LatLng(_latOf(p), _lonOf(p))).toList();
+
+      if (segType == 'direct') {
+        final isAdventure = _isAdventureMode(mode);
+        var segDist = 0.0;
+        for (var i = 0; i + 1 < segLatLngs.length; i++) {
+          segDist += _haversineMeters(segLatLngs[i], segLatLngs[i + 1]);
+        }
+        distSum += segDist;
+        outPolylines.add(
+          gmaps.Polyline(
+            polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_direct'),
+            points: segLatLngs,
+            width: isAdventure ? 8 : 4,
+            color: isAdventure ? const Color(0xFF00E676) : Colors.green,
+            patterns: [gmaps.PatternItem.dash(18), gmaps.PatternItem.gap(10)],
+            geodesic: true,
+          ),
+        );
+        continue;
+      }
+
+      final isTransit = mode == 'transit';
+      final isAdventure = _isAdventureMode(mode);
+
+      // Prefer Google Directions ONLY for standard modes.
+      // Adventure modes (bikepacking/backpacking) should fall through to OSRM
+      // so we can pick up OSM trails/paths rather than road-snapping.
+      final useGoogle =
+          (isTransit || mode == 'biking' || mode == 'walking') && !isAdventure;
+
+      if (useGoogle) {
+        final googleMode =
+            isTransit
+                ? 'transit'
+                : (mode == 'walking')
+                ? 'walking'
+                : 'bicycling';
+
+        try {
+          final origin =
+              '${_latOf(segPoints.first)},${_lonOf(segPoints.first)}';
+          final dest = '${_latOf(segPoints.last)},${_lonOf(segPoints.last)}';
+          final intermediates =
+              segPoints.length > 2
+                  ? segPoints.sublist(1, segPoints.length - 1)
+                  : const <Map<String, dynamic>>[];
+          final waypoints =
+              intermediates.isNotEmpty
+                  ? intermediates
+                      .map((p) => '${_latOf(p)},${_lonOf(p)}')
+                      .join('|')
+                  : '';
+
+          final params = <String, String>{
+            'origin': origin,
+            'destination': dest,
+            'mode': googleMode,
+            'key': widget.mapsKey,
+          };
+
+          if (waypoints.isNotEmpty) {
+            params['waypoints'] = waypoints;
+          }
+
+          if (isAdventure && googleMode == 'bicycling') {
+            params['avoid'] = 'highways|ferries';
+          }
+
+          if (googleMode == 'transit') {
+            params['transit_routing_preference'] = 'fewer_transfers';
+            params['departure_time'] =
+                (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+          }
+
+          final url = Uri.https(
+            'maps.googleapis.com',
+            '/maps/api/directions/json',
+            params,
+          );
+
+          final resp = await http.get(url);
+          if (resp.statusCode == 200) {
+            final data = jsonDecode(resp.body) as Map<String, dynamic>;
+            final routes = data['routes'] as List<dynamic>?;
+            if (routes != null && routes.isNotEmpty) {
+              final r0 = routes.first as Map<String, dynamic>;
+              final overview = r0['overview_polyline'] as Map<String, dynamic>?;
+              final encoded = (overview?['points'] as String?) ?? '';
+              if (encoded.isNotEmpty) {
+                final path = _decodeGooglePolyline(encoded);
+
+                var segDist = 0.0;
+                var segDur = 0.0;
+                Color? segTransitColor;
+
+                final legs = (r0['legs'] as List<dynamic>?) ?? const [];
+                for (final l in legs) {
+                  final leg = (l as Map).cast<String, dynamic>();
+                  final d = (leg['distance'] as Map?)?['value'] as num?;
+                  final t = (leg['duration'] as Map?)?['value'] as num?;
+                  if (d != null) segDist += d.toDouble();
+                  if (t != null) segDur += t.toDouble();
+
+                  final steps = (leg['steps'] as List<dynamic>?) ?? const [];
+                  for (final s in steps) {
+                    final step = (s as Map).cast<String, dynamic>();
+                    if (googleMode == 'transit') {
+                      final travelMode =
+                          (step['travel_mode'] ?? '').toString().toUpperCase();
+                      if (travelMode != 'TRANSIT') continue;
+
+                      final td =
+                          (step['transit_details'] as Map?)
+                              ?.cast<String, dynamic>();
+                      final line =
+                          (td?['line'] as Map?)?.cast<String, dynamic>();
+                      final short = (line?['short_name'] ?? '').toString();
+                      final name = (line?['name'] ?? '').toString();
+                      final colorHex = (line?['color'] ?? '').toString();
+                      segTransitColor ??= _parseHexColor(colorHex);
+
+                      final depStop =
+                          (td?['departure_stop'] as Map?)
+                              ?.cast<String, dynamic>();
+                      final arrStop =
+                          (td?['arrival_stop'] as Map?)
+                              ?.cast<String, dynamic>();
+                      final depName = (depStop?['name'] ?? '').toString();
+                      final arrName = (arrStop?['name'] ?? '').toString();
+
+                      final arrLoc =
+                          (arrStop?['location'] as Map?)
+                              ?.cast<String, dynamic>();
+                      final arrLat = (arrLoc?['lat'] as num?)?.toDouble();
+                      final arrLng = (arrLoc?['lng'] as num?)?.toDouble();
+                      if (arrLat != null && arrLng != null) {
+                        lastArrivalStop = {
+                          'name': arrName,
+                          'lat': arrLat,
+                          'lon': arrLng,
+                        };
+                      }
+
+                      final vehicle =
+                          (line?['vehicle'] as Map?)?.cast<String, dynamic>();
+                      final vehicleName = (vehicle?['name'] ?? '').toString();
+                      final headsign = (td?['headsign'] ?? '').toString();
+
+                      final label = [
+                        if (vehicleName.isNotEmpty) vehicleName,
+                        if (short.isNotEmpty)
+                          short
+                        else if (name.isNotEmpty)
+                          name,
+                      ].join(' ');
+
+                      final stopPart =
+                          (depName.isNotEmpty && arrName.isNotEmpty)
+                              ? '$depName → $arrName'
+                              : '';
+                      final headPart = headsign.isNotEmpty ? '→ $headsign' : '';
+                      final full = [
+                        label,
+                        stopPart,
+                        headPart,
+                      ].where((s) => s.trim().isNotEmpty).join(' — ');
+                      if (full.isNotEmpty) instr.add(full);
+                    } else {
+                      final htmlInstr =
+                          (step['html_instructions'] ?? '').toString();
+                      final clean = _stripHtml(htmlInstr);
+                      if (clean.isEmpty) continue;
+                      final distText =
+                          ((step['distance'] as Map?)?['text'] ?? '')
+                              .toString();
+                      instr.add(
+                        distText.isNotEmpty ? '$clean ($distText)' : clean,
+                      );
+                    }
+                  }
+                }
+
+                distSum += segDist;
+                durSum += segDur;
+
+                final color =
+                    (googleMode == 'transit')
+                        ? (segTransitColor ?? standardColor)
+                        : standardColor;
+
+                outPolylines.add(
+                  gmaps.Polyline(
+                    polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}'),
+                    points: path,
+                    width: 4,
+                    color: color,
+                  ),
+                );
+                continue;
+              }
+            }
+          }
+        } catch (_) {
+          // fall through to OSRM/fallback
+        }
+      }
+
+      // OSRM-style routing fallback for non-google mode (PRIMARY for adventure modes).
+      // For trail-first profiles, prefer routing.openstreetmap.de (routed-foot / routed-bike)
+      // and fall back to the public OSRM demo server if needed.
+      try {
+        final coords = segPoints
+            .map((p) => '${_lonOf(p)},${_latOf(p)}')
+            .join(';');
+        final candidates = <Uri>[];
+
+        if (mode == 'walking' || mode == 'hiking' || mode == 'backpacking') {
+          candidates.add(
+            Uri.parse(
+              'https://routing.openstreetmap.de/routed-foot/route/v1/driving/$coords?overview=full&geometries=geojson',
+            ),
+          );
+        } else if (mode == 'biking' || mode == 'bikepacking') {
+          candidates.add(
+            Uri.parse(
+              'https://routing.openstreetmap.de/routed-bike/route/v1/driving/$coords?overview=full&geometries=geojson',
+            ),
+          );
+        }
+
+        // Secondary fallback to the OSRM demo server.
+        final demoProfile = switch (mode) {
+          'walking' => 'walking',
+          'backpacking' => 'walking',
+          'hiking' => 'walking',
+          'biking' => 'cycling',
+          'bikepacking' => 'cycling',
+          _ => 'driving',
+        };
+        candidates.add(
+          Uri.parse(
+            'https://router.project-osrm.org/route/v1/$demoProfile/$coords?overview=full&geometries=geojson',
+          ),
+        );
+
+        bool routed = false;
+        for (final url in candidates) {
+          final resp = await http.get(url);
+          if (resp.statusCode != 200) continue;
+
+          final data = jsonDecode(resp.body) as Map<String, dynamic>;
+          final routes = data['routes'] as List<dynamic>?;
+          if (routes == null || routes.isEmpty) continue;
+
           final route0 = routes.first as Map<String, dynamic>;
           final dist = (route0['distance'] as num?)?.toDouble();
           final dur = (route0['duration'] as num?)?.toDouble();
           final geom = route0['geometry'] as Map<String, dynamic>?;
           final coordsList =
               (geom?['coordinates'] as List<dynamic>?)?.cast<List<dynamic>>();
+          if (coordsList == null || coordsList.isEmpty) continue;
 
-          if (coordsList != null && coordsList.isNotEmpty) {
-            final path =
-                coordsList
-                    .map(
-                      (c) => gmaps.LatLng(
-                        (c[1] as num).toDouble(),
-                        (c[0] as num).toDouble(),
-                      ),
-                    )
-                    .toList();
+          final path =
+              coordsList
+                  .map(
+                    (c) => gmaps.LatLng(
+                      (c[1] as num).toDouble(),
+                      (c[0] as num).toDouble(),
+                    ),
+                  )
+                  .toList();
 
-            if (!mounted || seq != _rebuildSeq) return;
-            final primary = Theme.of(context).colorScheme.primary;
-            setState(() {
-              _polylines = {
-                gmaps.Polyline(
-                  polylineId: gmaps.PolylineId('${_instanceId}_route'),
-                  points: path,
-                  width: 4,
-                  color: primary,
-                ),
-              };
-            });
-
-            if (dist != null && dur != null) {
-              widget.onRouteSummary?.call(dist, dur);
-            }
-            return;
-          }
+          outPolylines.add(
+            gmaps.Polyline(
+              polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}'),
+              points: path,
+              width: isAdventure ? 8 : 5,
+              color: isAdventure ? const Color(0xFF00E676) : standardColor,
+              zIndex: isAdventure ? 10 : 0,
+            ),
+          );
+          if (dist != null) distSum += dist;
+          if (dur != null) durSum += dur;
+          routed = true;
+          break;
         }
+
+        if (routed) continue;
+      } catch (_) {
+        // fall through
       }
-    } catch (_) {
-      // fall back
+
+      // Final segment fallback.
+      outPolylines.add(
+        gmaps.Polyline(
+          polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_fallback'),
+          points: segLatLngs,
+          width: 3,
+          color: standardColor.withOpacity(0.6),
+          geodesic: true,
+        ),
+      );
     }
 
-    final fallback =
-        pts.map((p) => gmaps.LatLng(_latOf(p), _lonOf(p))).toList();
+    _lastInstructions = instr.take(6).toList(growable: false);
+    widget.onRouteInstructions?.call(_lastInstructions);
+    if (lastArrivalStop != null) {
+      widget.onTransitArrivalStop?.call(lastArrivalStop!);
+    }
 
     if (!mounted || seq != _rebuildSeq) return;
     setState(() {
-      _polylines = {
-        gmaps.Polyline(
-          polylineId: gmaps.PolylineId('${_instanceId}_route_fallback'),
-          points: fallback,
-          width: 3,
-          color: Theme.of(context).colorScheme.primary.withOpacity(0.6),
-        ),
-      };
+      _polylines = outPolylines;
     });
+
+    if (distSum > 0 && durSum > 0) {
+      widget.onRouteSummary?.call(distSum, durSum);
+    }
   }
 
   gmaps.LatLngBounds? _boundsFromMarkers() {
@@ -502,6 +1107,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Future<void> _fitCamera() async {
     final c = _controller;
     if (c == null) return;
+
+    if (_controllerKeySig != _mapKeySig()) return;
 
     final bounds = _boundsFromMarkers();
     if (bounds == null) return;
@@ -526,22 +1133,40 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             ? _markers.first.position
             : const gmaps.LatLng(0, 0);
 
+    final mode = widget.transportMode.trim().toLowerCase();
+    final mapType =
+        (mode == 'biking' || mode == 'walking' || _isAdventureMode(mode))
+            ? gmaps.MapType.terrain
+            : gmaps.MapType.normal;
+
     return gmaps.GoogleMap(
       // google_maps_flutter on web can occasionally fail to visually update
       // markers/polylines even when the widget rebuilds. Keying the map by the
       // computed signatures forces a full re-init when route points change.
-      key: ValueKey('${_instanceId}_${_mainSig}_$_secondarySig'),
+      key: ValueKey(_mapKeySig()),
       initialCameraPosition: gmaps.CameraPosition(
         target: initialTarget,
         zoom: 2,
       ),
+      mapType: mapType,
       onMapCreated: (c) {
         _controller = c;
+        _controllerKeySig = _mapKeySig();
         _fitCamera();
       },
       markers: _markers,
       polylines: _polylines,
-      onTap: (p) => widget.onMapTap?.call(p.latitude, p.longitude),
+      onTap: (p) {
+        if (DateTime.now().millisecondsSinceEpoch < _suppressMapTapUntilMs) {
+          return;
+        }
+        if (widget.onRouteTapAddVia != null && widget.points.length >= 2) {
+          final after = _nearestSegmentAfterIndex(p);
+          widget.onRouteTapAddVia?.call(after, p.latitude, p.longitude);
+          return;
+        }
+        widget.onMapTap?.call(p.latitude, p.longitude);
+      },
       mapToolbarEnabled: false,
       myLocationButtonEnabled: false,
       rotateGesturesEnabled: false,
@@ -553,6 +1178,21 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
 class _MarkerIconCache {
   final Map<String, Future<gmaps.BitmapDescriptor>> _cache = {};
+
+  Future<gmaps.BitmapDescriptor> viaDot({required double dpr}) {
+    return _cache.putIfAbsent(
+      'viaDot:${Colors.green.value}:$dpr',
+      () => _buildCircleBadge(
+        dpr: dpr,
+        logicalSize: 18.0,
+        background: const Color(0xFF2E7D32),
+        foreground: Colors.white,
+        icon: null,
+        text: null,
+        borderWidthLogical: 2.0,
+      ),
+    );
+  }
 
   Future<gmaps.BitmapDescriptor> numbered({
     required int number,
@@ -590,12 +1230,13 @@ class _MarkerIconCache {
 
   Future<gmaps.BitmapDescriptor> _buildCircleBadge({
     required double dpr,
+    double logicalSize = 40.0,
     required Color background,
     required Color foreground,
     required IconData? icon,
     required String? text,
+    double borderWidthLogical = 2.0,
   }) async {
-    final logicalSize = 40.0;
     final pixelSize = (logicalSize * dpr).round();
 
     final recorder = ui.PictureRecorder();
@@ -609,7 +1250,7 @@ class _MarkerIconCache {
         ui.Paint()
           ..color = Colors.white.withOpacity(0.85)
           ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = (2.0 * dpr).clamp(2.0, 4.0);
+          ..strokeWidth = (borderWidthLogical * dpr).clamp(2.0, 6.0);
 
     canvas.drawCircle(center, (size.width / 2) - (1.0 * dpr), bgPaint);
     canvas.drawCircle(center, (size.width / 2) - (1.0 * dpr), borderPaint);

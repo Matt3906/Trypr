@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:pointer_interceptor/pointer_interceptor.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/trip_detail_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
@@ -852,15 +854,17 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                   );
                                                   if (ok == true) {
                                                     await _deleteTrip(d.id);
-                                                    ScaffoldMessenger.of(
-                                                      context,
-                                                    ).showSnackBar(
-                                                      const SnackBar(
-                                                        content: Text(
-                                                          'Trip deleted',
+                                                    if (context.mounted) {
+                                                      ScaffoldMessenger.of(
+                                                        context,
+                                                      ).showSnackBar(
+                                                        const SnackBar(
+                                                          content: Text(
+                                                            'Trip deleted',
+                                                          ),
                                                         ),
-                                                      ),
-                                                    );
+                                                      );
+                                                    }
                                                   }
                                                 } else if (v == 'share') {
                                                   await _shareTripFromMyTrips(
@@ -870,12 +874,12 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                 }
                                               },
                                               itemBuilder:
-                                                  (_) => [
-                                                    const PopupMenuItem(
+                                                  (_) => const [
+                                                    PopupMenuItem(
                                                       value: 'share',
                                                       child: Text('Share'),
                                                     ),
-                                                    const PopupMenuItem(
+                                                    PopupMenuItem(
                                                       value: 'delete',
                                                       child: Text('Delete'),
                                                     ),
