@@ -423,6 +423,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return b.toString();
   }
 
+  // ignore: unused_element
   List<Map<String, dynamic>> _expandedPointsWithVia() {
     final pts = widget.points;
     if (pts.length < 2 || widget.routeVia.isEmpty) return pts;
@@ -959,7 +960,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
                 outPolylines.add(
                   gmaps.Polyline(
-                    polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}'),
+                    polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
                     points: path,
                     width: 4,
                     color: color,
@@ -1041,7 +1042,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
           outPolylines.add(
             gmaps.Polyline(
-              polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}'),
+              polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
               points: path,
               width: isAdventure ? 8 : 5,
               color: isAdventure ? const Color(0xFF00E676) : standardColor,
@@ -1074,7 +1075,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     _lastInstructions = instr.take(6).toList(growable: false);
     widget.onRouteInstructions?.call(_lastInstructions);
     if (lastArrivalStop != null) {
-      widget.onTransitArrivalStop?.call(lastArrivalStop!);
+      widget.onTransitArrivalStop?.call(lastArrivalStop);
     }
 
     if (!mounted || seq != _rebuildSeq) return;

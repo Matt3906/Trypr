@@ -11,6 +11,7 @@ import 'screens/account_screen.dart';
 import 'screens/friends_screen.dart';
 import 'screens/my_trips_screen.dart';
 import 'screens/trip_builder_screen.dart';
+import 'screens/trip_detail_screen.dart';
 import 'services/auth_state.dart';
 import 'services/google_maps_loader.dart';
 import 'firebase_options.dart';
@@ -160,6 +161,63 @@ class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
     });
   }
 
+  Future<void> _openTripDetailFromRef(String tripRefPath) async {
+    final tripDocRef = FirebaseFirestore.instance.doc(tripRefPath);
+    final snap = await tripDocRef.get();
+    if (!snap.exists) {
+      _snack('Trip not found');
+      return;
+    }
+    final data = snap.data();
+    if (data == null) {
+      _snack('Trip not available');
+      return;
+    }
+
+    final tripData = <String, dynamic>{...data, 'tripRef': tripRefPath};
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => TripDetailScreen(docId: snap.id, data: tripData),
+        ),
+      );
+    });
+  }
+
+  Future<void> _showJoinPendingDialog({required String ownerUid}) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: const Text('Join request sent'),
+            content: Text(
+              ownerUid.isEmpty
+                  ? 'The trip owner needs to approve your request before it appears in Shared Trips.'
+                  : 'The trip owner ($ownerUid) needs to approve your request before it appears in Shared Trips.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  if (!mounted) return;
+                  Navigator.of(context).pushNamed('/my-trips');
+                },
+                child: const Text('Go to My Trips'),
+              ),
+            ],
+          );
+        },
+      );
+    });
+  }
+
   Future<void> _maybeHandleJoinLink() async {
     if (_handled) return;
     if (!kIsWeb) return;
@@ -182,6 +240,20 @@ class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
     final tripId = parsed['tripId']!;
 
     try {
+      // First try to open the trip immediately. If the current user already
+      // has read access (owner or already-shared), this will work and the
+      // link behaves like users expect.
+      try {
+        await _openTripDetailFromRef(joinTrip.trim());
+        return;
+      } catch (e) {
+        // If we can't read it yet (permission denied), fall back to join flow.
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('Join link: could not open trip directly: $e');
+        }
+      }
+
       String requesterName = (user.displayName ?? '').trim();
       if (requesterName.isEmpty) {
         final pub =
@@ -221,7 +293,7 @@ class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
         });
       });
 
-      _snack('Join request sent');
+      _showJoinPendingDialog(ownerUid: ownerUid);
     } catch (e) {
       _snack('Could not send join request');
       if (kDebugMode) {

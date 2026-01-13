@@ -1,5 +1,4 @@
-import 'dart:math' as math;
-import 'dart:convert';
+﻿import 'dart:math' as math;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -29,6 +28,7 @@ class _Waypoint {
 class _TripBuilderScreenState extends State<TripBuilderScreen> {
   final TextEditingController _tripNameCtrl = TextEditingController();
   final TextEditingController _searchCtrl = TextEditingController();
+  final ScrollController _panelScrollCtrl = ScrollController();
 
   final List<_Waypoint> _waypoints = [];
   DateTimeRange? _tripRange;
@@ -50,6 +50,33 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   Map<String, dynamic>? _transitArrivalStop;
 
   bool _suspendMapTap = false;
+
+  Widget _surfaceCard({required Widget child, EdgeInsetsGeometry? padding}) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Material(
+        color: Colors.white,
+        elevation: 4,
+        child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
+      ),
+    );
+  }
+
+  Widget _footerBox({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(12.0),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _webSafeMenuItemText(String text) {
+    final t = SizedBox(width: double.infinity, child: Text(text));
+    return kIsWeb ? PointerInterceptor(child: t) : t;
+  }
 
   bool _isAdventureMode(String mode) {
     final m = mode.trim().toLowerCase();
@@ -444,6 +471,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     _searchDebounce?.cancel();
     _tripNameCtrl.dispose();
     _searchCtrl.dispose();
+    _panelScrollCtrl.dispose();
     super.dispose();
   }
 
@@ -505,25 +533,486 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   Widget build(BuildContext context) {
     final user = _currentUser ?? FirebaseAuth.instance.currentUser;
 
-    Widget tripInfoPanel({required bool collapsible, required bool isMobile}) {
+    Widget searchToolbar() {
+      return LayoutBuilder(
+        builder: (ctx, box) {
+          final narrow = box.maxWidth < 520;
+          if (!narrow) {
+            return Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Search locations',
+                    ),
+                    onChanged: (v) {
+                      _searchDebounce?.cancel();
+                      _searchDebounce = Timer(
+                        const Duration(milliseconds: 400),
+                        () async {
+                          final q = _searchCtrl.text.trim();
+                          if (q.isEmpty) {
+                            setState(() => _searchResults = []);
+                            return;
+                          }
+                          final results = await searchNominatim(q);
+                          setState(() => _searchResults = results);
+                        },
+                      );
+                    },
+                    onSubmitted: (v) async {
+                      if (_tripRange == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Select a trip date range first'),
+                          ),
+                        );
+                        return;
+                      }
+                      List<Map<String, dynamic>> results =
+                          await searchNominatim(v);
+                      if (results.isEmpty) {
+                        final match = _sampleLookup.keys.firstWhere(
+                          (k) => k.toLowerCase().contains(v.toLowerCase()),
+                          orElse: () => '',
+                        );
+                        if (match.isNotEmpty) {
+                          _addWaypointFromLookup(match);
+                        }
+                        return;
+                      }
+                      final r = results.first;
+                      await _addWaypointWithPrompt(
+                        (r['name'] ?? v).toString(),
+                        (r['lat'] ?? 0.0) as double,
+                        (r['lon'] ?? 0.0) as double,
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed:
+                      _tripRange == null
+                          ? null
+                          : () {
+                            _addWaypointFromLookup(_searchCtrl.text);
+                            _searchCtrl.clear();
+                          },
+                  child: const Text('Add'),
+                ),
+                const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  onOpened: () {
+                    if (mounted) setState(() => _suspendMapTap = true);
+                  },
+                  onCanceled: () {
+                    if (mounted) setState(() => _suspendMapTap = false);
+                  },
+                  onSelected: (v) {
+                    if (mounted) setState(() => _suspendMapTap = false);
+                    _addWaypointFromLookup(v);
+                  },
+                  enabled: _tripRange != null,
+                  itemBuilder:
+                      (_) =>
+                          _sampleLookup.keys
+                              .map(
+                                (k) => PopupMenuItem(
+                                  value: k,
+                                  child: _webSafeMenuItemText(k),
+                                ),
+                              )
+                              .toList(),
+                  child: ElevatedButton(
+                    onPressed: null,
+                    child: const Text('Add from list'),
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: _searchCtrl,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search locations',
+                ),
+                onChanged: (v) {
+                  _searchDebounce?.cancel();
+                  _searchDebounce = Timer(
+                    const Duration(milliseconds: 400),
+                    () async {
+                      final q = _searchCtrl.text.trim();
+                      if (q.isEmpty) {
+                        setState(() => _searchResults = []);
+                        return;
+                      }
+                      final results = await searchNominatim(q);
+                      setState(() => _searchResults = results);
+                    },
+                  );
+                },
+                onSubmitted: (v) async {
+                  if (_tripRange == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Select a trip date range first'),
+                      ),
+                    );
+                    return;
+                  }
+                  List<Map<String, dynamic>> results = await searchNominatim(v);
+                  if (results.isEmpty) {
+                    final match = _sampleLookup.keys.firstWhere(
+                      (k) => k.toLowerCase().contains(v.toLowerCase()),
+                      orElse: () => '',
+                    );
+                    if (match.isNotEmpty) {
+                      _addWaypointFromLookup(match);
+                    }
+                    return;
+                  }
+                  final r = results.first;
+                  await _addWaypointWithPrompt(
+                    (r['name'] ?? v).toString(),
+                    (r['lat'] ?? 0.0) as double,
+                    (r['lon'] ?? 0.0) as double,
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ElevatedButton(
+                    onPressed:
+                        _tripRange == null
+                            ? null
+                            : () {
+                              _addWaypointFromLookup(_searchCtrl.text);
+                              _searchCtrl.clear();
+                            },
+                    child: const Text('Add'),
+                  ),
+                  PopupMenuButton<String>(
+                    onOpened: () {
+                      if (mounted) setState(() => _suspendMapTap = true);
+                    },
+                    onCanceled: () {
+                      if (mounted) setState(() => _suspendMapTap = false);
+                    },
+                    onSelected: (v) {
+                      if (mounted) setState(() => _suspendMapTap = false);
+                      _addWaypointFromLookup(v);
+                    },
+                    enabled: _tripRange != null,
+                    itemBuilder:
+                        (_) =>
+                            _sampleLookup.keys
+                                .map(
+                                  (k) => PopupMenuItem(
+                                    value: k,
+                                    child:
+                                        kIsWeb
+                                            ? PointerInterceptor(
+                                              child: SizedBox(
+                                                width: double.infinity,
+                                                child: Text(k),
+                                              ),
+                                            )
+                                            : Text(k),
+                                  ),
+                                )
+                                .toList(),
+                    child: ElevatedButton(
+                      onPressed: null,
+                      child: const Text('Add from list'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      );
+    }
+
+    Widget tripInfoPanel() {
+      Widget stopItem(int i) {
+        if (_segmentRoutingTypes.length != math.max(0, _waypoints.length - 1)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _ensureSegmentRoutingTypesLength();
+          });
+        }
+
+        final isLast = i == _waypoints.length - 1;
+        final next = (i + 1 < _waypoints.length) ? _waypoints[i + 1] : null;
+        double segKm = 0.0;
+        if (next != null) {
+          segKm = _haversine(
+            _waypoints[i].lat,
+            _waypoints[i].lon,
+            next.lat,
+            next.lon,
+          );
+        }
+        final nights = _waypoints[i].nights;
+
+        int offsetDays = 0;
+        for (var j = 0; j < i; j++) {
+          offsetDays += _waypoints[j].nights;
+        }
+        String dateStr = '';
+        if (_tripRange != null) {
+          final start = _tripRange!.start.add(Duration(days: offsetDays));
+          final end = start.add(Duration(days: math.max(0, nights - 1)));
+          dateStr = '${_ymd(start)} → ${_ymd(end)}';
+        }
+
+        final maxNightsForRow =
+            _tripRange == null
+                ? 30
+                : math.max(1, _totalTripDays - (_assignedNights - nights));
+
+        final isSegmentRow = !isLast;
+        final segType =
+            (isSegmentRow && i < _segmentRoutingTypes.length)
+                ? _segmentRoutingTypes[i]
+                : 'calculated';
+        final segTypeNorm = segType.trim().toLowerCase();
+
+        final indicator = SizedBox(
+          width: 26,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              const SizedBox.expand(),
+              Positioned(
+                left: 12,
+                top: 0,
+                bottom: isLast ? 20 : 0,
+                child: Container(width: 2, color: Colors.grey.shade300),
+              ),
+              Positioned(
+                left: 4,
+                top: 2,
+                child: Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    border: Border.all(color: Colors.grey.shade400, width: 2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      '${i + 1}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                indicator,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _waypoints[i].name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 82,
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Nights',
+                                isDense: true,
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<int>(
+                                  value: nights.clamp(1, maxNightsForRow),
+                                  isDense: true,
+                                  isExpanded: true,
+                                  items: List.generate(
+                                    maxNightsForRow,
+                                    (idx) => DropdownMenuItem(
+                                      value: idx + 1,
+                                      child: Text('${idx + 1}'),
+                                    ),
+                                  ),
+                                  onChanged: (v) {
+                                    if (v == null) return;
+                                    setState(() => _waypoints[i].nights = v);
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          IconButton(
+                            tooltip: 'Remove stop',
+                            visualDensity: VisualDensity.compact,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 36,
+                              height: 36,
+                            ),
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => _removeWaypoint(i),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _tripRange == null
+                            ? '$nights night${nights == 1 ? '' : 's'}'
+                            : '$nights night${nights == 1 ? '' : 's'} · $dateStr',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      if (isSegmentRow)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${segKm.toStringAsFixed(2)} km to next',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                const Text(
+                                  'Routing:',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                ChoiceChip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: const Text(
+                                    'Calculated',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  selected: segTypeNorm == 'calculated',
+                                  onSelected: (_) {
+                                    setState(() {
+                                      if (i >= 0 &&
+                                          i < _segmentRoutingTypes.length) {
+                                        _segmentRoutingTypes[i] = 'calculated';
+                                      }
+                                    });
+                                  },
+                                ),
+                                ChoiceChip(
+                                  visualDensity: VisualDensity.compact,
+                                  label: const Text(
+                                    'Direct',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  selected: segTypeNorm == 'direct',
+                                  onSelected: (_) {
+                                    setState(() {
+                                      if (i >= 0 &&
+                                          i < _segmentRoutingTypes.length) {
+                                        _segmentRoutingTypes[i] = 'direct';
+                                      }
+                                    });
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
+                        )
+                      else
+                        const Text(
+                          'Last stop',
+                          style: TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+
       final content = Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!collapsible)
-              const Text(
-                'Trip Information',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-              ),
-            if (!collapsible) const SizedBox(height: 8),
+            const Text(
+              'Trip Builder',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 10),
             TextField(
               controller: _tripNameCtrl,
-              decoration: const InputDecoration(labelText: 'Trip Name'),
+              decoration: const InputDecoration(
+                labelText: 'Trip Name',
+                isDense: true,
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             InputDecorator(
-              decoration: const InputDecoration(labelText: 'Trip date range'),
+              decoration: const InputDecoration(
+                labelText: 'Trip date range',
+                isDense: true,
+              ),
               child: InkWell(
                 onTap: () async {
                   final now = _stripTime(DateTime.now());
@@ -550,11 +1039,12 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   }
                 },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12.0),
+                  padding: const EdgeInsets.symmetric(vertical: 10.0),
                   child: Text(
                     _tripRange == null
                         ? 'Select start and end dates'
                         : '${_ymd(_tripRange!.start)} → ${_ymd(_tripRange!.end)} ($_totalTripDays days)',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
               ),
@@ -562,7 +1052,10 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Text('Transportation:'),
+                const Text(
+                  'Transportation',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: DropdownButton<String>(
@@ -581,75 +1074,27 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     items: [
                       DropdownMenuItem(
                         value: 'driving',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Car'),
-                                  ),
-                                )
-                                : const Text('Car'),
+                        child: _webSafeMenuItemText('Car'),
                       ),
                       DropdownMenuItem(
                         value: 'biking',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Biking'),
-                                  ),
-                                )
-                                : const Text('Biking'),
+                        child: _webSafeMenuItemText('Biking'),
                       ),
                       DropdownMenuItem(
                         value: 'bikepacking',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Bikepacking'),
-                                  ),
-                                )
-                                : const Text('Bikepacking'),
+                        child: _webSafeMenuItemText('Bikepacking'),
                       ),
                       DropdownMenuItem(
                         value: 'backpacking',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Backpacking'),
-                                  ),
-                                )
-                                : const Text('Backpacking'),
+                        child: _webSafeMenuItemText('Backpacking'),
                       ),
                       DropdownMenuItem(
                         value: 'transit',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Public transport'),
-                                  ),
-                                )
-                                : const Text('Public transport'),
+                        child: _webSafeMenuItemText('Public transport'),
                       ),
                       DropdownMenuItem(
                         value: 'walking',
-                        child:
-                            kIsWeb
-                                ? PointerInterceptor(
-                                  child: const SizedBox(
-                                    width: double.infinity,
-                                    child: Text('Walking'),
-                                  ),
-                                )
-                                : const Text('Walking'),
+                        child: _webSafeMenuItemText('Walking'),
                       ),
                     ],
                     onChanged: (v) {
@@ -660,22 +1105,96 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 ),
               ],
             ),
-            if (_transportMode == 'transit' && _routeInstructions.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Transit (suggested lines):',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    ..._routeInstructions.take(4).map((s) => Text('• $s')),
-                  ],
-                ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade200),
               ),
-            const SizedBox(height: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Search & add',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  searchToolbar(),
+                  if (_waypoints.length >= 2) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Switch(
+                          value: _adjustRoute,
+                          onChanged: (v) {
+                            setState(() => _adjustRoute = v);
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Adjust route line',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        if (_adjustRoute && _routeVia.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() => _routeVia = []);
+                            },
+                            icon: const Icon(Icons.clear),
+                            label: const Text('Clear'),
+                          ),
+                      ],
+                    ),
+                  ],
+                  if (_searchResults.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      height: 220,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListView.builder(
+                        itemCount: _searchResults.length,
+                        itemBuilder: (ctx, i) {
+                          final r = _searchResults[i];
+                          return ListTile(
+                            dense: true,
+                            title: Text(
+                              r['name'] ??
+                                  r['display_name'] ??
+                                  'Result ${i + 1}',
+                            ),
+                            subtitle: Text(
+                              '${r['lat'] ?? '-'}, ${r['lon'] ?? '-'}',
+                            ),
+                            trailing: TextButton(
+                              onPressed:
+                                  _tripRange == null
+                                      ? null
+                                      : () async {
+                                        await _addWaypointWithPrompt(
+                                          (r['name'] ?? 'Point').toString(),
+                                          (r['lat'] ?? 0.0) as double,
+                                          (r['lon'] ?? 0.0) as double,
+                                        );
+                                      },
+                              child: const Text('Add'),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
             if (_tripRange != null)
               Text(
                 'Nights assigned: $_assignedNights / $_totalTripDays',
@@ -685,7 +1204,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                       _hasValidAllocation
                           ? Colors.black54
                           : Colors.red.shade700,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             if (_tripRange != null && !_hasValidAllocation)
@@ -696,186 +1215,44 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   style: TextStyle(fontSize: 12, color: Colors.red.shade700),
                 ),
               ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Text(
               'Total: ${((_roadDistanceKm ?? _totalKm)).toStringAsFixed(2)} km',
-              style: const TextStyle(fontSize: 16),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
             if (_routeDurationMin != null)
               Padding(
                 padding: const EdgeInsets.only(top: 6.0),
                 child: Text(
-                  'Estimated drive time: ${_routeDurationMin!.toStringAsFixed(0)} min',
-                  style: const TextStyle(fontSize: 13, color: Colors.black54),
+                  'Estimated time: ${_routeDurationMin!.toStringAsFixed(0)} min',
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
                 ),
               ),
-            const SizedBox(height: 12),
-            const Text(
-              'Segments (kms between):',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            if (_waypoints.isEmpty)
-              const Text(
-                'No points yet. Use the search in the main pane to add locations.',
-              )
-            else
-              SizedBox(
-                height: isMobile ? 220 : 260,
-                child: ListView.builder(
-                  itemCount: _waypoints.length,
-                  itemBuilder: (ctx, i) {
-                    if (_segmentRoutingTypes.length !=
-                        math.max(0, _waypoints.length - 1)) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) _ensureSegmentRoutingTypesLength();
-                      });
-                    }
-
-                    final next =
-                        i + 1 < _waypoints.length ? _waypoints[i + 1] : null;
-                    double segKm = 0.0;
-                    if (next != null) {
-                      segKm = _haversine(
-                        _waypoints[i].lat,
-                        _waypoints[i].lon,
-                        next.lat,
-                        next.lon,
-                      );
-                    }
-                    final nights = _waypoints[i].nights;
-                    int offsetDays = 0;
-                    for (var j = 0; j < i; j++) {
-                      offsetDays += _waypoints[j].nights;
-                    }
-                    String dateStr = '';
-                    if (_tripRange != null) {
-                      final start = _tripRange!.start.add(
-                        Duration(days: offsetDays),
-                      );
-                      final end = start.add(
-                        Duration(days: math.max(0, nights - 1)),
-                      );
-                      dateStr = ' — ${_ymd(start)} → ${_ymd(end)}';
-                    }
-
-                    final maxNightsForRow =
-                        _tripRange == null
-                            ? 30
-                            : math.max(
-                              1,
-                              _totalTripDays - (_assignedNights - nights),
-                            );
-
-                    final isSegmentRow = next != null;
-                    final segType =
-                        (isSegmentRow && i < _segmentRoutingTypes.length)
-                            ? _segmentRoutingTypes[i]
-                            : 'calculated';
-                    return ListTile(
-                      dense: true,
-                      leading: CircleAvatar(child: Text('${i + 1}')),
-                      title: Text(_waypoints[i].name),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '$nights night${nights == 1 ? '' : 's'}$dateStr — ${next != null ? '${segKm.toStringAsFixed(2)} km to next' : 'Last point'}',
-                          ),
-                          if (isSegmentRow)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 6.0),
-                              child: Row(
-                                children: [
-                                  const Text(
-                                    'Routing:',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: DropdownButton<String>(
-                                      value:
-                                          ({'calculated', 'direct'}.contains(
-                                                segType.trim().toLowerCase(),
-                                              ))
-                                              ? segType
-                                              : 'calculated',
-                                      isExpanded: true,
-                                      items: [
-                                        DropdownMenuItem(
-                                          value: 'calculated',
-                                          child:
-                                              kIsWeb
-                                                  ? PointerInterceptor(
-                                                    child: const SizedBox(
-                                                      width: double.infinity,
-                                                      child: Text('Calculated'),
-                                                    ),
-                                                  )
-                                                  : const Text('Calculated'),
-                                        ),
-                                        DropdownMenuItem(
-                                          value: 'direct',
-                                          child:
-                                              kIsWeb
-                                                  ? PointerInterceptor(
-                                                    child: const SizedBox(
-                                                      width: double.infinity,
-                                                      child: Text('Direct'),
-                                                    ),
-                                                  )
-                                                  : const Text('Direct'),
-                                        ),
-                                      ],
-                                      onChanged: (v) {
-                                        if (v == null) return;
-                                        setState(() {
-                                          if (i >= 0 &&
-                                              i < _segmentRoutingTypes.length) {
-                                            _segmentRoutingTypes[i] = v;
-                                          }
-                                        });
-                                      },
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 110,
-                            child: OutlinedButton(
-                              onPressed: () async {
-                                final v = await _promptNights(
-                                  locationName: _waypoints[i].name,
-                                  max: maxNightsForRow,
-                                  initialValue: nights,
-                                );
-                                if (v == null) return;
-                                if (!mounted) return;
-                                setState(() => _waypoints[i].nights = v);
-                              },
-                              child: Text(
-                                '$nights night${nights == 1 ? '' : 's'}',
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: () => _removeWaypoint(i),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+            if (_transportMode == 'transit' && _routeInstructions.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Transit (suggested lines):',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    ..._routeInstructions.take(4).map((s) => Text('• $s')),
+                  ],
                 ),
+              ),
+            const SizedBox(height: 14),
+            const Text('Stops', style: TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 10),
+            if (_waypoints.isEmpty)
+              const Text('No stops yet. Search above or click the map to add.')
+            else
+              Column(
+                children: [
+                  for (var i = 0; i < _waypoints.length; i++) stopItem(i),
+                ],
               ),
             const SizedBox(height: 8),
             if (user == null)
@@ -1019,307 +1396,45 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         ),
       );
 
-      if (!collapsible) {
-        return Container(
-          width: 340,
-          decoration: BoxDecoration(
-            color: Colors.grey.shade50,
-            border: Border(right: BorderSide(color: Colors.grey.shade200)),
-          ),
+      final scrollable = Scrollbar(
+        controller: _panelScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _panelScrollCtrl,
           child: content,
-        );
-      }
-
-      return ExpansionTile(
-        initiallyExpanded: false,
-        title: const Text(
-          'Trip Information',
-          style: TextStyle(fontWeight: FontWeight.w700),
         ),
-        children: [content],
       );
+
+      final card = ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Material(
+          color: Colors.white,
+          elevation: 18,
+          shadowColor: Colors.black54,
+          child: scrollable,
+        ),
+      );
+
+      return kIsWeb ? PointerInterceptor(child: card) : card;
     }
 
-    Widget searchToolbar() {
-      return LayoutBuilder(
+    return Scaffold(
+      appBar: const TopTaskbar(dockProgress: 1.0),
+      body: LayoutBuilder(
         builder: (ctx, box) {
-          final narrow = box.maxWidth < 520;
-          if (!narrow) {
-            return Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      hintText: 'Search locations',
-                    ),
-                    onChanged: (v) {
-                      _searchDebounce?.cancel();
-                      _searchDebounce = Timer(
-                        const Duration(milliseconds: 400),
-                        () async {
-                          final q = _searchCtrl.text.trim();
-                          if (q.isEmpty) {
-                            setState(() => _searchResults = []);
-                            return;
-                          }
-                          final results = await searchNominatim(q);
-                          setState(() => _searchResults = results);
-                        },
-                      );
-                    },
-                    onSubmitted: (v) async {
-                      if (_tripRange == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Select a trip date range first'),
-                          ),
-                        );
-                        return;
-                      }
-                      List<Map<String, dynamic>> results =
-                          await searchNominatim(v);
-                      if (results.isEmpty) {
-                        final match = _sampleLookup.keys.firstWhere(
-                          (k) => k.toLowerCase().contains(v.toLowerCase()),
-                          orElse: () => '',
-                        );
-                        if (match.isNotEmpty) {
-                          _addWaypointFromLookup(match);
-                        }
-                        return;
-                      }
-                      final r = results.first;
-                      await _addWaypointWithPrompt(
-                        (r['name'] ?? v).toString(),
-                        (r['lat'] ?? 0.0) as double,
-                        (r['lon'] ?? 0.0) as double,
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed:
-                      _tripRange == null
-                          ? null
-                          : () {
-                            _addWaypointFromLookup(_searchCtrl.text);
-                            _searchCtrl.clear();
-                          },
-                  child: const Text('Add'),
-                ),
-                const SizedBox(width: 8),
-                PopupMenuButton<String>(
-                  onOpened: () {
-                    if (mounted) setState(() => _suspendMapTap = true);
-                  },
-                  onCanceled: () {
-                    if (mounted) setState(() => _suspendMapTap = false);
-                  },
-                  onSelected: (v) {
-                    if (mounted) setState(() => _suspendMapTap = false);
-                    _addWaypointFromLookup(v);
-                  },
-                  enabled: _tripRange != null,
-                  itemBuilder:
-                      (_) =>
-                          _sampleLookup.keys
-                              .map(
-                                (k) => PopupMenuItem(value: k, child: Text(k)),
-                              )
-                              .toList(),
-                  child: ElevatedButton(
-                    onPressed: null,
-                    child: const Text('Add from list'),
-                  ),
-                ),
-              ],
-            );
-          }
+          final maxW = box.maxWidth;
+          final maxH = box.maxHeight;
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _searchCtrl,
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.search),
-                  hintText: 'Search locations',
-                ),
-                onChanged: (v) {
-                  _searchDebounce?.cancel();
-                  _searchDebounce = Timer(
-                    const Duration(milliseconds: 400),
-                    () async {
-                      final q = _searchCtrl.text.trim();
-                      if (q.isEmpty) {
-                        setState(() => _searchResults = []);
-                        return;
-                      }
-                      final results = await searchNominatim(q);
-                      setState(() => _searchResults = results);
-                    },
-                  );
-                },
-                onSubmitted: (v) async {
-                  if (_tripRange == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Select a trip date range first'),
-                      ),
-                    );
-                    return;
-                  }
-                  List<Map<String, dynamic>> results = await searchNominatim(v);
-                  if (results.isEmpty) {
-                    final match = _sampleLookup.keys.firstWhere(
-                      (k) => k.toLowerCase().contains(v.toLowerCase()),
-                      orElse: () => '',
-                    );
-                    if (match.isNotEmpty) {
-                      _addWaypointFromLookup(match);
-                    }
-                    return;
-                  }
-                  final r = results.first;
-                  await _addWaypointWithPrompt(
-                    (r['name'] ?? v).toString(),
-                    (r['lat'] ?? 0.0) as double,
-                    (r['lon'] ?? 0.0) as double,
-                  );
-                },
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ElevatedButton(
-                    onPressed:
-                        _tripRange == null
-                            ? null
-                            : () {
-                              _addWaypointFromLookup(_searchCtrl.text);
-                              _searchCtrl.clear();
-                            },
-                    child: const Text('Add'),
-                  ),
-                  PopupMenuButton<String>(
-                    onOpened: () {
-                      if (mounted) setState(() => _suspendMapTap = true);
-                    },
-                    onCanceled: () {
-                      if (mounted) setState(() => _suspendMapTap = false);
-                    },
-                    onSelected: (v) {
-                      if (mounted) setState(() => _suspendMapTap = false);
-                      _addWaypointFromLookup(v);
-                    },
-                    enabled: _tripRange != null,
-                    itemBuilder:
-                        (_) =>
-                            _sampleLookup.keys
-                                .map(
-                                  (k) => PopupMenuItem(
-                                    value: k,
-                                    child:
-                                        kIsWeb
-                                            ? PointerInterceptor(
-                                              child: SizedBox(
-                                                width: double.infinity,
-                                                child: Text(k),
-                                              ),
-                                            )
-                                            : Text(k),
-                                  ),
-                                )
-                                .toList(),
-                    child: ElevatedButton(
-                      onPressed: null,
-                      child: const Text('Add from list'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+          final sidePadding = (maxW < 520) ? 12.0 : 20.0;
+          final topPadding = (maxH < 520) ? 12.0 : 20.0;
+          final panelWidth = math.min(
+            400.0,
+            math.max(280.0, maxW - 2 * sidePadding),
           );
-        },
-      );
-    }
 
-    Widget mainPane() {
-      return Column(
-        children: [
-          Padding(padding: const EdgeInsets.all(12.0), child: searchToolbar()),
-
-          if (_waypoints.length >= 2)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12.0),
-              child: Row(
-                children: [
-                  Switch(
-                    value: _adjustRoute,
-                    onChanged: (v) {
-                      setState(() => _adjustRoute = v);
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Adjust route line (tap route to add a via point)',
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          _searchResults.isEmpty
-              ? const SizedBox.shrink()
-              : Container(
-                height: 160,
-                margin: const EdgeInsets.symmetric(horizontal: 12.0),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ListView.builder(
-                  itemCount: _searchResults.length,
-                  itemBuilder: (ctx, i) {
-                    final r = _searchResults[i];
-                    return ListTile(
-                      title: Text(
-                        r['name'] ?? r['display_name'] ?? 'Result ${i + 1}',
-                      ),
-                      subtitle: Text('${r['lat'] ?? '-'}, ${r['lon'] ?? '-'}'),
-                      trailing: TextButton(
-                        onPressed:
-                            _tripRange == null
-                                ? null
-                                : () async {
-                                  await _addWaypointWithPrompt(
-                                    (r['name'] ?? 'Point').toString(),
-                                    (r['lat'] ?? 0.0) as double,
-                                    (r['lon'] ?? 0.0) as double,
-                                  );
-                                },
-                        child: const Text('Add'),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+          return Stack(
+            children: [
+              Positioned.fill(
                 child: IgnorePointer(
                   ignoring: _suspendMapTap,
                   child: Stack(
@@ -1415,30 +1530,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   ),
                 ),
               ),
-            ),
-          ),
-        ],
-      );
-    }
 
-    return Scaffold(
-      appBar: const TopTaskbar(dockProgress: 1.0),
-      body: LayoutBuilder(
-        builder: (ctx, box) {
-          final isMobile = box.maxWidth < 900;
-          if (isMobile) {
-            return Column(
-              children: [
-                tripInfoPanel(collapsible: true, isMobile: true),
-                Expanded(child: mainPane()),
-              ],
-            );
-          }
-
-          return Row(
-            children: [
-              tripInfoPanel(collapsible: false, isMobile: false),
-              Expanded(child: mainPane()),
+              Positioned(
+                left: sidePadding,
+                top: topPadding,
+                bottom: topPadding,
+                width: panelWidth,
+                child: tripInfoPanel(),
+              ),
             ],
           );
         },

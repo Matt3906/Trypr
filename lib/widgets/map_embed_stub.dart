@@ -215,6 +215,7 @@ class _MapEmbedState extends State<MapEmbed> {
     return b.toString();
   }
 
+  // ignore: unused_element
   List<Map<String, dynamic>> _expandedPointsWithVia() {
     final pts = widget.points;
     if (pts.length < 2 || widget.routeVia.isEmpty) return pts;
