@@ -846,140 +846,144 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _waypoints[i].name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 82,
-                            child: InputDecorator(
-                              decoration: const InputDecoration(
-                                labelText: 'Nights',
-                                isDense: true,
-                                contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 8,
-                                ),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<int>(
-                                  value: nights.clamp(1, maxNightsForRow),
-                                  isDense: true,
-                                  isExpanded: true,
-                                  items: List.generate(
-                                    maxNightsForRow,
-                                    (idx) => DropdownMenuItem(
-                                      value: idx + 1,
-                                      child: Text('${idx + 1}'),
-                                    ),
-                                  ),
-                                  onChanged: (v) {
-                                    if (v == null) return;
-                                    setState(() => _waypoints[i].nights = v);
-                                  },
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          IconButton(
-                            tooltip: 'Remove stop',
-                            visualDensity: VisualDensity.compact,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 36,
-                              height: 36,
-                            ),
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: () => _removeWaypoint(i),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        _tripRange == null
-                            ? '$nights night${nights == 1 ? '' : 's'}'
-                            : '$nights night${nights == 1 ? '' : 's'} · $dateStr',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.black54,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      if (isSegmentRow)
-                        Column(
+                        Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              '${segKm.toStringAsFixed(2)} km to next',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.black54,
+                            Expanded(
+                              child: Text(
+                                _waypoints[i].name,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                const Text(
-                                  'Routing:',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 82,
+                              child: InputDecorator(
+                                decoration: const InputDecoration(
+                                  labelText: 'Nights',
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
                                   ),
                                 ),
-                                ChoiceChip(
-                                  visualDensity: VisualDensity.compact,
-                                  label: const Text(
-                                    'Calculated',
-                                    style: TextStyle(fontSize: 12),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<int>(
+                                    value: nights.clamp(1, maxNightsForRow),
+                                    isDense: true,
+                                    isExpanded: true,
+                                    items: List.generate(
+                                      maxNightsForRow,
+                                      (idx) => DropdownMenuItem(
+                                        value: idx + 1,
+                                        child: Text('${idx + 1}'),
+                                      ),
+                                    ),
+                                    onChanged: (v) {
+                                      if (v == null) return;
+                                      setState(() => _waypoints[i].nights = v);
+                                    },
                                   ),
-                                  selected: segTypeNorm == 'calculated',
-                                  onSelected: (_) {
-                                    setState(() {
-                                      if (i >= 0 &&
-                                          i < _segmentRoutingTypes.length) {
-                                        _segmentRoutingTypes[i] = 'calculated';
-                                      }
-                                    });
-                                  },
                                 ),
-                                ChoiceChip(
-                                  visualDensity: VisualDensity.compact,
-                                  label: const Text(
-                                    'Direct',
-                                    style: TextStyle(fontSize: 12),
-                                  ),
-                                  selected: segTypeNorm == 'direct',
-                                  onSelected: (_) {
-                                    setState(() {
-                                      if (i >= 0 &&
-                                          i < _segmentRoutingTypes.length) {
-                                        _segmentRoutingTypes[i] = 'direct';
-                                      }
-                                    });
-                                  },
-                                ),
-                              ],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            IconButton(
+                              tooltip: 'Remove stop',
+                              visualDensity: VisualDensity.compact,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 36,
+                                height: 36,
+                              ),
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => _removeWaypoint(i),
                             ),
                           ],
-                        )
-                      else
-                        const Text(
-                          'Last stop',
-                          style: TextStyle(fontSize: 12, color: Colors.black54),
                         ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _tripRange == null
+                              ? '$nights night${nights == 1 ? '' : 's'}'
+                              : '$nights night${nights == 1 ? '' : 's'} · $dateStr',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        if (isSegmentRow)
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${segKm.toStringAsFixed(2)} km to next',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  const Text(
+                                    'Routing:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: const Text(
+                                      'Calculated',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                    selected: segTypeNorm == 'calculated',
+                                    onSelected: (_) {
+                                      setState(() {
+                                        if (i >= 0 &&
+                                            i < _segmentRoutingTypes.length) {
+                                          _segmentRoutingTypes[i] =
+                                              'calculated';
+                                        }
+                                      });
+                                    },
+                                  ),
+                                  ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: const Text(
+                                      'Direct',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                    selected: segTypeNorm == 'direct',
+                                    onSelected: (_) {
+                                      setState(() {
+                                        if (i >= 0 &&
+                                            i < _segmentRoutingTypes.length) {
+                                          _segmentRoutingTypes[i] = 'direct';
+                                        }
+                                      });
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          )
+                        else
+                          const Text(
+                            'Last stop',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
                       ],
                     ),
                   ),
