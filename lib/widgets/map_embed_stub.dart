@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:math' as math;
 
 // Native (non-web) map implementation using flutter_map. Supports tapping to
 // add a dropped pin via the provided `onMapTap` callback and requests an OSRM
@@ -11,6 +12,7 @@ import 'dart:convert';
 class MapEmbed extends StatefulWidget {
   final List<Map<String, dynamic>> points;
   final void Function(double lat, double lon)? onMapTap;
+  final void Function(Map<String, dynamic> point)? onPointTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
   final void Function(List<String> lines)? onRouteInstructions;
@@ -22,10 +24,16 @@ class MapEmbed extends StatefulWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final List<Map<String, dynamic>> secondaryPoints;
+  final bool disableDefaultUi;
+  final bool disableGestures;
+  final bool zoomControlsEnabled;
+  final double minZoom;
+  final double maxZoom;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
+    this.onPointTap,
     this.onRouteSummary,
     this.onRouteInstructions,
     this.onTransitArrivalStop,
@@ -36,6 +44,11 @@ class MapEmbed extends StatefulWidget {
     this.onViaDragEnd,
     this.onViaTapDelete,
     this.secondaryPoints = const [],
+    this.disableDefaultUi = false,
+    this.disableGestures = false,
+    this.zoomControlsEnabled = false,
+    this.minZoom = 3,
+    this.maxZoom = 18,
   });
 
   @override
@@ -76,6 +89,20 @@ class _MapEmbedState extends State<MapEmbed> {
   Color _standardRouteColor(String mode) {
     if (_isAdventureMode(mode)) return Colors.green;
     return Colors.blue;
+  }
+
+  double _haversineMeters(ll.LatLng a, ll.LatLng b) {
+    const r = 6371000.0;
+    final dLat = (b.latitude - a.latitude) * (math.pi / 180.0);
+    final dLon = (b.longitude - a.longitude) * (math.pi / 180.0);
+    final lat1 = a.latitude * (math.pi / 180.0);
+    final lat2 = b.latitude * (math.pi / 180.0);
+    final sinDLat = math.sin(dLat / 2);
+    final sinDLon = math.sin(dLon / 2);
+    final aa =
+        sinDLat * sinDLat + math.cos(lat1) * math.cos(lat2) * sinDLon * sinDLon;
+    final c = 2 * math.atan2(math.sqrt(aa), math.sqrt(1 - aa));
+    return r * c;
   }
 
   IconData _iconFor(String kind, String category) {
@@ -313,13 +340,24 @@ class _MapEmbedState extends State<MapEmbed> {
             height: 42,
             point: ll.LatLng(lat, lon),
             builder:
-                (ctx) => Container(
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.14),
-                    shape: BoxShape.circle,
+                (ctx) => GestureDetector(
+                  onTap: () {
+                    _suppressMapTapUntilMs =
+                        DateTime.now().millisecondsSinceEpoch + 300;
+                    widget.onPointTap?.call(p);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.14),
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(6),
+                    child: Icon(
+                      _iconFor(kind, category),
+                      color: color,
+                      size: 24,
+                    ),
                   ),
-                  padding: const EdgeInsets.all(6),
-                  child: Icon(_iconFor(kind, category), color: color, size: 24),
                 ),
           );
         }).toList();
@@ -333,7 +371,15 @@ class _MapEmbedState extends State<MapEmbed> {
           width: 36,
           height: 36,
           point: ll.LatLng(lat, lon),
-          builder: (ctx) => CircleAvatar(child: Text('${i + 1}')),
+          builder:
+              (ctx) => GestureDetector(
+                onTap: () {
+                  _suppressMapTapUntilMs =
+                      DateTime.now().millisecondsSinceEpoch + 300;
+                  widget.onPointTap?.call(p);
+                },
+                child: CircleAvatar(child: Text('${i + 1}')),
+              ),
         ),
       );
     }
@@ -360,11 +406,14 @@ class _MapEmbedState extends State<MapEmbed> {
                       DateTime.now().millisecondsSinceEpoch + 300;
                   widget.onViaTapDelete?.call(i);
                 },
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2E7D32),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
+                child: Opacity(
+                  opacity: 0.7,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2E7D32),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
                   ),
                 ),
               ),
@@ -388,6 +437,22 @@ class _MapEmbedState extends State<MapEmbed> {
           segPts
               .map((p) => ll.LatLng(_toDouble(p['lat']), _toDouble(p['lon'])))
               .toList();
+
+      if (mode == 'flying') {
+        var segDist = 0.0;
+        for (var i = 0; i + 1 < fallback.length; i++) {
+          segDist += _haversineMeters(fallback[i], fallback[i + 1]);
+        }
+        distSum += segDist;
+        out.add(
+          Polyline(
+            points: fallback,
+            strokeWidth: 3.0,
+            color: Colors.indigo.shade400,
+          ),
+        );
+        continue;
+      }
 
       if (segType == 'direct') {
         out.add(
@@ -563,7 +628,10 @@ class _MapEmbedState extends State<MapEmbed> {
           padding: const EdgeInsets.all(24),
           maxZoom: allPts.length <= 1 ? 12 : 10,
         ),
+        minZoom: widget.minZoom,
+        maxZoom: widget.maxZoom,
         onTap: (tapPos, latlng) {
+          if (widget.disableGestures) return;
           if (DateTime.now().millisecondsSinceEpoch < _suppressMapTapUntilMs) {
             return;
           }
@@ -578,6 +646,8 @@ class _MapEmbedState extends State<MapEmbed> {
           }
           widget.onMapTap?.call(latlng.latitude, latlng.longitude);
         },
+        interactiveFlags:
+            widget.disableGestures ? InteractiveFlag.none : InteractiveFlag.all,
       ),
       children: [
         TileLayer(
@@ -591,6 +661,87 @@ class _MapEmbedState extends State<MapEmbed> {
         if (_viaMarkers.isNotEmpty) MarkerLayer(markers: _viaMarkers),
         MarkerLayer(markers: _markers),
       ],
+    );
+  }
+}
+
+class MapPreview3D extends StatelessWidget {
+  final double lat;
+  final double lon;
+  final String title;
+
+  const MapPreview3D({
+    super.key,
+    required this.lat,
+    required this.lon,
+    this.title = '',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final center = ll.LatLng(lat, lon);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: FlutterMap(
+        options: MapOptions(
+          center: center,
+          zoom: 14,
+          minZoom: 2,
+          maxZoom: 18,
+          interactiveFlags: InteractiveFlag.none,
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            subdomains: const ['a', 'b', 'c'],
+            userAgentPackageName: 'com.example.trypr',
+          ),
+          MarkerLayer(
+            markers: [
+              Marker(
+                width: 24,
+                height: 24,
+                point: center,
+                builder: (_) => const Icon(Icons.place, color: Colors.red),
+              ),
+            ],
+          ),
+          if (title.isNotEmpty)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  width: 200,
+                  height: 32,
+                  point: center,
+                  builder:
+                      (_) => Align(
+                        alignment: Alignment.topCenter,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.6),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 }

@@ -138,7 +138,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
                       Opacity(
                         opacity: (1.0 - dp).clamp(0.0, 1.0),
                         child: Image.asset(
-                          'images/Trypr Logo_White.png',
+                          'images/TryprLogo_White.png',
                           fit: BoxFit.contain,
                           errorBuilder:
                               (ctx2, err, st) => Text(
@@ -158,7 +158,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
                       Opacity(
                         opacity: (dp).clamp(0.0, 1.0),
                         child: Image.asset(
-                          'images/Trypr Logo_Black.png',
+                          'images/TryprLogo_Black.png',
                           fit: BoxFit.contain,
                           errorBuilder:
                               (ctx2, err, st) => Text(

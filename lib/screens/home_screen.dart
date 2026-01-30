@@ -118,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: Opacity(
                               opacity: (1.0 - _dockProgress).clamp(0.0, 1.0),
                               child: Image.asset(
-                                'images/Trypr Logo_White.png',
+                                'images/TryprLogo_White.png',
                                 width:
                                     constraints.maxWidth > 800
                                         ? 260

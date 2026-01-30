@@ -153,6 +153,16 @@ service cloud.firestore {
     }
 
     // --------------------
+    // Premium entitlements (server/admin managed)
+    // --------------------
+    match /userEntitlements/{uid} {
+      // Allow users to read their own entitlements (for UI gating/upsell).
+      allow read: if signedIn() && request.auth.uid == uid;
+      // Only admins can manage entitlements.
+      allow create, update, delete: if isAdmin();
+    }
+
+    // --------------------
     // Admin-gated content
     // --------------------
     match /admins/{uid} {

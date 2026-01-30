@@ -22,7 +22,7 @@ class AboutScreen extends StatelessWidget {
                 Center(
                   child: Padding(
                     padding: const EdgeInsets.only(bottom: 12.0),
-                    child: Image.asset('images/Trypr Logo_Black.png', height: 96, fit: BoxFit.contain),
+                    child: Image.asset('images/TryprLogo_Black.png', height: 96, fit: BoxFit.contain),
                   ),
                 ),
                 Text('Plan deeper. Travel smarter.', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),

@@ -3,6 +3,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 import 'package:trypr/services/address_search.dart';
+import 'package:trypr/services/ai_suggestions.dart';
+import 'package:trypr/widgets/activity_finder_modal.dart';
+import 'package:trypr/widgets/premium_upsell_dialog.dart';
 
 /// Destination Detail Screen V4: Fixed text issues, calendar grid, start/end time, better saving
 class DestinationDetailScreen extends StatefulWidget {
@@ -69,6 +72,174 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
 
   // Horizontal scroll controllers for each week view (itinerary)
   final Map<int, ScrollController> _weekItineraryScrollControllers = {};
+
+  void _showPremiumUpsell() {
+    showPremiumUpsellDialog(context);
+  }
+
+  Future<void> _addSuggestionToItineraryDay(
+    int dayIndex,
+    Map<String, dynamic> s,
+  ) async {
+    if (!mounted) return;
+
+    setState(() {
+      _ensureItineraryLength(_dayCount);
+      final updated = List<Map<String, dynamic>>.from(
+        (_destData['itinerary'] as List<dynamic>? ?? []).map(
+          (d) => Map<String, dynamic>.from(d as Map),
+        ),
+      );
+
+      final safeDay = dayIndex.clamp(0, _dayCount - 1);
+      final day = Map<String, dynamic>.from(updated[safeDay]);
+      final activities = List<Map<String, dynamic>>.from(
+        (day['activities'] as List<dynamic>? ?? []).map(
+          (a) => Map<String, dynamic>.from(a as Map),
+        ),
+      );
+
+      activities.add({
+        'title': (s['name'] ?? '').toString(),
+        'location': (s['address'] ?? '').toString(),
+        'category': (s['category'] ?? 'Exploring').toString(),
+        'startTime': '',
+        'endTime': '',
+        'estimatedPrice': (s['estimatedPrice'] as num?)?.toDouble() ?? 0,
+        'rating': (s['rating'] as num?)?.toDouble() ?? 0,
+        'notes':
+            'Est. price: ${(s['estimatedPrice'] ?? 0).toString()} | Rating: ${(s['rating'] ?? 0).toString()}',
+      });
+
+      day['activities'] = activities;
+      updated[safeDay] = day;
+      _destData['itinerary'] = updated;
+    });
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Added to Day ${dayIndex + 1}')));
+  }
+
+  Future<void> _openActivityFinder() async {
+    final datesOk =
+        (_destData['startDate'] ?? '').toString().isNotEmpty &&
+        (_destData['endDate'] ?? '').toString().isNotEmpty;
+    if (!datesOk) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Select trip dates first')));
+      return;
+    }
+
+    final coords = _tryGetDestinationLatLon();
+    if (coords == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing destination coordinates')),
+      );
+      return;
+    }
+
+    final destinationName =
+        (_destData['name'] ?? 'this destination').toString();
+    final startDate = (_destData['startDate'] ?? '').toString();
+    final endDate = (_destData['endDate'] ?? '').toString();
+
+    if (!mounted) return;
+    await showActivityFinderModal(
+      context,
+      mode: ActivityFinderMode.activities,
+      destinationName: destinationName,
+      lat: coords.$1,
+      lon: coords.$2,
+      startDate: startDate,
+      endDate: endDate,
+      dayCount: _dayCount,
+      onAddToItinerary: _addSuggestionToItineraryDay,
+    );
+  }
+
+  Future<void> _applyAccommodationSuggestion(Map<String, dynamic> s) async {
+    setState(() {
+      final accommodations = List<Map<String, dynamic>>.from(
+        (_destData['accommodations'] as List<dynamic>? ?? []).map(
+          (a) => Map<String, dynamic>.from(a as Map),
+        ),
+      );
+
+      if (accommodations.isEmpty) {
+        accommodations.add({
+          'name': '',
+          'address': '',
+          'price': 0,
+          'rating': 0,
+        });
+      }
+
+      final priceNum =
+          (s['price'] as num?) ?? (s['estimatedPrice'] as num?) ?? 0;
+      final ratingNum = (s['rating'] as num?) ?? 0;
+
+      accommodations[0] = {
+        ...accommodations[0],
+        'name': (s['name'] ?? '').toString(),
+        'address': (s['address'] ?? '').toString(),
+        'price': priceNum.toDouble(),
+        'rating': ratingNum.toDouble(),
+      };
+
+      _destData['accommodations'] = accommodations;
+
+      _accNameControllers.putIfAbsent(0, () => TextEditingController());
+      _accAddressControllers.putIfAbsent(0, () => TextEditingController());
+      _accPriceControllers.putIfAbsent(0, () => TextEditingController());
+      _accRatingControllers.putIfAbsent(0, () => TextEditingController());
+
+      _accNameControllers[0]!.text =
+          (accommodations[0]['name'] ?? '').toString();
+      _accAddressControllers[0]!.text =
+          (accommodations[0]['address'] ?? '').toString();
+      _accPriceControllers[0]!.text =
+          (accommodations[0]['price'] ?? '').toString();
+      _accRatingControllers[0]!.text =
+          (accommodations[0]['rating'] ?? '').toString();
+    });
+  }
+
+  Future<Map<String, dynamic>?> _pickAccommodationSuggestion(
+    List<Map<String, dynamic>> suggestions,
+  ) async {
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) {
+        return SimpleDialog(
+          title: const Text('Choose a hotel'),
+          children: [
+            ...suggestions
+                .take(6)
+                .map(
+                  (s) => SimpleDialogOption(
+                    onPressed: () => Navigator.of(ctx).pop(s),
+                    child: Text((s['name'] ?? 'Hotel').toString()),
+                  ),
+                ),
+            const Divider(),
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  (double, double)? _tryGetDestinationLatLon() {
+    final lat = (_destData['lat'] as num?)?.toDouble();
+    final lon = (_destData['lon'] as num?)?.toDouble();
+    if (lat != null && lon != null) return (lat, lon);
+    return null;
+  }
 
   @override
   void initState() {
@@ -744,6 +915,40 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
 
     return Column(
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Itinerary', style: Theme.of(context).textTheme.titleLarge),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF00897B),
+                    ),
+                    onPressed: _openActivityFinder,
+                    icon: const Icon(Icons.explore),
+                    label: const Text('Find Things to Do'),
+                  ),
+                  const SizedBox(width: 10),
+                  GradientButton(
+                    onPressed: () => _showAIAssistant('itinerary'),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.auto_awesome, size: 16),
+                        SizedBox(width: 6),
+                        Text('AI Suggest'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
         // Week tabbar
         TabBar(
           controller: _weekTabController,
@@ -1547,8 +1752,162 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   }
 
   void _showAIAssistant(String context) {
-    ScaffoldMessenger.of(this.context).showSnackBar(
-      SnackBar(content: Text('AI Assistant for $context coming soon!')),
+    final datesOk =
+        (_destData['startDate'] ?? '').toString().isNotEmpty &&
+        (_destData['endDate'] ?? '').toString().isNotEmpty;
+    if (!datesOk) {
+      ScaffoldMessenger.of(
+        this.context,
+      ).showSnackBar(const SnackBar(content: Text('Select trip dates first')));
+      return;
+    }
+
+    final coords = _tryGetDestinationLatLon();
+    if (coords == null) {
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        const SnackBar(content: Text('Missing destination coordinates')),
+      );
+      return;
+    }
+
+    final destinationName =
+        (_destData['name'] ?? 'this destination').toString();
+    final startDate = (_destData['startDate'] ?? '').toString();
+    final endDate = (_destData['endDate'] ?? '').toString();
+
+    showDialog(
+      context: this.context,
+      barrierDismissible: false,
+      builder:
+          (_) => const AlertDialog(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Generating suggestions...')),
+              ],
+            ),
+          ),
     );
+
+    () async {
+      try {
+        final svc = AiSuggestionsService();
+        final suggestions =
+            context == 'accommodations'
+                ? await svc.suggestAccommodations(
+                  destinationName: destinationName,
+                  lat: coords.$1,
+                  lon: coords.$2,
+                  startDate: startDate,
+                  endDate: endDate,
+                )
+                : await svc.suggestItinerary(
+                  destinationName: destinationName,
+                  lat: coords.$1,
+                  lon: coords.$2,
+                  startDate: startDate,
+                  endDate: endDate,
+                );
+
+        if (!mounted) return;
+        Navigator.of(this.context).pop();
+
+        if (suggestions.isEmpty) {
+          ScaffoldMessenger.of(this.context).showSnackBar(
+            const SnackBar(content: Text('No suggestions returned')),
+          );
+          return;
+        }
+
+        if (context == 'accommodations') {
+          await _applyAccommodationSuggestion(suggestions.first);
+
+          if (!mounted) return;
+          ScaffoldMessenger.of(this.context).showSnackBar(
+            SnackBar(
+              content: const Text('Filled accommodation fields from AI'),
+              action:
+                  suggestions.length > 1
+                      ? SnackBarAction(
+                        label: 'Choose',
+                        onPressed: () async {
+                          final picked = await _pickAccommodationSuggestion(
+                            suggestions,
+                          );
+                          if (picked != null) {
+                            await _applyAccommodationSuggestion(picked);
+                          }
+                        },
+                      )
+                      : null,
+            ),
+          );
+          return;
+        }
+
+        // Itinerary suggestions
+        setState(() {
+          final itinerary = List<Map<String, dynamic>>.from(
+            (_destData['itinerary'] as List<dynamic>? ?? []).map(
+              (d) => Map<String, dynamic>.from(d as Map),
+            ),
+          );
+          _ensureItineraryLength(_dayCount);
+
+          final updated = List<Map<String, dynamic>>.from(
+            (_destData['itinerary'] as List<dynamic>? ?? []).map(
+              (d) => Map<String, dynamic>.from(d as Map),
+            ),
+          );
+
+          for (final s in suggestions) {
+            final dayIndex = ((s['dayIndex'] as num?)?.toInt() ?? 0).clamp(
+              0,
+              _dayCount - 1,
+            );
+            final day = Map<String, dynamic>.from(updated[dayIndex]);
+            final activities = List<Map<String, dynamic>>.from(
+              (day['activities'] as List<dynamic>? ?? []).map(
+                (a) => Map<String, dynamic>.from(a as Map),
+              ),
+            );
+
+            activities.add({
+              'title': (s['name'] ?? '').toString(),
+              'location': (s['address'] ?? '').toString(),
+              'category': (s['category'] ?? 'Exploring').toString(),
+              'startTime': (s['startTime'] ?? '').toString(),
+              'endTime': (s['endTime'] ?? '').toString(),
+              'estimatedPrice': (s['estimatedPrice'] as num?)?.toDouble() ?? 0,
+              'rating': (s['rating'] as num?)?.toDouble() ?? 0,
+              'notes':
+                  'Est. price: ${(s['estimatedPrice'] ?? 0).toString()} | Rating: ${(s['rating'] ?? 0).toString()}',
+            });
+
+            day['activities'] = activities;
+            updated[dayIndex] = day;
+          }
+
+          _destData['itinerary'] = updated;
+        });
+
+        ScaffoldMessenger.of(this.context).showSnackBar(
+          SnackBar(content: Text('Added ${suggestions.length} activities')),
+        );
+      } on PremiumRequiredException {
+        if (mounted) Navigator.of(this.context).pop();
+        _showPremiumUpsell();
+      } catch (e) {
+        if (mounted) Navigator.of(this.context).pop();
+        ScaffoldMessenger.of(
+          this.context,
+        ).showSnackBar(SnackBar(content: Text('AI Suggest failed: $e')));
+      }
+    }();
   }
 }

@@ -7,7 +7,7 @@ import 'package:trypr/screens/destination_detail_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:pointer_interceptor/pointer_interceptor.dart';
-import 'package:trypr/widgets/trip_chat_dialog.dart';
+import 'package:trypr/widgets/trip_chat_dialog_clean.dart';
 import 'package:trypr/widgets/trip_expenses_dialog.dart';
 import 'package:trypr/services/name_lookup.dart';
 import 'dart:async';
@@ -61,6 +61,47 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   bool _isAdventureMode(String mode) {
     final m = mode.trim().toLowerCase();
     return m == 'bikepacking' || m == 'backpacking';
+  }
+
+  String _emojiForPackingItem(String raw) {
+    final name = raw.trim().toLowerCase();
+    if (name.isEmpty) return '🎒';
+    if (name.contains('underwear') || name.contains('brief')) return '🩲';
+    if (name.contains('sock')) return '🧦';
+    if (name.contains('shoe') || name.contains('boot')) return '👟';
+    if (name.contains('jacket') || name.contains('coat')) return '🧥';
+    if (name.contains('hat') || name.contains('cap')) return '🧢';
+    if (name.contains('shirt') ||
+        name.contains('tee') ||
+        name.contains('t-shirt'))
+      return '👕';
+    if (name.contains('pants') ||
+        name.contains('jeans') ||
+        name.contains('short'))
+      return '👖';
+    if (name.contains('dress')) return '👗';
+    if (name.contains('swim') || name.contains('bikini')) return '👙';
+    if (name.contains('tooth')) return '🪥';
+    if (name.contains('soap') || name.contains('shampoo')) return '🧴';
+    if (name.contains('sunscreen') || name.contains('sun screen')) return '🧴';
+    if (name.contains('phone') ||
+        name.contains('charger') ||
+        name.contains('cable'))
+      return '🔌';
+    if (name.contains('camera')) return '📷';
+    if (name.contains('passport')) return '🛂';
+    if (name.contains('ticket') || name.contains('boarding')) return '🎫';
+    if (name.contains('water') || name.contains('bottle')) return '💧';
+    if (name.contains('snack') || name.contains('food')) return '🥪';
+    if (name.contains('med') ||
+        name.contains('pill') ||
+        name.contains('first aid'))
+      return '💊';
+    if (name.contains('laptop') || name.contains('tablet')) return '💻';
+    if (name.contains('map')) return '🗺️';
+    if (name.contains('tent')) return '⛺';
+    if (name.contains('sleeping bag')) return '🛌';
+    return '🎒';
   }
 
   List<String> _coerceSegmentRoutingTypes(List<dynamic> raw) {
@@ -1193,6 +1234,12 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   final d = visible[i];
                                   final data = d.data();
                                   final name = (data['name'] ?? '').toString();
+                                  final emojiRaw =
+                                      (data['emoji'] ?? '').toString();
+                                  final emoji =
+                                      emojiRaw.isNotEmpty
+                                          ? emojiRaw
+                                          : _emojiForPackingItem(name);
                                   final qtyRaw = data['quantity'];
                                   final qty =
                                       (qtyRaw is num)
@@ -1236,6 +1283,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                     },
                                     title: Row(
                                       children: [
+                                        Text(
+                                          emoji,
+                                          style: const TextStyle(fontSize: 18),
+                                        ),
+                                        const SizedBox(width: 8),
                                         Expanded(child: Text(name)),
                                         if (qty > 1)
                                           Padding(
@@ -1441,6 +1493,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 final q = int.tryParse(qtyCtl.text.trim());
                                 final data = <String, dynamic>{
                                   'name': t,
+                                  'emoji': _emojiForPackingItem(t),
                                   'createdAt': FieldValue.serverTimestamp(),
                                   'checkedBy': [],
                                 };
@@ -2329,52 +2382,41 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: DropdownButton<String>(
-            value:
-                ({
-                      'driving',
-                      'biking',
-                      'bikepacking',
-                      'backpacking',
-                      'walking',
-                      'transit',
-                    }.contains(_transportMode))
-                    ? _transportMode
-                    : 'driving',
-            isExpanded: true,
-            items: [
-              DropdownMenuItem(
-                value: 'driving',
-                child: _webSafeMenuItemText('Car'),
-              ),
-              DropdownMenuItem(
-                value: 'biking',
-                child: _webSafeMenuItemText('Biking'),
-              ),
-              DropdownMenuItem(
-                value: 'bikepacking',
-                child: _webSafeMenuItemText('Bikepacking'),
-              ),
-              DropdownMenuItem(
-                value: 'backpacking',
-                child: _webSafeMenuItemText('Backpacking'),
-              ),
-              DropdownMenuItem(
-                value: 'transit',
-                child: _webSafeMenuItemText('Public transport'),
-              ),
-              DropdownMenuItem(
-                value: 'walking',
-                child: _webSafeMenuItemText('Walking'),
-              ),
-            ],
-            onChanged:
-                (!canWriteTrip)
-                    ? null
-                    : (v) {
-                      if (v == null) return;
-                      _setTransportMode(v);
-                    },
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children:
+                [
+                  {'mode': 'driving', 'label': 'Car', 'emoji': '🚗'},
+                  {'mode': 'flying', 'label': 'Flight', 'emoji': '✈️'},
+                  {'mode': 'transit', 'label': 'Train', 'emoji': '🚆'},
+                  {'mode': 'walking', 'label': 'Walk', 'emoji': '🚶'},
+                  {'mode': 'biking', 'label': 'Bike', 'emoji': '🚲'},
+                  {'mode': 'bikepacking', 'label': 'Bikepack', 'emoji': '🚵'},
+                  {'mode': 'backpacking', 'label': 'Backpack', 'emoji': '🎒'},
+                ].map((opt) {
+                  final mode = opt['mode'] as String;
+                  final selected = _transportMode == mode;
+                  return ChoiceChip(
+                    label: Text(
+                      opt['emoji'] as String,
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                    selected: selected,
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    onSelected:
+                        (!canWriteTrip)
+                            ? null
+                            : (v) {
+                              if (!v) return;
+                              _setTransportMode(mode);
+                            },
+                  );
+                }).toList(),
           ),
         ),
       ],

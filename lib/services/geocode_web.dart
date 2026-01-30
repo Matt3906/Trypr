@@ -13,6 +13,7 @@ import 'dart:html' as html;
 // ignore: uri_does_not_exist
 import 'dart:js_util' as js_util;
 
+import 'package:http/http.dart' as http;
 import 'package:trypr/services/google_maps_loader_web.dart';
 
 const _mapsKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
@@ -61,15 +62,19 @@ Future<void> _ensureServices() async {
 Future<List<Map<String, dynamic>>> _searchNominatimFallback(
   String query,
 ) async {
-  final q = Uri.encodeQueryComponent(query);
-  final url =
-      'https://nominatim.openstreetmap.org/search?format=json&limit=8&q=$q';
   try {
-    final resp = await html.HttpRequest.getString(url);
-    final data = jsonDecode(resp) as List<dynamic>;
+    final url = Uri.parse(
+      'https://nominatim.openstreetmap.org/search',
+    ).replace(queryParameters: {'q': query, 'format': 'json', 'limit': '8'});
+    final resp = await http.get(url);
+    if (resp.statusCode != 200) return <Map<String, dynamic>>[];
+
+    final data = jsonDecode(resp.body) as List<dynamic>;
     return data.map<Map<String, dynamic>>((e) {
+      final display = (e['display_name'] as String?) ?? '';
       return {
-        'name': (e['display_name'] as String?) ?? '',
+        'name': display,
+        'display_name': display,
         'lat': double.tryParse(e['lat']?.toString() ?? '') ?? 0.0,
         'lon': double.tryParse(e['lon']?.toString() ?? '') ?? 0.0,
       };
@@ -80,11 +85,23 @@ Future<List<Map<String, dynamic>>> _searchNominatimFallback(
 }
 
 Future<String?> _reverseNominatimFallback(double lat, double lon) async {
-  final url =
-      'https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat.toString()}&lon=${lon.toString()}&zoom=14&addressdetails=0';
   try {
-    final resp = await html.HttpRequest.getString(url);
-    final data = jsonDecode(resp) as Map<String, dynamic>;
+    final url = Uri.parse(
+      'https://nominatim.openstreetmap.org/reverse',
+    ).replace(
+      queryParameters: {
+        'format': 'json',
+        'lat': lat.toString(),
+        'lon': lon.toString(),
+        'zoom': '14',
+        'addressdetails': '0',
+      },
+    );
+
+    final resp = await http.get(url);
+    if (resp.statusCode != 200) return null;
+
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
     return (data['display_name'] as String?);
   } catch (_) {
     return null;
@@ -100,8 +117,19 @@ Future<List<Map<String, dynamic>>> searchNominatim(String query) async {
     return _searchNominatimFallback(q);
   }
 
+  // If Maps JS isn't available yet (common during dev hot-restart), don't block
+  // autocomplete suggestions; show Nominatim results immediately and let Maps
+  // load in the background for future queries.
+  if (_getMaps() == null) {
+    // ignore: unawaited_futures
+    ensureGoogleMapsLoaded();
+    return _searchNominatimFallback(q);
+  }
+
   try {
-    await _ensureServices();
+    // Even when Maps exists, Places service init can be slow. Keep a short
+    // bound and fall back.
+    await _ensureServices().timeout(const Duration(milliseconds: 400));
     final svc = _placesService;
     if (svc == null) {
       return _searchNominatimFallback(q);
@@ -140,8 +168,12 @@ Future<List<Map<String, dynamic>>> searchNominatim(String query) async {
                   ?.toDouble() ??
               0.0;
           out.add({
-            'name':
-                name.isNotEmpty ? name : (formatted.isNotEmpty ? formatted : q),
+            'name': name.isNotEmpty
+              ? name
+              : (formatted.isNotEmpty ? formatted : q),
+            'display_name': formatted.isNotEmpty
+              ? formatted
+              : (name.isNotEmpty ? name : q),
             'lat': lat,
             'lon': lon,
           });
@@ -172,8 +204,15 @@ Future<String?> reverseNominatim(double lat, double lon) async {
     return _reverseNominatimFallback(lat, lon);
   }
 
+  if (_getMaps() == null) {
+    // ignore: unawaited_futures
+    ensureGoogleMapsLoaded();
+    return _reverseNominatimFallback(lat, lon);
+  }
+
   try {
-    await _ensureServices();
+    // Don't block reverse-geocoding UX on slow Maps JS.
+    await _ensureServices().timeout(const Duration(milliseconds: 400));
     final geocoder = _geocoder;
     if (geocoder == null) {
       return _reverseNominatimFallback(lat, lon);

@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Firebase Functions env vars (do not commit secrets)
+functions/.env
+
 # Symbolication related
 app.*.symbols
 

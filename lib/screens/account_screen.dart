@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
+import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/widgets/trip_builder_layout.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/foundation.dart' show kIsWeb, setEquals;
@@ -361,531 +363,519 @@ class _AccountScreenState extends State<AccountScreen> {
   @override
   Widget build(BuildContext context) {
     final stream = _userDocStream();
+    final panelContent = SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child:
+                  stream == null
+                      ? _signedOutContent(context)
+                      : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                        stream: stream,
+                        builder: (ctx, snap) {
+                          if (snap.connectionState == ConnectionState.waiting) {
+                            return const SizedBox(
+                              height: 180,
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
+                          final doc = snap.data;
+                          final data = doc?.data() ?? <String, dynamic>{};
 
-    return Scaffold(
-      appBar: const TopTaskbar(dockProgress: 1.0),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
-            child: Card(
-              elevation: 4,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20.0),
-                child:
-                    stream == null
-                        ? _signedOutContent(context)
-                        : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                          stream: stream,
-                          builder: (ctx, snap) {
-                            if (snap.connectionState ==
-                                ConnectionState.waiting) {
-                              return const SizedBox(
-                                height: 180,
-                                child: Center(
-                                  child: CircularProgressIndicator(),
-                                ),
-                              );
-                            }
-                            final doc = snap.data;
-                            final data = doc?.data() ?? <String, dynamic>{};
+                          final displayName =
+                              data['name'] ??
+                              data['displayName'] ??
+                              _user?.displayName ??
+                              '—';
+                          final email = _user?.email ?? data['email'] ?? '—';
+                          final subscription =
+                              data['subscriptionType'] ??
+                              data['subscription'] ??
+                              'Free';
+                          final city = data['city'] ?? '—';
+                          String dobStr = '—';
+                          if (data['dob'] != null) {
+                            try {
+                              final d = data['dob'];
+                              DateTime dt;
+                              if (d is String) {
+                                dt = DateTime.parse(d);
+                              } else if (d is Timestamp) {
+                                dt = d.toDate();
+                              } else {
+                                dt = DateTime.parse(d.toString());
+                              }
+                              dobStr =
+                                  '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+                            } catch (_) {}
+                          }
+                          final sex =
+                              (data['sex'] ?? data['gender'] ?? '—').toString();
+                          final profileImage =
+                              data['profileImageDataUrl'] as String?;
 
-                            final displayName =
-                                data['name'] ??
-                                data['displayName'] ??
-                                _user?.displayName ??
-                                '—';
-                            final email = _user?.email ?? data['email'] ?? '—';
-                            final subscription =
-                                data['subscriptionType'] ??
-                                data['subscription'] ??
-                                'Free';
-                            final city = data['city'] ?? '—';
-                            String dobStr = '—';
-                            if (data['dob'] != null) {
-                              try {
-                                final d = data['dob'];
-                                DateTime dt;
-                                if (d is String) {
-                                  dt = DateTime.parse(d);
-                                } else if (d is Timestamp) {
-                                  dt = d.toDate();
-                                } else {
-                                  dt = DateTime.parse(d.toString());
-                                }
-                                dobStr =
-                                    '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-                              } catch (_) {}
-                            }
-                            final sex =
-                                (data['sex'] ?? data['gender'] ?? '—')
-                                    .toString();
-                            final profileImage =
-                                data['profileImageDataUrl'] as String?;
-
-                            final friendsRaw =
-                                data['friends'] as List<dynamic>?;
-                            final friends = <Map<String, dynamic>>[];
-                            if (friendsRaw != null) {
-                              for (final f in friendsRaw) {
-                                if (f is Map) {
-                                  friends.add(Map<String, dynamic>.from(f));
-                                } else if (f is String) {
-                                  friends.add({'id': f});
-                                }
+                          final friendsRaw = data['friends'] as List<dynamic>?;
+                          final friends = <Map<String, dynamic>>[];
+                          if (friendsRaw != null) {
+                            for (final f in friendsRaw) {
+                              if (f is Map) {
+                                friends.add(Map<String, dynamic>.from(f));
+                              } else if (f is String) {
+                                friends.add({'id': f});
                               }
                             }
+                          }
 
-                            final visitedRaw =
-                                data['visitedCountries'] as List<dynamic>? ??
-                                [];
-                            final visitedSet =
-                                visitedRaw.map((e) => e.toString()).toSet();
+                          final visitedRaw =
+                              data['visitedCountries'] as List<dynamic>? ?? [];
+                          final visitedSet =
+                              visitedRaw.map((e) => e.toString()).toSet();
 
-                            // Keep the staged set in sync with Firestore when the
-                            // user is not actively editing in the embedded map.
-                            // Only update if the persisted set differs to avoid
-                            // scheduling a post-frame setState on every build
-                            // (which caused a rebuild loop and UI flash).
-                            if (!_isEditingVisited) {
-                              final newSet = visitedSet;
-                              if (!setEquals(_stagedVisited, newSet)) {
-                                WidgetsBinding.instance.addPostFrameCallback((
-                                  _,
-                                ) {
-                                  if (!mounted) return;
-                                  setState(() {
-                                    _stagedVisited
-                                      ..clear()
-                                      ..addAll(newSet);
-                                  });
+                          // Keep the staged set in sync with Firestore when the
+                          // user is not actively editing in the embedded map.
+                          // Only update if the persisted set differs to avoid
+                          // scheduling a post-frame setState on every build
+                          // (which caused a rebuild loop and UI flash).
+                          if (!_isEditingVisited) {
+                            final newSet = visitedSet;
+                            if (!setEquals(_stagedVisited, newSet)) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (!mounted) return;
+                                setState(() {
+                                  _stagedVisited
+                                    ..clear()
+                                    ..addAll(newSet);
                                 });
-                              }
+                              });
                             }
+                          }
 
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Text(
-                                  'Account',
-                                  style: Theme.of(context).textTheme.titleLarge
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                                const SizedBox(height: 16),
-                                Row(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 36,
-                                      backgroundColor: Colors.grey.shade200,
-                                      backgroundImage:
-                                          profileImage != null
-                                              ? (kIsWeb
-                                                  ? NetworkImage(profileImage)
-                                                  : MemoryImage(
-                                                        base64Decode(
-                                                          profileImage
-                                                              .split(',')
-                                                              .last,
-                                                        ),
-                                                      )
-                                                      as ImageProvider)
-                                              : null,
-                                      child:
-                                          profileImage == null
-                                              ? const Icon(
-                                                Icons.person,
-                                                size: 36,
-                                                color: Colors.grey,
-                                              )
-                                              : null,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: _infoRow('Name', displayName),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                _infoRow('Email', email),
-                                const SizedBox(height: 8),
-                                _infoRow('City', city.toString()),
-                                const SizedBox(height: 8),
-                                _infoRow('Date of birth', dobStr),
-                                const SizedBox(height: 8),
-                                _infoRow('Sex', sex.toString()),
-                                const SizedBox(height: 8),
-                                _infoRow(
-                                  'Subscription',
-                                  subscription.toString(),
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  'Friends',
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w600),
-                                ),
-                                const SizedBox(height: 8),
-                                if (friends.isEmpty)
-                                  const Text(
-                                    'No friends added yet',
-                                    style: TextStyle(color: Colors.black54),
-                                  )
-                                else ...[
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children:
-                                        friends.map((f) {
-                                          final fname =
-                                              (f['name'] ??
-                                                      f['displayName'] ??
-                                                      f['email'] ??
-                                                      f['id'] ??
-                                                      'Friend')
-                                                  .toString();
-                                          return Chip(label: Text(fname));
-                                        }).toList(),
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text(
+                                'Account',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 16),
+                              Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 36,
+                                    backgroundColor: Colors.grey.shade200,
+                                    backgroundImage:
+                                        profileImage != null
+                                            ? (kIsWeb
+                                                ? NetworkImage(profileImage)
+                                                : MemoryImage(
+                                                      base64Decode(
+                                                        profileImage
+                                                            .split(',')
+                                                            .last,
+                                                      ),
+                                                    )
+                                                    as ImageProvider)
+                                            : null,
+                                    child:
+                                        profileImage == null
+                                            ? const Icon(
+                                              Icons.person,
+                                              size: 36,
+                                              color: Colors.grey,
+                                            )
+                                            : null,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: _infoRow('Name', displayName),
                                   ),
                                 ],
-
-                                const Divider(height: 32),
-
-                                // -------------------------------------------------
-                                // INTERACTIVE MAP SECTION
-                                // -------------------------------------------------
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      'My Travel Map',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    const SizedBox.shrink(),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                // Embedded interactive country-shape map
-                                SizedBox(
-                                  // make map taller so top and bottom are visible
-                                  height: 460,
-                                  child: Card(
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(8.0),
-                                      child: Builder(
-                                        builder: (ctx) {
-                                          // initialize staged set from live data on first build
-                                          if (_stagedVisited.isEmpty) {
-                                            _stagedVisited.addAll(visitedSet);
-                                          }
-                                          // ensure polygons are loaded (idempotent)
-                                          _loadCountryPolygons();
-
-                                          if (_mapsKey.isEmpty) {
-                                            return const Center(
-                                              child: Padding(
-                                                padding: EdgeInsets.all(12),
-                                                child: Text(
-                                                  'Google Maps is not configured. Build with '
-                                                  '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
-                                                  textAlign: TextAlign.center,
-                                                ),
-                                              ),
-                                            );
-                                          }
-
-                                          return gmaps.GoogleMap(
-                                            initialCameraPosition:
-                                                const gmaps.CameraPosition(
-                                                  target: gmaps.LatLng(20, 0),
-                                                  zoom: 2,
-                                                ),
-                                            minMaxZoomPreference:
-                                                const gmaps.MinMaxZoomPreference(
-                                                  2,
-                                                  18,
-                                                ),
-                                            polygons:
-                                                _polygonsLoaded
-                                                    ? _buildGmapPolygonsSet(
-                                                      _stagedVisited,
-                                                    )
-                                                    : const <gmaps.Polygon>{},
-                                            markers:
-                                                _polygonsLoaded
-                                                    ? _buildGmapMarkersForMissingPolygons(
-                                                      _stagedVisited,
-                                                    )
-                                                    : _buildGmapMarkers(
-                                                      _stagedVisited,
-                                                    ),
-                                            onTap: (p) {
-                                              // Add a visited country by tapping on its polygon.
-                                              if (!_polygonsLoaded) return;
-
-                                              final latlng = LatLng(
-                                                p.latitude,
-                                                p.longitude,
-                                              );
-                                              String? foundKey;
-                                              _countryPolygons.forEach((
-                                                k,
-                                                polyRings,
-                                              ) {
-                                                for (final ring in polyRings) {
-                                                  if (_pointInPolygon(
-                                                    latlng,
-                                                    ring,
-                                                  )) {
-                                                    foundKey = k;
-                                                    break;
-                                                  }
-                                                }
-                                              });
-
-                                              if (foundKey == null) return;
-                                              final display =
-                                                  _normalizeCountryName(
-                                                    foundKey!,
-                                                  );
-                                              if (_stagedVisited.contains(
-                                                display,
-                                              )) {
-                                                return;
-                                              }
-                                              setState(() {
-                                                _stagedVisited.add(display);
-                                                _isEditingVisited = true;
-                                              });
-                                            },
-                                            mapToolbarEnabled: false,
-                                            myLocationButtonEnabled: false,
-                                            zoomControlsEnabled: false,
-                                            compassEnabled: false,
-                                            rotateGesturesEnabled: false,
-                                            tiltGesturesEnabled: false,
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Expanded(
-                                      child: Row(
-                                        children: [
-                                          Expanded(
-                                            child: LinearProgressIndicator(
-                                              value:
-                                                  (supportedTotal() > 0)
-                                                      ? (_stagedVisited.length /
-                                                          supportedTotal())
-                                                      : 0,
-                                              minHeight: 8,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Text(
-                                            '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    ElevatedButton(
-                                      onPressed:
-                                          _isEditingVisited
-                                              ? () async {
-                                                // persist staged set to Firestore
-                                                final u = _user;
-                                                if (u == null) return;
-                                                final docRef = FirebaseFirestore
-                                                    .instance
-                                                    .collection('users')
-                                                    .doc(u.uid);
-                                                try {
-                                                  await docRef.set({
-                                                    'visitedCountries':
-                                                        _stagedVisited.toList(),
-                                                  }, SetOptions(merge: true));
-                                                  setState(
-                                                    () =>
-                                                        _isEditingVisited =
-                                                            false,
-                                                  );
-                                                } catch (err) {
-                                                  if (!mounted) return;
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    SnackBar(
-                                                      content: Text(
-                                                        'Failed to save: $err',
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              }
-                                              : null,
-                                      child: const Text('Save'),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    '${_stagedVisited.length} visited / ${supportedTotal()} supported',
-                                    style:
-                                        Theme.of(context).textTheme.bodySmall,
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-
-                                // Read-only list of visited places
-                                Text(
-                                  "Visited Regions (${visitedSet.length})",
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                if (visitedSet.isNotEmpty)
-                                  Wrap(
-                                    spacing: 6,
-                                    runSpacing: 6,
-                                    children:
-                                        visitedSet
-                                            .map(
-                                              (c) => Chip(
-                                                label: Text(
-                                                  c,
-                                                  style: const TextStyle(
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                                visualDensity:
-                                                    VisualDensity.compact,
-                                                backgroundColor: Colors.white,
-                                                side: BorderSide(
-                                                  color: Colors.grey.shade300,
-                                                ),
-                                                onDeleted:
-                                                    () => _toggleRegion(
-                                                      c,
-                                                      visitedRaw,
-                                                    ),
-                                              ),
-                                            )
-                                            .toList(),
-                                  )
-                                else
-                                  const Text(
-                                    "No regions marked yet.",
-                                    style: TextStyle(
-                                      color: Colors.grey,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-
-                                const SizedBox(height: 24),
-
-                                Row(
-                                  children: [
-                                    ElevatedButton.icon(
-                                      onPressed: () {
-                                        _showEditProfile(context, data);
-                                      },
-                                      icon: const Icon(Icons.edit),
-                                      label: const Text('Edit profile'),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    OutlinedButton.icon(
-                                      onPressed: () async {
-                                        await FirebaseAuth.instance.signOut();
-                                        if (!mounted) return;
-                                        Navigator.of(
-                                          context,
-                                        ).pushNamedAndRemoveUntil(
-                                          '/sign-in',
-                                          (route) => false,
-                                        );
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('Signed out'),
-                                          ),
-                                        );
-                                      },
-                                      icon: const Icon(Icons.logout),
-                                      label: const Text('Sign out'),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                // Debug: show raw user document for troubleshooting
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: TextButton.icon(
-                                    onPressed: () {
-                                      showDialog<void>(
-                                        context: context,
-                                        builder:
-                                            (ctx) => AlertDialog(
-                                              title: const Text(
-                                                'Raw user document',
-                                              ),
-                                              content: SingleChildScrollView(
-                                                child: SelectableText(
-                                                  JsonEncoder.withIndent(
-                                                    '  ',
-                                                  ).convert(data),
-                                                ),
-                                              ),
-                                              actions: [
-                                                TextButton(
-                                                  onPressed:
-                                                      () =>
-                                                          Navigator.of(
-                                                            ctx,
-                                                          ).pop(),
-                                                  child: const Text('Close'),
-                                                ),
-                                              ],
-                                            ),
-                                      );
-                                    },
-                                    icon: const Icon(Icons.bug_report_outlined),
-                                    label: const Text('Show raw doc'),
-                                  ),
+                              ),
+                              const SizedBox(height: 8),
+                              _infoRow('Email', email),
+                              const SizedBox(height: 8),
+                              _infoRow('City', city.toString()),
+                              const SizedBox(height: 8),
+                              _infoRow('Date of birth', dobStr),
+                              const SizedBox(height: 8),
+                              _infoRow('Sex', sex.toString()),
+                              const SizedBox(height: 8),
+                              _infoRow('Subscription', subscription.toString()),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Friends',
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 8),
+                              if (friends.isEmpty)
+                                const Text(
+                                  'No friends added yet',
+                                  style: TextStyle(color: Colors.black54),
+                                )
+                              else ...[
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children:
+                                      friends.map((f) {
+                                        final fname =
+                                            (f['name'] ??
+                                                    f['displayName'] ??
+                                                    f['email'] ??
+                                                    f['id'] ??
+                                                    'Friend')
+                                                .toString();
+                                        return Chip(label: Text(fname));
+                                      }).toList(),
                                 ),
                               ],
-                            );
-                          },
-                        ),
-              ),
+
+                              const Divider(height: 32),
+
+                              // -------------------------------------------------
+                              // INTERACTIVE MAP SECTION
+                              // -------------------------------------------------
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'My Travel Map',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox.shrink(),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              // Embedded interactive country-shape map
+                              SizedBox(
+                                // make map taller so top and bottom are visible
+                                height: 460,
+                                child: Card(
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: Builder(
+                                      builder: (ctx) {
+                                        // initialize staged set from live data on first build
+                                        if (_stagedVisited.isEmpty) {
+                                          _stagedVisited.addAll(visitedSet);
+                                        }
+                                        // ensure polygons are loaded (idempotent)
+                                        _loadCountryPolygons();
+
+                                        if (_mapsKey.isEmpty) {
+                                          return const Center(
+                                            child: Padding(
+                                              padding: EdgeInsets.all(12),
+                                              child: Text(
+                                                'Google Maps is not configured. Build with '
+                                                '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ),
+                                          );
+                                        }
+
+                                        return gmaps.GoogleMap(
+                                          initialCameraPosition:
+                                              const gmaps.CameraPosition(
+                                                target: gmaps.LatLng(20, 0),
+                                                zoom: 2,
+                                              ),
+                                          minMaxZoomPreference:
+                                              const gmaps.MinMaxZoomPreference(
+                                                2,
+                                                18,
+                                              ),
+                                          polygons:
+                                              _polygonsLoaded
+                                                  ? _buildGmapPolygonsSet(
+                                                    _stagedVisited,
+                                                  )
+                                                  : const <gmaps.Polygon>{},
+                                          markers:
+                                              _polygonsLoaded
+                                                  ? _buildGmapMarkersForMissingPolygons(
+                                                    _stagedVisited,
+                                                  )
+                                                  : _buildGmapMarkers(
+                                                    _stagedVisited,
+                                                  ),
+                                          onTap: (p) {
+                                            // Add a visited country by tapping on its polygon.
+                                            if (!_polygonsLoaded) return;
+
+                                            final latlng = LatLng(
+                                              p.latitude,
+                                              p.longitude,
+                                            );
+                                            String? foundKey;
+                                            _countryPolygons.forEach((
+                                              k,
+                                              polyRings,
+                                            ) {
+                                              for (final ring in polyRings) {
+                                                if (_pointInPolygon(
+                                                  latlng,
+                                                  ring,
+                                                )) {
+                                                  foundKey = k;
+                                                  break;
+                                                }
+                                              }
+                                            });
+
+                                            if (foundKey == null) return;
+                                            final display =
+                                                _normalizeCountryName(
+                                                  foundKey!,
+                                                );
+                                            if (_stagedVisited.contains(
+                                              display,
+                                            )) {
+                                              return;
+                                            }
+                                            setState(() {
+                                              _stagedVisited.add(display);
+                                              _isEditingVisited = true;
+                                            });
+                                          },
+                                          mapToolbarEnabled: false,
+                                          myLocationButtonEnabled: false,
+                                          zoomControlsEnabled: false,
+                                          compassEnabled: false,
+                                          rotateGesturesEnabled: false,
+                                          tiltGesturesEnabled: false,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: LinearProgressIndicator(
+                                            value:
+                                                (supportedTotal() > 0)
+                                                    ? (_stagedVisited.length /
+                                                        supportedTotal())
+                                                    : 0,
+                                            minHeight: 8,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  ElevatedButton(
+                                    onPressed:
+                                        _isEditingVisited
+                                            ? () async {
+                                              // persist staged set to Firestore
+                                              final u = _user;
+                                              if (u == null) return;
+                                              final docRef = FirebaseFirestore
+                                                  .instance
+                                                  .collection('users')
+                                                  .doc(u.uid);
+                                              try {
+                                                await docRef.set({
+                                                  'visitedCountries':
+                                                      _stagedVisited.toList(),
+                                                }, SetOptions(merge: true));
+                                                setState(
+                                                  () =>
+                                                      _isEditingVisited = false,
+                                                );
+                                              } catch (err) {
+                                                if (!mounted) return;
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      'Failed to save: $err',
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                            }
+                                            : null,
+                                    child: const Text('Save'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  '${_stagedVisited.length} visited / ${supportedTotal()} supported',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+
+                              // Read-only list of visited places
+                              Text(
+                                "Visited Regions (${visitedSet.length})",
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (visitedSet.isNotEmpty)
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children:
+                                      visitedSet
+                                          .map(
+                                            (c) => Chip(
+                                              label: Text(
+                                                c,
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                ),
+                                              ),
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              backgroundColor: Colors.white,
+                                              side: BorderSide(
+                                                color: Colors.grey.shade300,
+                                              ),
+                                              onDeleted:
+                                                  () => _toggleRegion(
+                                                    c,
+                                                    visitedRaw,
+                                                  ),
+                                            ),
+                                          )
+                                          .toList(),
+                                )
+                              else
+                                const Text(
+                                  "No regions marked yet.",
+                                  style: TextStyle(
+                                    color: Colors.grey,
+                                    fontSize: 12,
+                                  ),
+                                ),
+
+                              const SizedBox(height: 24),
+
+                              Row(
+                                children: [
+                                  ElevatedButton.icon(
+                                    onPressed: () {
+                                      _showEditProfile(context, data);
+                                    },
+                                    icon: const Icon(Icons.edit),
+                                    label: const Text('Edit profile'),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  OutlinedButton.icon(
+                                    onPressed: () async {
+                                      await FirebaseAuth.instance.signOut();
+                                      if (!mounted) return;
+                                      Navigator.of(
+                                        context,
+                                      ).pushNamedAndRemoveUntil(
+                                        '/sign-in',
+                                        (route) => false,
+                                      );
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Signed out'),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.logout),
+                                    label: const Text('Sign out'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              // Debug: show raw user document for troubleshooting
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: () {
+                                    showDialog<void>(
+                                      context: context,
+                                      builder:
+                                          (ctx) => AlertDialog(
+                                            title: const Text(
+                                              'Raw user document',
+                                            ),
+                                            content: SingleChildScrollView(
+                                              child: SelectableText(
+                                                JsonEncoder.withIndent(
+                                                  '  ',
+                                                ).convert(data),
+                                              ),
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed:
+                                                    () =>
+                                                        Navigator.of(ctx).pop(),
+                                                child: const Text('Close'),
+                                              ),
+                                            ],
+                                          ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.bug_report_outlined),
+                                  label: const Text('Show raw doc'),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
             ),
           ),
         ),
+      ),
+    );
+
+    return Scaffold(
+      appBar: const TopTaskbar(dockProgress: 1.0),
+      body: TripBuilderLayout(
+        map: const MapEmbed(points: []),
+        panel: panelContent,
       ),
     );
   }

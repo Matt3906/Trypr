@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+import 'dart:async';
 import 'dart:ui' as ui;
+import 'dart:ui_web' as ui_web;
 import 'dart:math' as math;
 
 import 'dart:html' as html;
@@ -10,9 +12,18 @@ import 'dart:convert';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:http/http.dart' as http;
 
+import 'package:trypr/services/google_maps_loader_web.dart';
+
+const double _previewBubbleWidth = 280.0;
+const double _previewMapHeight = 160.0;
+const double _previewInfoHeight = 64.0;
+const double _previewTriangleHeight = 10.0;
+const double _previewBubbleHeight = _previewMapHeight + _previewInfoHeight;
+
 class MapEmbed extends StatelessWidget {
   final List<Map<String, dynamic>> points;
   final void Function(double lat, double lon)? onMapTap;
+  final void Function(Map<String, dynamic> point)? onPointTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
   final void Function(List<String> lines)? onRouteInstructions;
@@ -24,10 +35,16 @@ class MapEmbed extends StatelessWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final List<Map<String, dynamic>> secondaryPoints;
+  final bool disableDefaultUi;
+  final bool disableGestures;
+  final bool zoomControlsEnabled;
+  final double minZoom;
+  final double maxZoom;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
+    this.onPointTap,
     this.onRouteSummary,
     this.onRouteInstructions,
     this.onTransitArrivalStop,
@@ -38,6 +55,11 @@ class MapEmbed extends StatelessWidget {
     this.onViaDragEnd,
     this.onViaTapDelete,
     this.secondaryPoints = const [],
+    this.disableDefaultUi = false,
+    this.disableGestures = false,
+    this.zoomControlsEnabled = false,
+    this.minZoom = 3,
+    this.maxZoom = 18,
   });
 
   String _resolveMapsKey() {
@@ -76,6 +98,7 @@ class MapEmbed extends StatelessWidget {
       points: points,
       secondaryPoints: secondaryPoints,
       onMapTap: onMapTap,
+      onPointTap: onPointTap,
       onRouteSummary: onRouteSummary,
       onRouteInstructions: onRouteInstructions,
       onTransitArrivalStop: onTransitArrivalStop,
@@ -86,6 +109,11 @@ class MapEmbed extends StatelessWidget {
       onViaDragEnd: onViaDragEnd,
       onViaTapDelete: onViaTapDelete,
       mapsKey: mapsKey,
+      disableDefaultUi: disableDefaultUi,
+      disableGestures: disableGestures,
+      zoomControlsEnabled: zoomControlsEnabled,
+      minZoom: minZoom,
+      maxZoom: maxZoom,
     );
   }
 }
@@ -94,6 +122,7 @@ class _MapEmbedWebStateful extends StatefulWidget {
   final List<Map<String, dynamic>> points;
   final List<Map<String, dynamic>> secondaryPoints;
   final void Function(double lat, double lon)? onMapTap;
+  final void Function(Map<String, dynamic> point)? onPointTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
   final void Function(List<String> lines)? onRouteInstructions;
@@ -105,11 +134,17 @@ class _MapEmbedWebStateful extends StatefulWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final String mapsKey;
+  final bool disableDefaultUi;
+  final bool disableGestures;
+  final bool zoomControlsEnabled;
+  final double minZoom;
+  final double maxZoom;
 
   const _MapEmbedWebStateful({
     required this.points,
     required this.secondaryPoints,
     required this.onMapTap,
+    required this.onPointTap,
     required this.onRouteSummary,
     required this.onRouteInstructions,
     required this.onTransitArrivalStop,
@@ -120,6 +155,11 @@ class _MapEmbedWebStateful extends StatefulWidget {
     required this.onViaDragEnd,
     required this.onViaTapDelete,
     required this.mapsKey,
+    required this.disableDefaultUi,
+    required this.disableGestures,
+    required this.zoomControlsEnabled,
+    required this.minZoom,
+    required this.maxZoom,
   });
 
   @override
@@ -143,6 +183,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   List<String> _lastInstructions = const [];
 
   final _markerIconCache = _MarkerIconCache();
+
+  Map<String, dynamic>? _previewPoint;
+  gmaps.LatLng? _previewLatLng;
+  Offset? _previewOffset;
+  Size _mapSize = Size.zero;
+  Timer? _previewUpdateTimer;
 
   String _mapKeySig() {
     return '${_instanceId}_${_mainSig}_${_secondarySig}_${widget.transportMode}_${_viaSignature(widget.routeVia)}_${_segmentRoutingSignature(widget.segmentRoutingTypes)}';
@@ -378,6 +424,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       if (!mounted) return;
       _rebuild();
     });
+  }
+
+  @override
+  void dispose() {
+    _previewUpdateTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -655,6 +707,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           onTap: () {
             _suppressMapTapUntilMs =
                 DateTime.now().millisecondsSinceEpoch + 300;
+            _showPreviewForPoint(p);
+            widget.onPointTap?.call(p);
           },
         ),
       );
@@ -686,6 +740,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           onTap: () {
             _suppressMapTapUntilMs =
                 DateTime.now().millisecondsSinceEpoch + 300;
+            _showPreviewForPoint(p);
+            widget.onPointTap?.call(p);
           },
         ),
       );
@@ -703,19 +759,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           position: gmaps.LatLng(lat, lon),
           draggable: widget.onViaDragEnd != null,
           icon: viaIcon,
+          alpha: 0.7,
           anchor: const Offset(0.5, 0.5),
-          infoWindow:
-              (widget.onViaTapDelete != null)
-                  ? gmaps.InfoWindow(
-                    title: 'Delete via point',
-                    snippet: 'Tap here to remove',
-                    onTap: () {
-                      _suppressMapTapUntilMs =
-                          DateTime.now().millisecondsSinceEpoch + 300;
-                      widget.onViaTapDelete?.call(i);
-                    },
-                  )
-                  : const gmaps.InfoWindow(title: ''),
           onDragEnd: (p) {
             _suppressMapTapUntilMs =
                 DateTime.now().millisecondsSinceEpoch + 300;
@@ -724,6 +769,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           onTap: () {
             _suppressMapTapUntilMs =
                 DateTime.now().millisecondsSinceEpoch + 300;
+            widget.onViaTapDelete?.call(i);
+            _hidePreview();
           },
         ),
       );
@@ -769,6 +816,25 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final segLatLngs =
           segPoints.map((p) => gmaps.LatLng(_latOf(p), _lonOf(p))).toList();
 
+      if (mode == 'flying') {
+        var segDist = 0.0;
+        for (var i = 0; i + 1 < segLatLngs.length; i++) {
+          segDist += _haversineMeters(segLatLngs[i], segLatLngs[i + 1]);
+        }
+        distSum += segDist;
+        outPolylines.add(
+          gmaps.Polyline(
+            polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_flight'),
+            points: segLatLngs,
+            width: 4,
+            color: Colors.indigo.shade400,
+            patterns: [gmaps.PatternItem.dash(12), gmaps.PatternItem.gap(10)],
+            geodesic: true,
+          ),
+        );
+        continue;
+      }
+
       if (segType == 'direct') {
         final isAdventure = _isAdventureMode(mode);
         var segDist = 0.0;
@@ -796,7 +862,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       // Adventure modes (bikepacking/backpacking) should fall through to OSRM
       // so we can pick up OSM trails/paths rather than road-snapping.
       final useGoogle =
-          (isTransit || mode == 'biking' || mode == 'walking') && !isAdventure;
+          !kIsWeb &&
+          (isTransit || mode == 'biking' || mode == 'walking') &&
+          !isAdventure;
 
       if (useGoogle) {
         final googleMode =
@@ -1088,6 +1156,93 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
   }
 
+  void _hidePreview() {
+    if (_previewPoint == null) return;
+    setState(() {
+      _previewPoint = null;
+      _previewLatLng = null;
+      _previewOffset = null;
+    });
+  }
+
+  void _showPreviewForPoint(Map<String, dynamic> point) {
+    final lat = _latOf(point);
+    final lon = _lonOf(point);
+    if (lat == 0.0 && lon == 0.0) return;
+    _previewPoint = point;
+    _previewLatLng = gmaps.LatLng(lat, lon);
+    _schedulePreviewUpdate();
+    setState(() {});
+  }
+
+  void _schedulePreviewUpdate() {
+    if (_previewLatLng == null) return;
+    _previewUpdateTimer?.cancel();
+    _previewUpdateTimer = Timer(const Duration(milliseconds: 50), () {
+      _updatePreviewPosition();
+    });
+  }
+
+  Future<void> _updatePreviewPosition() async {
+    final c = _controller;
+    final target = _previewLatLng;
+    if (c == null || target == null || _mapSize == Size.zero) return;
+
+    try {
+      final sc = await c.getScreenCoordinate(target);
+      if (!mounted) return;
+      final cardWidth = _previewBubbleWidth;
+      final cardHeight = _previewBubbleHeight;
+      final triangleHeight = _previewTriangleHeight;
+
+      var left = sc.x.toDouble() - (cardWidth / 2);
+      var top = sc.y.toDouble() - cardHeight - triangleHeight;
+
+      left = left.clamp(12.0, _mapSize.width - cardWidth - 12.0);
+      top = top.clamp(
+        12.0,
+        _mapSize.height - cardHeight - triangleHeight - 12.0,
+      );
+
+      setState(() {
+        _previewOffset = Offset(left, top);
+      });
+    } catch (_) {}
+  }
+
+  String _previewTitle(Map<String, dynamic> point) {
+    return (point['name'] ?? point['title'] ?? 'Location').toString();
+  }
+
+  String _previewRegion(Map<String, dynamic> point) {
+    return (point['region'] ?? point['country'] ?? point['subtitle'] ?? '')
+        .toString()
+        .trim();
+  }
+
+  Widget _buildPreviewOverlay() {
+    final point = _previewPoint;
+    final pos = _previewOffset;
+    final latLng = _previewLatLng;
+    if (point == null || pos == null || latLng == null) {
+      return const SizedBox.shrink();
+    }
+
+    final title = _previewTitle(point);
+    final region = _previewRegion(point);
+
+    return Positioned(
+      left: pos.dx,
+      top: pos.dy,
+      child: MapPreview3D(
+        lat: latLng.latitude,
+        lon: latLng.longitude,
+        title: title,
+        region: region,
+      ),
+    );
+  }
+
   gmaps.LatLngBounds? _boundsFromMarkers() {
     if (_markers.isEmpty) return null;
     double? minLat, maxLat, minLon, maxLon;
@@ -1140,40 +1295,271 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             ? gmaps.MapType.terrain
             : gmaps.MapType.normal;
 
-    return gmaps.GoogleMap(
-      // google_maps_flutter on web can occasionally fail to visually update
-      // markers/polylines even when the widget rebuilds. Keying the map by the
-      // computed signatures forces a full re-init when route points change.
-      key: ValueKey(_mapKeySig()),
-      initialCameraPosition: gmaps.CameraPosition(
-        target: initialTarget,
-        zoom: 2,
-      ),
-      mapType: mapType,
-      onMapCreated: (c) {
-        _controller = c;
-        _controllerKeySig = _mapKeySig();
-        _fitCamera();
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        _mapSize = Size(constraints.maxWidth, constraints.maxHeight);
+        return Stack(
+          children: [
+            gmaps.GoogleMap(
+              // google_maps_flutter on web can occasionally fail to visually update
+              // markers/polylines even when the widget rebuilds. Keying the map by the
+              // computed signatures forces a full re-init when route points change.
+              key: ValueKey(_mapKeySig()),
+              initialCameraPosition: gmaps.CameraPosition(
+                target: initialTarget,
+                zoom: 2,
+              ),
+              mapType: mapType,
+              minMaxZoomPreference: gmaps.MinMaxZoomPreference(
+                widget.minZoom,
+                widget.maxZoom,
+              ),
+              onMapCreated: (c) {
+                _controller = c;
+                _controllerKeySig = _mapKeySig();
+                _fitCamera();
+                _schedulePreviewUpdate();
+              },
+              markers: _markers,
+              polylines: _polylines,
+              onCameraMove: (_) => _schedulePreviewUpdate(),
+              onTap: (p) {
+                _hidePreview();
+                if (widget.disableGestures) return;
+                if (DateTime.now().millisecondsSinceEpoch <
+                    _suppressMapTapUntilMs) {
+                  return;
+                }
+                if (widget.onRouteTapAddVia != null &&
+                    widget.points.length >= 2) {
+                  final after = _nearestSegmentAfterIndex(p);
+                  widget.onRouteTapAddVia?.call(after, p.latitude, p.longitude);
+                  return;
+                }
+                widget.onMapTap?.call(p.latitude, p.longitude);
+              },
+              zoomControlsEnabled:
+                  widget.zoomControlsEnabled && !widget.disableDefaultUi,
+              zoomGesturesEnabled: !widget.disableGestures,
+              scrollGesturesEnabled: !widget.disableGestures,
+              mapToolbarEnabled: false,
+              myLocationButtonEnabled: false,
+              rotateGesturesEnabled: false,
+              tiltGesturesEnabled: false,
+              compassEnabled: false,
+            ),
+            _buildPreviewOverlay(),
+          ],
+        );
       },
-      markers: _markers,
-      polylines: _polylines,
-      onTap: (p) {
-        if (DateTime.now().millisecondsSinceEpoch < _suppressMapTapUntilMs) {
-          return;
-        }
-        if (widget.onRouteTapAddVia != null && widget.points.length >= 2) {
-          final after = _nearestSegmentAfterIndex(p);
-          widget.onRouteTapAddVia?.call(after, p.latitude, p.longitude);
-          return;
-        }
-        widget.onMapTap?.call(p.latitude, p.longitude);
-      },
-      mapToolbarEnabled: false,
-      myLocationButtonEnabled: false,
-      rotateGesturesEnabled: false,
-      tiltGesturesEnabled: false,
-      compassEnabled: false,
     );
+  }
+}
+
+class MapPreview3D extends StatefulWidget {
+  final double lat;
+  final double lon;
+  final String title;
+  final String region;
+
+  const MapPreview3D({
+    super.key,
+    required this.lat,
+    required this.lon,
+    this.title = '',
+    this.region = '',
+  });
+
+  @override
+  State<MapPreview3D> createState() => _MapPreview3DState();
+}
+
+class _MapPreview3DState extends State<MapPreview3D> {
+  late final String _viewType;
+  late final html.Element _element;
+  late final html.DivElement _titleElement;
+  late final html.DivElement _regionElement;
+
+  static bool _styleInjected = false;
+
+  static const String _earthMapId = 'DEMO_MAP_ID';
+
+  static const double _mapWidthPx = _previewBubbleWidth;
+  static const double _mapHeightPx = _previewMapHeight;
+
+  @override
+  void initState() {
+    super.initState();
+    _viewType = 'trypr-map3d-${identityHashCode(this)}';
+
+    _ensureBubbleStyles();
+
+    final container = html.DivElement();
+    container.className = 'trypr-map3d-bubble';
+    container.style.width = '${_previewBubbleWidth}px';
+    container.style.height =
+        '${_previewBubbleHeight + _previewTriangleHeight}px';
+    container.style.pointerEvents = 'none';
+    container.style.zIndex = '50';
+
+    final mapWrap = html.DivElement();
+    mapWrap.className = 'trypr-map3d-view';
+    mapWrap.style.width = '100%';
+    mapWrap.style.height = '${_mapHeightPx}px';
+
+    final map3d = html.Element.tag('gmp-map-3d');
+    map3d.style.width = '100%';
+    map3d.style.height = '100%';
+    map3d.style.border = '0';
+    map3d.style.pointerEvents = 'none';
+
+    _applyMap3dAttributes(map3d);
+
+    mapWrap.append(map3d);
+
+    final info = html.DivElement();
+    info.className = 'trypr-map3d-info';
+
+    _titleElement = html.DivElement();
+    _titleElement.className = 'trypr-map3d-title';
+    _titleElement.text = widget.title;
+
+    _regionElement = html.DivElement();
+    _regionElement.className = 'trypr-map3d-region';
+    _regionElement.text = widget.region;
+    _regionElement.style.display =
+        widget.region.trim().isEmpty ? 'none' : 'block';
+
+    info
+      ..append(_titleElement)
+      ..append(_regionElement);
+
+    container
+      ..append(mapWrap)
+      ..append(info);
+
+    _element = container;
+
+    ui_web.platformViewRegistry.registerViewFactory(
+      _viewType,
+      (int viewId) => _element,
+    );
+
+    ensureGoogleMapsLoaded();
+  }
+
+  String _resolveMapId() {
+    const fromDefine = String.fromEnvironment('GOOGLE_MAPS_MAP_ID');
+    if (fromDefine.isNotEmpty) return fromDefine;
+
+    try {
+      final meta = html.document.querySelector(
+        'meta[name="google-maps-map-id"]',
+      );
+      final fromMeta = meta?.getAttribute('content')?.trim() ?? '';
+      return fromMeta;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  void _applyMap3dAttributes(html.Element map3d) {
+    map3d.setAttribute('center', '${widget.lat},${widget.lon},0');
+    map3d.setAttribute('tilt', '60');
+    map3d.setAttribute('heading', '45');
+    map3d.setAttribute('range', '1000');
+    map3d.setAttribute('default-labels-disabled', 'true');
+    final mapId = _resolveMapId();
+    final resolved = mapId.isNotEmpty ? mapId : _earthMapId;
+    // NOTE: Replace DEMO_MAP_ID with a real Map ID configured for Vector
+    // rendering in Google Cloud Console. Map3D requires a Vector map ID.
+    map3d.setAttribute('map-id', resolved);
+  }
+
+  void _ensureBubbleStyles() {
+    if (_styleInjected) return;
+    _styleInjected = true;
+
+    final style = html.StyleElement();
+    style.text = '''
+.trypr-map3d-bubble {
+  position: relative;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+.trypr-map3d-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 10px 10px 0 10px;
+  border-style: solid;
+  border-color: #ffffff transparent transparent transparent;
+}
+.trypr-map3d-view {
+  width: ${_previewBubbleWidth}px;
+  height: ${_previewMapHeight}px;
+  overflow: hidden;
+  border-radius: 12px 12px 8px 8px;
+  background: #f2f2f2;
+}
+.trypr-map3d-view > gmp-map-3d {
+  width: ${_previewBubbleWidth}px;
+  height: ${_previewMapHeight}px;
+  display: block;
+}
+.trypr-map3d-info {
+  padding: 10px 12px 12px;
+  font-family: inherit;
+}
+.trypr-map3d-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: #111111;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trypr-map3d-region {
+  font-size: 12px;
+  color: #555555;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+''';
+    html.document.head?.append(style);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: _previewBubbleWidth,
+      height: _previewBubbleHeight + _previewTriangleHeight,
+      child: HtmlElementView(viewType: _viewType),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant MapPreview3D oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.lat != widget.lat || oldWidget.lon != widget.lon) {
+      final map3d = _element.querySelector('gmp-map-3d');
+      if (map3d != null) {
+        _applyMap3dAttributes(map3d);
+      }
+    }
+    if (oldWidget.title != widget.title) {
+      _titleElement.text = widget.title;
+    }
+    if (oldWidget.region != widget.region) {
+      _regionElement.text = widget.region;
+      _regionElement.style.display =
+          widget.region.trim().isEmpty ? 'none' : 'block';
+    }
   }
 }
 
