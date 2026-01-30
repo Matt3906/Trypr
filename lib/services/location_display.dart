@@ -94,8 +94,10 @@ bool _isPostal(String token) {
 bool _isNoiseAdmin(String token) {
   final t = token.toLowerCase();
   // Explicitly strip these.
-  if (RegExp(r'\b(district|county|region)\b', caseSensitive: false)
-      .hasMatch(t)) {
+  if (RegExp(
+    r'\b(district|county|region)\b',
+    caseSensitive: false,
+  ).hasMatch(t)) {
     return true;
   }
 
@@ -168,14 +170,15 @@ LocationDisplay formatLocationDisplay({String? placeName, String? raw}) {
   }
 
   // Split by comma (Nominatim / many formatted addresses).
-  final tokens = rawText
-      .split(',')
-      .map(_normalizeToken)
-      .where((t) => t.isNotEmpty)
-      .where((t) => !_isCountry(t))
-      .where((t) => !_isNoiseAdmin(t))
-      .where((t) => !_isPostal(t))
-      .toList();
+  final tokens =
+      rawText
+          .split(',')
+          .map(_normalizeToken)
+          .where((t) => t.isNotEmpty)
+          .where((t) => !_isCountry(t))
+          .where((t) => !_isNoiseAdmin(t))
+          .where((t) => !_isPostal(t))
+          .toList();
 
   // Deduplicate sequential repeats.
   final cleaned = <String>[];
@@ -237,7 +240,9 @@ LocationDisplay formatLocationDisplay({String? placeName, String? raw}) {
       if (after.isNotEmpty && _looksNumeric.hasMatch(after.first)) {
         final num = after.first;
         final road = after.length >= 2 ? after[1] : '';
-        street = _normalizeToken([num, road].where((s) => s.isNotEmpty).join(' '));
+        street = _normalizeToken(
+          [num, road].where((s) => s.isNotEmpty).join(' '),
+        );
       } else {
         street = after.first;
       }
@@ -245,14 +250,22 @@ LocationDisplay formatLocationDisplay({String? placeName, String? raw}) {
       if (_looksNumeric.hasMatch(cleaned.first)) {
         final num = cleaned.first;
         final road = cleaned.length >= 2 ? cleaned[1] : '';
-        street = _normalizeToken([num, road].where((s) => s.isNotEmpty).join(' '));
+        street = _normalizeToken(
+          [num, road].where((s) => s.isNotEmpty).join(' '),
+        );
       }
     }
   }
   if (street.isNotEmpty) street = _abbrStreetSuffix(street);
 
   // Title selection.
-  final title = (place.isNotEmpty ? place : (street.isNotEmpty ? street : (cleaned.isNotEmpty ? cleaned.first : pn))).trim();
+  final title =
+      (place.isNotEmpty
+              ? place
+              : (street.isNotEmpty
+                  ? street
+                  : (cleaned.isNotEmpty ? cleaned.first : pn)))
+          .trim();
 
   // Subtitle assembly.
   final subParts = <String>[];

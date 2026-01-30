@@ -571,8 +571,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   String _rawLocationFromResult(Map<String, dynamic> r, String fallbackQuery) {
     final name = (r['name'] ?? '').toString().trim();
-    final display =
-        (r['display_name'] ?? r['address'] ?? '').toString().trim();
+    final display = (r['display_name'] ?? r['address'] ?? '').toString().trim();
 
     if (name.isEmpty && display.isEmpty) return fallbackQuery;
     if (display.isEmpty) return name;
@@ -1916,11 +1915,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                       );
                                       return;
                                     }
-                                    await _addWaypointWithPrompt(
-                                      raw,
-                                      lat,
-                                      lon,
-                                    );
+                                    await _addWaypointWithPrompt(raw, lat, lon);
                                     if (mounted) {
                                       setState(() => _searchResults = []);
                                       _searchCtrl.clear();

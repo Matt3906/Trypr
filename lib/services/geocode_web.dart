@@ -168,12 +168,10 @@ Future<List<Map<String, dynamic>>> searchNominatim(String query) async {
                   ?.toDouble() ??
               0.0;
           out.add({
-            'name': name.isNotEmpty
-              ? name
-              : (formatted.isNotEmpty ? formatted : q),
-            'display_name': formatted.isNotEmpty
-              ? formatted
-              : (name.isNotEmpty ? name : q),
+            'name':
+                name.isNotEmpty ? name : (formatted.isNotEmpty ? formatted : q),
+            'display_name':
+                formatted.isNotEmpty ? formatted : (name.isNotEmpty ? name : q),
             'lat': lat,
             'lon': lon,
           });
