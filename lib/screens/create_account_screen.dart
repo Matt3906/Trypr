@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/complete_profile_screen.dart';
 
@@ -95,92 +96,160 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
           image: DecorationImage(
             image: const AssetImage('images/DSC_0042.jpg'),
             fit: BoxFit.cover,
-            colorFilter: ColorFilter.mode(Colors.black45, BlendMode.darken),
+            colorFilter: ColorFilter.mode(
+              Colors.black.withOpacity(0.35),
+              BlendMode.darken,
+            ),
           ),
         ),
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24.0),
+            padding: const EdgeInsets.all(TryprSpacing.xxl),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: Card(
-                elevation: 12,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: TryprColors.surface,
+                  borderRadius: BorderRadius.circular(TryprRadius.xxl),
+                  boxShadow: TryprColors.elevatedShadow,
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.all(24.0),
+                  padding: const EdgeInsets.all(TryprSpacing.xxxl),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        'Create account',
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.bold),
+                      // Welcome icon
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: TryprColors.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(TryprRadius.lg),
+                        ),
+                        child: const Icon(
+                          Icons.explore_rounded,
+                          color: TryprColors.primary,
+                          size: 28,
+                        ),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: TryprSpacing.xl),
                       Text(
-                        'Start your journey — create an account to save trips',
-                        style: Theme.of(context).textTheme.bodyMedium,
+                        'Start your journey',
+                        style: Theme.of(context).textTheme.displaySmall,
                       ),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: TryprSpacing.sm),
+                      Text(
+                        'Create an account to plan and save your adventures',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: TryprColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: TryprSpacing.xxl),
                       TextField(
                         controller: _emailController,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.email),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.email_outlined),
+                          hintText: 'Enter your email',
                           labelText: 'Email',
+                          filled: true,
+                          fillColor: TryprColors.surfaceVariant,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(TryprRadius.md),
+                            borderSide: BorderSide.none,
+                          ),
                         ),
                         keyboardType: TextInputType.emailAddress,
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: TryprSpacing.lg),
                       TextField(
                         controller: _passwordController,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.lock),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          hintText: 'Create a password',
                           labelText: 'Password',
+                          filled: true,
+                          fillColor: TryprColors.surfaceVariant,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(TryprRadius.md),
+                            borderSide: BorderSide.none,
+                          ),
                         ),
                         obscureText: true,
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: TryprSpacing.lg),
                       TextField(
                         controller: _confirmController,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.lock_outline),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          hintText: 'Confirm your password',
                           labelText: 'Confirm password',
+                          filled: true,
+                          fillColor: TryprColors.surfaceVariant,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(TryprRadius.md),
+                            borderSide: BorderSide.none,
+                          ),
                         ),
                         obscureText: true,
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: TryprSpacing.xxl),
                       _loading
-                          ? const Center(child: CircularProgressIndicator())
-                          : ElevatedButton(
-                            onPressed: _createAccount,
-                            style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 14),
+                          ? const Center(
+                            child: CircularProgressIndicator(
+                              color: TryprColors.primary,
                             ),
-                            child: const Text('Create account'),
+                          )
+                          : PrimaryButton(
+                            label: 'Create account',
+                            icon: Icons.arrow_forward,
+                            fullWidth: true,
+                            onPressed: _createAccount,
                           ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: TryprSpacing.xl),
                       Row(
-                        children: const [
-                          Expanded(child: Divider()),
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 8),
-                            child: Text('OR'),
+                        children: [
+                          const Expanded(
+                            child: Divider(color: TryprColors.textTertiary),
                           ),
-                          Expanded(child: Divider()),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: TryprSpacing.lg,
+                            ),
+                            child: Text(
+                              'or continue with',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                          const Expanded(
+                            child: Divider(color: TryprColors.textTertiary),
+                          ),
                         ],
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: TryprSpacing.xl),
                       _googleLoading
-                          ? const Center(child: CircularProgressIndicator())
+                          ? const Center(
+                            child: CircularProgressIndicator(
+                              color: TryprColors.primary,
+                            ),
+                          )
                           : OutlinedButton.icon(
-                            icon: const Icon(Icons.login),
-                            label: const Text('Continue with Google'),
+                            icon: Image.network(
+                              'https://www.google.com/favicon.ico',
+                              width: 20,
+                              height: 20,
+                              errorBuilder:
+                                  (_, __, ___) =>
+                                      const Icon(Icons.g_mobiledata, size: 20),
+                            ),
+                            label: const Text('Google'),
                             onPressed: _signUpWithGoogle,
                             style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: TryprSpacing.lg,
+                              ),
+                              side: const BorderSide(color: Color(0xFFE2E8F0)),
+                              foregroundColor: TryprColors.textPrimary,
                             ),
                           ),
                     ],

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/screens/my_trips_screen.dart';
 import 'package:trypr/screens/trip_builder_screen.dart';
 import 'package:trypr/screens/verified_trips_screen.dart';
@@ -8,11 +9,14 @@ import 'package:trypr/screens/account_screen.dart';
 import 'package:trypr/screens/friends_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
 import 'package:trypr/screens/create_account_screen.dart';
+import 'package:trypr/screens/admin_panel_screen.dart';
 import 'package:trypr/services/auth_state.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
+
+import 'dart:async';
 
 typedef SignInStateSetter = void Function(bool signedIn);
 
@@ -36,38 +40,60 @@ class TopTaskbar extends StatefulWidget implements PreferredSizeWidget {
 class _TopTaskbarState extends State<TopTaskbar> {
   bool get _signedIn => AuthState.instance.signedIn.value;
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _userDoc;
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? _adminDoc;
   VoidCallback? _signedInListener;
+  StreamSubscription<User?>? _authSub;
 
   @override
   void initState() {
     super.initState();
-    final u = FirebaseAuth.instance.currentUser;
-    if (u != null) {
-      _userDoc =
-          FirebaseFirestore.instance.collection('users').doc(u.uid).snapshots();
-      _ensureUserDoc(u);
-    }
-    _signedInListener = () {
+
+    void syncDocs(User? u) {
+      debugPrint('syncDocs called - user: ${u?.uid}, mounted: $mounted');
       if (!mounted) return;
-      final uu = FirebaseAuth.instance.currentUser;
       setState(() {
         _userDoc =
-            uu != null
+            u != null
                 ? FirebaseFirestore.instance
                     .collection('users')
-                    .doc(uu.uid)
+                    .doc(u.uid)
                     .snapshots()
                 : null;
-        if (uu != null) {
-          _ensureUserDoc(uu);
+        _adminDoc =
+            u != null
+                ? FirebaseFirestore.instance
+                    .collection('admins')
+                    .doc(u.uid)
+                    .snapshots()
+                : null;
+        if (u != null) {
+          _ensureUserDoc(u);
         }
       });
+    }
+
+    // Initialize with current user
+    final currentUser = FirebaseAuth.instance.currentUser;
+    debugPrint('initState - currentUser: ${currentUser?.uid}');
+    syncDocs(currentUser);
+
+    // Listen to auth state changes directly from Firebase
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      debugPrint('authStateChanges fired - user: ${user?.uid}');
+      syncDocs(user);
+    });
+
+    // Also listen to AuthState for UI refresh
+    _signedInListener = () {
+      if (!mounted) return;
+      syncDocs(FirebaseAuth.instance.currentUser);
     };
     AuthState.instance.signedIn.addListener(_signedInListener!);
   }
 
   @override
   void dispose() {
+    _authSub?.cancel();
     final l = _signedInListener;
     if (l != null) {
       AuthState.instance.signedIn.removeListener(l);
@@ -235,6 +261,55 @@ class _TopTaskbarState extends State<TopTaskbar> {
                                 ),
                               ),
                         ),
+                        // Admin Panel - only visible to admins
+                        Builder(
+                          builder: (ctx) {
+                            debugPrint(
+                              'Admin stream check - _adminDoc is ${_adminDoc == null ? "NULL" : "set"}',
+                            );
+                            if (_adminDoc == null) {
+                              return const SizedBox.shrink();
+                            }
+                            return StreamBuilder<
+                              DocumentSnapshot<Map<String, dynamic>>
+                            >(
+                              stream: _adminDoc,
+                              builder: (ctx, adminSnap) {
+                                // Debug: print UID and admin status
+                                final uid =
+                                    FirebaseAuth.instance.currentUser?.uid;
+                                debugPrint(
+                                  'Admin check - UID: $uid, hasData: ${adminSnap.hasData}, exists: ${adminSnap.data?.exists}, state: ${adminSnap.connectionState}, error: ${adminSnap.error}',
+                                );
+                                if (adminSnap.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const SizedBox.shrink();
+                                }
+                                if (adminSnap.hasError) {
+                                  debugPrint('Admin error: ${adminSnap.error}');
+                                  return const SizedBox.shrink();
+                                }
+                                if (!adminSnap.hasData ||
+                                    !(adminSnap.data?.exists ?? false)) {
+                                  return const SizedBox.shrink();
+                                }
+                                return _NavItem(
+                                  label: '⚙️ Admin',
+                                  color:
+                                      Color.lerp(
+                                        const Color(0xFF00B894),
+                                        const Color(0xFF00896F),
+                                        dp,
+                                      )!,
+                                  onPressed:
+                                      () => Navigator.of(
+                                        context,
+                                      ).push(AdminPanelScreen.route()),
+                                );
+                              },
+                            );
+                          },
+                        ),
                       ],
                     ),
                   ),
@@ -242,55 +317,86 @@ class _TopTaskbarState extends State<TopTaskbar> {
               ),
             ] else ...[
               const Spacer(),
-              PopupMenuButton<String>(
-                tooltip: 'Menu',
-                icon: Icon(
-                  Icons.menu,
-                  color: Color.lerp(Colors.white, Colors.black87, dp),
-                ),
-                onSelected: (value) {
-                  switch (value) {
-                    case 'my_trips':
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const MyTripsScreen(),
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: _adminDoc,
+                builder: (context, adminSnap) {
+                  final isAdmin =
+                      adminSnap.hasData && (adminSnap.data?.exists ?? false);
+                  return PopupMenuButton<String>(
+                    tooltip: 'Menu',
+                    icon: Icon(
+                      Icons.menu,
+                      color: Color.lerp(Colors.white, Colors.black87, dp),
+                    ),
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'my_trips':
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const MyTripsScreen(),
+                            ),
+                          );
+                          return;
+                        case 'trip_builder':
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const TripBuilderScreen(),
+                            ),
+                          );
+                          return;
+                        case 'verified_trips':
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const VerifiedTripsScreen(),
+                            ),
+                          );
+                          return;
+                        case 'about':
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const AboutScreen(),
+                            ),
+                          );
+                          return;
+                        case 'admin':
+                          Navigator.of(context).push(AdminPanelScreen.route());
+                          return;
+                      }
+                    },
+                    itemBuilder: (ctx) {
+                      final items = <PopupMenuItem<String>>[
+                        const PopupMenuItem(
+                          value: 'my_trips',
+                          child: Text('My Trips'),
                         ),
-                      );
-                      return;
-                    case 'trip_builder':
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const TripBuilderScreen(),
+                        const PopupMenuItem(
+                          value: 'trip_builder',
+                          child: Text('Trip Builder'),
                         ),
-                      );
-                      return;
-                    case 'verified_trips':
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const VerifiedTripsScreen(),
+                        const PopupMenuItem(
+                          value: 'verified_trips',
+                          child: Text('Verified Trips'),
                         ),
-                      );
-                      return;
-                    case 'about':
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const AboutScreen()),
-                      );
-                      return;
-                  }
+                        const PopupMenuItem(
+                          value: 'about',
+                          child: Text('About'),
+                        ),
+                      ];
+                      if (isAdmin) {
+                        items.add(
+                          const PopupMenuItem(
+                            value: 'admin',
+                            child: Text(
+                              '⚙️ Admin Panel',
+                              style: TextStyle(color: Color(0xFF00B894)),
+                            ),
+                          ),
+                        );
+                      }
+                      return items;
+                    },
+                  );
                 },
-                itemBuilder:
-                    (ctx) => const [
-                      PopupMenuItem(value: 'my_trips', child: Text('My Trips')),
-                      PopupMenuItem(
-                        value: 'trip_builder',
-                        child: Text('Trip Builder'),
-                      ),
-                      PopupMenuItem(
-                        value: 'verified_trips',
-                        child: Text('Verified Trips'),
-                      ),
-                      PopupMenuItem(value: 'about', child: Text('About')),
-                    ],
               ),
               const SizedBox(width: 8),
             ],
@@ -424,7 +530,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
   }
 }
 
-class _NavItem extends StatelessWidget {
+class _NavItem extends StatefulWidget {
   final String label;
   final Color color;
   final VoidCallback? onPressed;
@@ -435,13 +541,42 @@ class _NavItem extends StatelessWidget {
   });
 
   @override
+  State<_NavItem> createState() => _NavItemState();
+}
+
+class _NavItemState extends State<_NavItem> {
+  bool _isHovered = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0),
-      child: TextButton(
-        style: TextButton.styleFrom(foregroundColor: color),
-        onPressed: onPressed,
-        child: Text(label, style: const TextStyle(fontSize: 14)),
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: TryprSpacing.sm),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(
+            horizontal: TryprSpacing.md,
+            vertical: TryprSpacing.sm,
+          ),
+          decoration: BoxDecoration(
+            color:
+                _isHovered ? widget.color.withOpacity(0.1) : Colors.transparent,
+            borderRadius: BorderRadius.circular(TryprRadius.md),
+          ),
+          child: GestureDetector(
+            onTap: widget.onPressed,
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: widget.color,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

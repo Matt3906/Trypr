@@ -28,78 +28,70 @@ bool _isMapsLoaded() {
   }
 }
 
+/// Dynamically loads the Google Maps JavaScript SDK into the page.
+///
+/// The `google_maps_flutter_web` plugin requires `google.maps` on `window`
+/// before any [GoogleMap] widget can render.  This function injects an
+/// appropriate `<script>` tag (if not already present) and waits for the SDK
+/// to become available.  It resolves the API key from `--dart-define` first,
+/// then falls back to the `<meta name="google-maps-api-key">` tag.
 Future<void> ensureGoogleMapsLoaded() {
-  final apiKey = _resolveMapsKey();
-  if (apiKey.isEmpty) {
-    // Allow app to run without Maps configured.
-    return Future.value();
-  }
-
-  if (_isMapsLoaded()) {
-    return Future.value();
-  }
-
-  if (_loadCompleter != null) {
-    return _loadCompleter!.future;
-  }
+  if (_isMapsLoaded()) return Future.value();
+  if (_loadCompleter != null) return _loadCompleter!.future;
 
   _loadCompleter = Completer<void>();
 
-  html.ScriptElement? script =
-      html.document.getElementById('google-maps-js') as html.ScriptElement?;
-
-  // If a maps script already exists (e.g., injected by index.html), reuse it.
-  script ??=
-      html.document.querySelector(
-            'script[src*="maps.googleapis.com/maps/api/js"]',
-          )
-          as html.ScriptElement?;
-
-  if (script == null) {
-    script =
-        html.ScriptElement()
-          ..id = 'google-maps-js'
-          ..async = true
-          ..defer = true
-          ..src =
-              'https://maps.googleapis.com/maps/api/js?key=$apiKey&libraries=places,maps3d&v=alpha&loading=async';
-    html.document.head?.append(script);
-  } else {
-    // Ensure our loader can find this element later.
-    script.id = 'google-maps-js';
+  final key = _resolveMapsKey();
+  if (key.isEmpty) {
+    // No key – nothing to load; widgets will show a "not configured" message.
+    _loadCompleter!.complete();
+    return _loadCompleter!.future;
   }
 
-  void completeIfLoaded() {
-    if (_isMapsLoaded() && !(_loadCompleter?.isCompleted ?? true)) {
-      _loadCompleter?.complete();
-    }
+  // Check if a script tag for Maps JS is already in the DOM.
+  final existing = html.document.querySelectorAll(
+    'script[src*="maps.googleapis.com"]',
+  );
+  if (existing.isNotEmpty) {
+    // Script tag exists – just wait for it to finish loading.
+    _pollForMaps();
+    return _loadCompleter!.future;
   }
 
-  script.onError.first.then((_) {
-    if (!(_loadCompleter?.isCompleted ?? true)) {
-      _loadCompleter?.completeError(
-        StateError('Failed to load Google Maps JavaScript API'),
-      );
+  final script =
+      html.ScriptElement()
+        ..src =
+            'https://maps.googleapis.com/maps/api/js?key=$key&libraries=places'
+        ..async = true;
+
+  script.onLoad.listen((_) {
+    _pollForMaps();
+  });
+
+  script.onError.listen((_) {
+    if (!_loadCompleter!.isCompleted) {
+      _loadCompleter!.complete(); // Complete anyway to unblock the UI.
     }
   });
 
-  script.onLoad.first.then((_) {
-    completeIfLoaded();
-  });
+  html.document.head!.append(script);
+  return _loadCompleter!.future;
+}
 
-  // Poll until the JS API is available in case the script element pre-existed.
-  final pollTimer = Timer.periodic(const Duration(milliseconds: 150), (timer) {
-    completeIfLoaded();
-    if (_loadCompleter?.isCompleted ?? true) {
-      timer.cancel();
-    }
-  });
-
-  return _loadCompleter!.future.timeout(
-    const Duration(seconds: 20),
-    onTimeout: () {
-      pollTimer.cancel();
-      throw TimeoutException('Timed out loading Google Maps JavaScript API');
-    },
+/// The script's `onLoad` fires when the file is fetched, but `google.maps`
+/// may not be defined immediately.  Poll briefly to be safe.
+void _pollForMaps([int attempts = 0]) {
+  if (_isMapsLoaded()) {
+    if (!_loadCompleter!.isCompleted) _loadCompleter!.complete();
+    return;
+  }
+  if (attempts > 50) {
+    // Give up after ~5 s.
+    if (!_loadCompleter!.isCompleted) _loadCompleter!.complete();
+    return;
+  }
+  Future.delayed(
+    const Duration(milliseconds: 100),
+    () => _pollForMaps(attempts + 1),
   );
 }

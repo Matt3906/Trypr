@@ -1,10 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/trip_detail_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
-import 'package:trypr/widgets/map_embed.dart';
 
 class MyTripsScreen extends StatefulWidget {
   const MyTripsScreen({super.key});
@@ -29,22 +29,8 @@ class _HoverableState extends State<_Hoverable> {
 
   @override
   Widget build(BuildContext context) {
-    final scale = _hover ? 1.05 : 1.0;
-    final shadow =
-        _hover
-            ? [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.12),
-                blurRadius: 12,
-                offset: const Offset(0, 6),
-              ),
-            ]
-            : [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
-                blurRadius: 6,
-              ),
-            ];
+    final scale = _hover ? 1.02 : 1.0;
+    final shadow = _hover ? TryprColors.elevatedShadow : TryprColors.softShadow;
     return MouseRegion(
       onEnter: _onEnter,
       onExit: _onExit,
@@ -53,14 +39,14 @@ class _HoverableState extends State<_Hoverable> {
         onTap: widget.onTap,
         behavior: HitTestBehavior.opaque,
         child: AnimatedScale(
-          duration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
           scale: scale,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
+            duration: const Duration(milliseconds: 200),
             curve: Curves.easeOut,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(TryprRadius.xl),
               boxShadow: shadow,
             ),
             child: widget.child,
@@ -671,14 +657,30 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                               borderRadius: BorderRadius.circular(18),
                               child: Stack(
                                 children: [
+                                  // Gradient background instead of 2D map
                                   Positioned.fill(
-                                    child: IgnorePointer(
-                                      ignoring: true,
-                                      child: MapEmbed(
-                                        points: _mapPoints(waypoints),
-                                        disableDefaultUi: true,
-                                        disableGestures: true,
-                                        zoomControlsEnabled: false,
+                                    child: Container(
+                                      decoration: const BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                          colors: [
+                                            Color(0xFF1a1a2e),
+                                            Color(0xFF16213e),
+                                            Color(0xFF0f3460),
+                                          ],
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          _tripEmoji(data),
+                                          style: TextStyle(
+                                            fontSize: 56,
+                                            color: Colors.white.withOpacity(
+                                              0.15,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -871,7 +873,10 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           constraints: const BoxConstraints(maxWidth: 1280),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-            child: SingleChildScrollView(child: panelContent),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.only(top: 16),
+              child: panelContent,
+            ),
           ),
         ),
       ),

@@ -3,9 +3,11 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:pointer_interceptor/pointer_interceptor.dart';
+import 'package:trypr/widgets/web_interceptor.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/widgets/globe_3d_embed.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:trypr/services/location_display.dart';
 import 'package:trypr/widgets/activity_finder_modal.dart';
@@ -217,7 +219,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   Widget _webSafeMenuItemText(String text) {
     final t = SizedBox(width: double.infinity, child: Text(text));
-    return kIsWeb ? PointerInterceptor(child: t) : t;
+    return kIsWeb ? WebInterceptor(child: t) : t;
   }
 
   bool _isAdventureMode(String mode) {
@@ -1564,7 +1566,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         ),
       );
 
-      return kIsWeb ? PointerInterceptor(child: card) : card;
+      return kIsWeb ? WebInterceptor(child: card) : card;
     }
 
     return Scaffold(
@@ -1582,7 +1584,11 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           );
 
           Widget glassPill({required Widget child}) {
-            final pill = ClipRRect(
+            // No PointerInterceptor here — the parent card/island already
+            // wraps in PointerInterceptor.  Nesting platform-views inside
+            // platform-views complicates CanvasKit compositing layers and
+            // can break z-ordering.
+            return ClipRRect(
               borderRadius: BorderRadius.circular(999),
               child: Material(
                 color: Colors.white,
@@ -1597,8 +1603,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 ),
               ),
             );
-
-            return kIsWeb ? PointerInterceptor(child: pill) : pill;
           }
 
           const fieldRadius = 12.0;
@@ -1721,7 +1725,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             );
 
-            return kIsWeb ? PointerInterceptor(child: card) : card;
+            return kIsWeb ? WebInterceptor(child: card) : card;
           }
 
           Widget searchIsland({required double maxWidth}) {
@@ -1952,7 +1956,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             );
 
-            return kIsWeb ? PointerInterceptor(child: card) : card;
+            return kIsWeb ? WebInterceptor(child: card) : card;
           }
 
           final overlayTop = (maxH < 520) ? 12.0 : 16.0;
@@ -1963,102 +1967,164 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
           return Stack(
             children: [
+              // Map background – direct child (no nested Stack) for proper
+              // platform-view compositing on Flutter web.
               Positioned.fill(
                 child: IgnorePointer(
                   ignoring: _suspendMapTap,
-                  child: Stack(
-                    children: [
-                      MapEmbed(
-                        points:
-                            _waypoints
-                                .map(
-                                  (w) => {
-                                    'name': w.name,
-                                    'lat': w.lat,
-                                    'lon': w.lon,
-                                  },
-                                )
-                                .toList(),
-                        transportMode: _transportMode,
-                        routeVia: _routeVia,
-                        segmentRoutingTypes: _segmentRoutingTypes,
-                        onRouteInstructions: (lines) {
-                          if (!mounted) return;
-                          setState(() => _routeInstructions = lines);
-                        },
-                        onTransitArrivalStop: (arrivalStop) {
-                          if (!mounted) return;
-                          setState(() => _transitArrivalStop = arrivalStop);
-                        },
-                        onRouteSummary: (distanceMeters, durationSeconds) {
-                          if (!mounted) return;
-                          setState(() {
-                            _roadDistanceKm = distanceMeters / 1000.0;
-                            _routeDurationMin = durationSeconds / 60.0;
-                          });
-                        },
-                        onMapTap:
-                            (!_adjustRoute)
-                                ? (lat, lon) async {
-                                  if (_tripRange == null) {
-                                    if (!mounted) return;
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text(
-                                          'Select a trip date range first',
-                                        ),
-                                      ),
-                                    );
-                                    return;
-                                  }
+                  child:
+                      kIsWeb
+                          ? Globe3DEmbed(
+                            points:
+                                _waypoints
+                                    .map(
+                                      (w) => {
+                                        'name': w.name,
+                                        'lat': w.lat,
+                                        'lon': w.lon,
+                                      },
+                                    )
+                                    .toList(),
+                            transportMode: _transportMode,
+                            onRouteSummary: (distanceMeters, durationSeconds) {
+                              if (!mounted) return;
+                              setState(() {
+                                _roadDistanceKm = distanceMeters / 1000.0;
+                                _routeDurationMin = durationSeconds / 60.0;
+                              });
+                            },
+                            onMapTap:
+                                (!_adjustRoute)
+                                    ? (lat, lon) async {
+                                      if (_tripRange == null) {
+                                        if (!mounted) return;
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Select a trip date range first',
+                                            ),
+                                          ),
+                                        );
+                                        return;
+                                      }
 
-                                  String name = 'Dropped Pin';
-                                  try {
-                                    final resolved = await reverseNominatim(
-                                      lat,
-                                      lon,
-                                    );
-                                    if (resolved != null &&
-                                        resolved.trim().isNotEmpty) {
-                                      name = resolved;
+                                      String name = 'Dropped Pin';
+                                      try {
+                                        final resolved = await reverseNominatim(
+                                          lat,
+                                          lon,
+                                        );
+                                        if (resolved != null &&
+                                            resolved.trim().isNotEmpty) {
+                                          name = resolved;
+                                        }
+                                      } catch (_) {}
+
+                                      await _addWaypointWithPrompt(
+                                        name,
+                                        lat,
+                                        lon,
+                                      );
                                     }
-                                  } catch (_) {}
+                                    : null,
+                          )
+                          : MapEmbed(
+                            points:
+                                _waypoints
+                                    .map(
+                                      (w) => {
+                                        'name': w.name,
+                                        'lat': w.lat,
+                                        'lon': w.lon,
+                                      },
+                                    )
+                                    .toList(),
+                            transportMode: _transportMode,
+                            routeVia: _routeVia,
+                            segmentRoutingTypes: _segmentRoutingTypes,
+                            onRouteInstructions: (lines) {
+                              if (!mounted) return;
+                              setState(() => _routeInstructions = lines);
+                            },
+                            onTransitArrivalStop: (arrivalStop) {
+                              if (!mounted) return;
+                              setState(() => _transitArrivalStop = arrivalStop);
+                            },
+                            onRouteSummary: (distanceMeters, durationSeconds) {
+                              if (!mounted) return;
+                              setState(() {
+                                _roadDistanceKm = distanceMeters / 1000.0;
+                                _routeDurationMin = durationSeconds / 60.0;
+                              });
+                            },
+                            onMapTap:
+                                (!_adjustRoute)
+                                    ? (lat, lon) async {
+                                      if (_tripRange == null) {
+                                        if (!mounted) return;
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Select a trip date range first',
+                                            ),
+                                          ),
+                                        );
+                                        return;
+                                      }
 
-                                  await _addWaypointWithPrompt(name, lat, lon);
-                                }
-                                : null,
-                        onRouteTapAddVia:
-                            (_adjustRoute)
-                                ? (afterIndex, lat, lon) => _onRouteTapped(
-                                  afterIndex: afterIndex,
-                                  lat: lat,
-                                  lon: lon,
-                                )
-                                : null,
-                        onViaDragEnd:
-                            (_adjustRoute)
-                                ? (viaIndex, lat, lon) => _moveViaPoint(
-                                  viaIndex: viaIndex,
-                                  lat: lat,
-                                  lon: lon,
-                                )
-                                : null,
-                        onViaTapDelete:
-                            (_adjustRoute)
-                                ? (viaIndex) =>
-                                    _deleteViaPoint(viaIndex: viaIndex)
-                                : null,
-                      ),
-                      if (kIsWeb && _suspendMapTap)
-                        Positioned.fill(
-                          child: PointerInterceptor(
-                            child: const SizedBox.expand(),
+                                      String name = 'Dropped Pin';
+                                      try {
+                                        final resolved = await reverseNominatim(
+                                          lat,
+                                          lon,
+                                        );
+                                        if (resolved != null &&
+                                            resolved.trim().isNotEmpty) {
+                                          name = resolved;
+                                        }
+                                      } catch (_) {}
+
+                                      await _addWaypointWithPrompt(
+                                        name,
+                                        lat,
+                                        lon,
+                                      );
+                                    }
+                                    : null,
+                            onRouteTapAddVia:
+                                (_adjustRoute)
+                                    ? (afterIndex, lat, lon) => _onRouteTapped(
+                                      afterIndex: afterIndex,
+                                      lat: lat,
+                                      lon: lon,
+                                    )
+                                    : null,
+                            onViaDragEnd:
+                                (_adjustRoute)
+                                    ? (viaIndex, lat, lon) => _moveViaPoint(
+                                      viaIndex: viaIndex,
+                                      lat: lat,
+                                      lon: lon,
+                                    )
+                                    : null,
+                            onViaTapDelete:
+                                (_adjustRoute)
+                                    ? (viaIndex) =>
+                                        _deleteViaPoint(viaIndex: viaIndex)
+                                    : null,
                           ),
-                        ),
-                    ],
-                  ),
                 ),
               ),
+
+              // Transparent barrier – blocks map taps when a dialog / popup is open
+              if (kIsWeb && _suspendMapTap)
+                Positioned.fill(
+                  child: WebInterceptor(child: const SizedBox.expand()),
+                ),
 
               Positioned(
                 left: sidePadding,

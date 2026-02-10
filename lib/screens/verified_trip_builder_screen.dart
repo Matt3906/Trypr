@@ -13,15 +13,29 @@ import 'package:trypr/services/pick_image_data_url.dart';
 import 'package:trypr/widgets/map_embed.dart';
 
 class VerifiedTripBuilderScreen extends StatefulWidget {
-  const VerifiedTripBuilderScreen({super.key});
+  final String? existingTripId;
+  final Map<String, dynamic>? existingTripData;
+
+  const VerifiedTripBuilderScreen({
+    super.key,
+    this.existingTripId,
+    this.existingTripData,
+  });
 
   @override
   State<VerifiedTripBuilderScreen> createState() =>
       _VerifiedTripBuilderScreenState();
 
-  static Route<void> route() {
+  static Route<void> route({
+    String? existingTripId,
+    Map<String, dynamic>? existingTripData,
+  }) {
     return MaterialPageRoute<void>(
-      builder: (_) => const VerifiedTripBuilderScreen(),
+      builder:
+          (_) => VerifiedTripBuilderScreen(
+            existingTripId: existingTripId,
+            existingTripData: existingTripData,
+          ),
     );
   }
 }
@@ -42,6 +56,21 @@ class _Waypoint {
 
 class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
   final _formKey = GlobalKey<FormState>();
+
+  // Travel-themed categories with colors for activities
+  static const travelCategories = {
+    'Hiking': Color(0xFF2E7D32),
+    'Biking': Color(0xFF1565C0),
+    'Walking': Color(0xFF00796B),
+    'Museum': Color(0xFF6A1B9A),
+    'Sightseeing': Color(0xFFF57C00),
+    'Exploring': Color(0xFFC62828),
+    'Restaurant': Color(0xFFD32F2F),
+    'Shopping': Color(0xFF7B1FA2),
+    'Photography': Color(0xFF0277BD),
+    'Adventure': Color(0xFFFBC02D),
+    'Driving': Colors.blueAccent,
+  };
 
   final _titleCtl = TextEditingController();
   final _subtitleCtl = TextEditingController();
@@ -81,6 +110,80 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
     _searchDebounce?.cancel();
     _searchCtl.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _populateFromExistingTrip();
+  }
+
+  void _populateFromExistingTrip() {
+    final data = widget.existingTripData;
+    if (data == null) return;
+
+    _titleCtl.text = data['title']?.toString() ?? '';
+    _subtitleCtl.text = data['subtitle']?.toString() ?? '';
+    _descCtl.text = data['description']?.toString() ?? '';
+    _coverImage = data['coverImage']?.toString() ?? '';
+
+    // Populate photos
+    final photos = data['photos'];
+    if (photos is List) {
+      _photoUrls.clear();
+      for (final p in photos) {
+        if (p is String && p.isNotEmpty) {
+          _photoUrls.add(p);
+        }
+      }
+    }
+
+    // Populate waypoints
+    final waypoints = data['waypoints'];
+    if (waypoints is List) {
+      _waypoints.clear();
+      for (final w in waypoints) {
+        if (w is Map) {
+          final name = w['name']?.toString() ?? '';
+          final lat = (w['lat'] is num) ? (w['lat'] as num).toDouble() : 0.0;
+          final lon = (w['lon'] is num) ? (w['lon'] as num).toDouble() : 0.0;
+          final days = (w['days'] is num) ? (w['days'] as num).toInt() : 2;
+          if (name.isNotEmpty) {
+            _waypoints.add(
+              _Waypoint(name: name, lat: lat, lon: lon, days: days),
+            );
+          }
+        }
+      }
+    }
+
+    // Populate itinerary
+    final itinerary = data['itinerary'];
+    if (itinerary is List) {
+      _itinerary.clear();
+      for (final day in itinerary) {
+        if (day is Map) {
+          final dayMap = <String, dynamic>{
+            'title': day['title']?.toString() ?? '',
+            'notes': day['notes']?.toString() ?? '',
+            'activities': <Map<String, dynamic>>[],
+          };
+          final activities = day['activities'];
+          if (activities is List) {
+            for (final a in activities) {
+              if (a is Map) {
+                (dayMap['activities'] as List).add({
+                  'time': a['time']?.toString() ?? '',
+                  'title': a['title']?.toString() ?? '',
+                  'description': a['description']?.toString() ?? '',
+                });
+              }
+            }
+          }
+          _itinerary.add(dayMap);
+        }
+      }
+    }
   }
 
   String _trim(String v) => v.trim();
@@ -176,7 +279,7 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
   Future<Map<String, String>?> _promptActivity({
     required String dayTitle,
     Map<String, dynamic>? initial,
-  }) {
+  }) async {
     final timeCtl = TextEditingController(
       text: (initial?['time'] ?? '').toString(),
     );
@@ -186,66 +289,203 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
     final descCtl = TextEditingController(
       text: (initial?['description'] ?? '').toString(),
     );
+    final locationCtl = TextEditingController(
+      text: (initial?['location'] ?? '').toString(),
+    );
 
-    return _withMapTapSuspended(() async {
-      final result = await showDialog<Map<String, String>>(
-        context: context,
-        builder: (ctx) {
-          return AlertDialog(
-            title: Text(initial == null ? 'Add activity' : 'Edit activity'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    dayTitle,
-                    style: Theme.of(ctx).textTheme.bodySmall,
+    String selectedCategory =
+        (initial?['category'] ?? '').toString().isEmpty
+            ? 'Sightseeing'
+            : (initial?['category'] ?? 'Sightseeing').toString();
+
+    List<Map<String, dynamic>> locationSuggestions = [];
+    Map<String, dynamic>? selectedLocation;
+    bool searchingLocation = false;
+    Timer? locationDebounce;
+
+    return showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Edit Activity'),
+              content: SingleChildScrollView(
+                child: SizedBox(
+                  width: 480,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          dayTitle,
+                          style: Theme.of(ctx).textTheme.bodySmall,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: timeCtl,
+                        decoration: const InputDecoration(
+                          labelText: 'Time (e.g. 9:00 AM)',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: titleCtl,
+                        decoration: const InputDecoration(labelText: 'Title'),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: selectedCategory,
+                        decoration: const InputDecoration(
+                          labelText: 'Category',
+                          prefixIcon: Icon(Icons.category),
+                        ),
+                        items:
+                            travelCategories.keys.map((cat) {
+                              return DropdownMenuItem(
+                                value: cat,
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 16,
+                                      height: 16,
+                                      margin: const EdgeInsets.only(right: 8),
+                                      decoration: BoxDecoration(
+                                        color: travelCategories[cat],
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    Text(cat),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                        onChanged: (v) {
+                          setStateDialog(() {
+                            selectedCategory = v ?? 'Sightseeing';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: locationCtl,
+                        decoration: InputDecoration(
+                          labelText: 'Location (optional - add to map)',
+                          prefixIcon: const Icon(Icons.place),
+                          suffixIcon:
+                              searchingLocation
+                                  ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  )
+                                  : null,
+                        ),
+                        onChanged: (v) {
+                          locationDebounce?.cancel();
+                          if (v.trim().isEmpty) {
+                            setStateDialog(() {
+                              locationSuggestions = [];
+                              selectedLocation = null;
+                            });
+                            return;
+                          }
+                          locationDebounce = Timer(
+                            const Duration(milliseconds: 400),
+                            () async {
+                              setStateDialog(() => searchingLocation = true);
+                              try {
+                                final results = await searchNominatim(v.trim());
+                                setStateDialog(() {
+                                  locationSuggestions = results;
+                                  searchingLocation = false;
+                                });
+                              } catch (e) {
+                                setStateDialog(() {
+                                  locationSuggestions = [];
+                                  searchingLocation = false;
+                                });
+                              }
+                            },
+                          );
+                        },
+                      ),
+                      if (locationSuggestions.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 150),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: locationSuggestions.length,
+                            itemBuilder: (ctx, i) {
+                              final s = locationSuggestions[i];
+                              final name = (s['name'] ?? '').toString();
+                              return ListTile(
+                                dense: true,
+                                title: Text(name),
+                                onTap: () {
+                                  setStateDialog(() {
+                                    locationCtl.text = name;
+                                    selectedLocation = s;
+                                    locationSuggestions = [];
+                                  });
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: descCtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Description (optional)',
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: timeCtl,
-                  decoration: const InputDecoration(
-                    labelText: 'Time (e.g. 9:00 AM)',
-                  ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(null),
+                  child: const Text('Cancel'),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: titleCtl,
-                  decoration: const InputDecoration(labelText: 'Title'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: descCtl,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Description (optional)',
-                  ),
+                TextButton(
+                  onPressed: () {
+                    final title = titleCtl.text.trim();
+                    if (title.isEmpty) return;
+                    Navigator.of(ctx).pop({
+                      'time': timeCtl.text.trim(),
+                      'title': title,
+                      'description': descCtl.text.trim(),
+                      'location': locationCtl.text.trim(),
+                      'category': selectedCategory,
+                      'lat': selectedLocation?['lat']?.toString() ?? '',
+                      'lon': selectedLocation?['lon']?.toString() ?? '',
+                    });
+                  },
+                  child: const Text('Save'),
                 ),
               ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(null),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () {
-                  final title = titleCtl.text.trim();
-                  if (title.isEmpty) return;
-                  Navigator.of(ctx).pop({
-                    'time': timeCtl.text.trim(),
-                    'title': title,
-                    'description': descCtl.text.trim(),
-                  });
-                },
-                child: const Text('Save'),
-              ),
-            ],
-          );
-        },
-      );
+            );
+          },
+        );
+      },
+    ).then((result) {
+      locationDebounce?.cancel();
       return result;
     });
   }
@@ -523,8 +763,13 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
       final recommendedDays = _recommendedDays;
       final totalKm = _totalKm;
 
+      final bool isEditing = widget.existingTripId != null;
       final docRef =
-          FirebaseFirestore.instance.collection('verifiedTrips').doc();
+          isEditing
+              ? FirebaseFirestore.instance
+                  .collection('verifiedTrips')
+                  .doc(widget.existingTripId)
+              : FirebaseFirestore.instance.collection('verifiedTrips').doc();
       final tripId = docRef.id;
 
       String coverImage = coverCandidate;
@@ -569,7 +814,7 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
         if (seen.add(s)) uniquePhotos.add(s);
       }
 
-      await docRef.set({
+      final tripData = <String, dynamic>{
         'title': title,
         'subtitle': subtitle,
         'description': description,
@@ -592,14 +837,28 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                 .toList(),
         'totalStops': _waypoints.length,
         'totalKm': totalKm,
-        'createdAt': FieldValue.serverTimestamp(),
-        'createdByUid': u.uid,
-      });
+      };
+
+      if (isEditing) {
+        // Update existing trip - preserve createdAt/createdByUid, add updatedAt
+        tripData['updatedAt'] = FieldValue.serverTimestamp();
+        tripData['updatedByUid'] = u.uid;
+        await docRef.update(tripData);
+      } else {
+        // Create new trip
+        tripData['createdAt'] = FieldValue.serverTimestamp();
+        tripData['createdByUid'] = u.uid;
+        await docRef.set(tripData);
+      }
 
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Verified trip created')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isEditing ? 'Verified trip updated' : 'Verified trip created',
+            ),
+          ),
+        );
         Navigator.of(context).pop();
       }
     } catch (e) {
@@ -626,7 +885,11 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('New verified trip'),
+        title: Text(
+          widget.existingTripId != null
+              ? 'Edit verified trip'
+              : 'New verified trip',
+        ),
         actions: [
           TextButton(
             onPressed: _saving ? null : _save,
@@ -879,6 +1142,46 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                           },
                                         )
                                         .toList(),
+                                secondaryPoints:
+                                    _itinerary.asMap().entries.expand((
+                                      dayEntry,
+                                    ) {
+                                      final dayIndex = dayEntry.key;
+                                      final day = dayEntry.value;
+                                      final acts =
+                                          (day['activities']
+                                              as List<dynamic>?) ??
+                                          [];
+                                      return acts
+                                          .asMap()
+                                          .entries
+                                          .where(
+                                            (a) =>
+                                                (a.value
+                                                        as Map)['locationLat'] !=
+                                                    null &&
+                                                (a.value
+                                                        as Map)['locationLon'] !=
+                                                    null,
+                                          )
+                                          .map(
+                                            (a) => {
+                                              'lat':
+                                                  (a.value
+                                                      as Map)['locationLat'],
+                                              'lon':
+                                                  (a.value
+                                                      as Map)['locationLon'],
+                                              'kind': 'activity',
+                                              'category':
+                                                  (a.value
+                                                      as Map)['category'] ??
+                                                  'Sightseeing',
+                                              'dayIndex': dayIndex,
+                                              'activityIndex': a.key,
+                                            },
+                                          );
+                                    }).toList(),
                               ),
                             ),
                           ),
@@ -1057,6 +1360,14 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                         );
                                         if (res == null) return;
                                         setState(() {
+                                          // Parse lat/lon first
+                                          final lat = double.tryParse(
+                                            res['lat'] ?? '',
+                                          );
+                                          final lon = double.tryParse(
+                                            res['lon'] ?? '',
+                                          );
+
                                           final list =
                                               List<Map<String, dynamic>>.from(
                                                 day['activities']
@@ -1068,6 +1379,12 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                             'title': res['title'] ?? '',
                                             'description':
                                                 res['description'] ?? '',
+                                            'location': res['location'] ?? '',
+                                            'category':
+                                                res['category'] ??
+                                                'Sightseeing',
+                                            'locationLat': lat,
+                                            'locationLon': lon,
                                           });
                                           day['activities'] = list;
                                         });
@@ -1092,23 +1409,55 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                               final aTime = (a['time'] ?? '').toString();
                               final aTitle = (a['title'] ?? '').toString();
                               final aDesc = (a['description'] ?? '').toString();
+                              final aLocation =
+                                  (a['location'] ?? '').toString();
+                              final aCategory =
+                                  (a['category'] ?? '').toString();
 
                               return ListTile(
                                 contentPadding: EdgeInsets.zero,
+                                leading:
+                                    aLocation.trim().isNotEmpty
+                                        ? Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (aCategory.isNotEmpty &&
+                                                travelCategories.containsKey(
+                                                  aCategory,
+                                                ))
+                                              Container(
+                                                width: 12,
+                                                height: 12,
+                                                margin: const EdgeInsets.only(
+                                                  right: 6,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      travelCategories[aCategory],
+                                                  shape: BoxShape.circle,
+                                                ),
+                                              ),
+                                            const Icon(Icons.place, size: 20),
+                                          ],
+                                        )
+                                        : null,
                                 title: Text(
                                   aTitle.isEmpty ? 'Activity' : aTitle,
                                 ),
                                 subtitle:
                                     (aTime.trim().isEmpty &&
-                                            aDesc.trim().isEmpty)
+                                            aDesc.trim().isEmpty &&
+                                            aLocation.trim().isEmpty)
                                         ? null
                                         : Text(
                                           [
                                             if (aTime.trim().isNotEmpty)
                                               aTime.trim(),
+                                            if (aLocation.trim().isNotEmpty)
+                                              '📍 ${aLocation.trim()}',
                                             if (aDesc.trim().isNotEmpty)
                                               aDesc.trim(),
-                                          ].join(' — '),
+                                          ].join(' • '),
                                           maxLines: 2,
                                           overflow: TextOverflow.ellipsis,
                                         ),
@@ -1128,6 +1477,14 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                                     );
                                                 if (res == null) return;
                                                 setState(() {
+                                                  // Parse lat/lon first
+                                                  final lat = double.tryParse(
+                                                    res['lat'] ?? '',
+                                                  );
+                                                  final lon = double.tryParse(
+                                                    res['lon'] ?? '',
+                                                  );
+
                                                   final list = List<
                                                     Map<String, dynamic>
                                                   >.from(
@@ -1141,6 +1498,13 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
                                                     'description':
                                                         res['description'] ??
                                                         '',
+                                                    'location':
+                                                        res['location'] ?? '',
+                                                    'category':
+                                                        res['category'] ??
+                                                        'Sightseeing',
+                                                    'locationLat': lat,
+                                                    'locationLon': lon,
                                                   };
                                                   day['activities'] = list;
                                                 });

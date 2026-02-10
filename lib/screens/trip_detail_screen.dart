@@ -2,11 +2,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/widgets/globe_3d_embed.dart';
 import 'package:trypr/screens/destination_detail_screen.dart';
+import 'package:trypr/screens/trip_planning_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'package:pointer_interceptor/pointer_interceptor.dart';
+import 'package:trypr/widgets/web_interceptor.dart';
 import 'package:trypr/widgets/trip_chat_dialog_clean.dart';
 import 'package:trypr/widgets/trip_expenses_dialog.dart';
 import 'package:trypr/services/name_lookup.dart';
@@ -1620,6 +1623,55 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     });
   }
 
+  /// Open the unified Trip Planning Workspace.
+  /// [focusWaypointIndex] scrolls the itinerary to the first day at that stop.
+  Future<void> _openTripPlanning({
+    int? focusWaypointIndex,
+    int initialTab = 0,
+  }) async {
+    String tripRefPath =
+        (_liveData['tripRef'] ?? widget.data['tripRef']) as String? ?? '';
+    if (tripRefPath.isEmpty) {
+      final user = _user;
+      if (user == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Not logged in')));
+        return;
+      }
+      tripRefPath = 'users/${user.uid}/trips/${widget.docId}';
+    }
+
+    // Compute which day to focus on based on the waypoint's startDate
+    int? focusDayIndex;
+    if (focusWaypointIndex != null && focusWaypointIndex < _waypoints.length) {
+      final wpStart =
+          (_waypoints[focusWaypointIndex]['startDate'] ?? '').toString();
+      final tripStart = (_liveData['startDate'] ?? '').toString();
+      if (wpStart.isNotEmpty && tripStart.isNotEmpty) {
+        try {
+          final ws = DateTime.parse(wpStart);
+          final ts = DateTime.parse(tripStart);
+          focusDayIndex = ws.difference(ts).inDays;
+          if (focusDayIndex < 0) focusDayIndex = 0;
+        } catch (_) {}
+      }
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder:
+            (_) => TripPlanningScreen(
+              tripId: widget.docId,
+              tripRefPath: tripRefPath,
+              tripData: Map<String, dynamic>.from(_liveData),
+              initialTab: initialTab,
+              focusDayIndex: focusDayIndex,
+            ),
+      ),
+    );
+  }
+
   Future<void> _openDestinationDetail(
     int index,
     Map<String, dynamic> destination, {
@@ -1887,7 +1939,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   Widget _webSafeMenuItemText(String text) {
     final t = Text(text);
     if (!kIsWeb) return t;
-    return PointerInterceptor(
+    return WebInterceptor(
       child: Container(
         width: double.infinity,
         alignment: Alignment.centerLeft,
@@ -2143,7 +2195,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   Widget _maybePointerIntercept(Widget child) {
     if (!kIsWeb) return child;
-    return PointerInterceptor(child: child);
+    return WebInterceptor(child: child);
   }
 
   Widget _glassCard({
@@ -2563,7 +2615,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   index: i,
                   wp: wp,
                   isLast: i == waypoints.length - 1,
-                  onTap: () => _openDestinationDetail(i, wp),
+                  onTap: () => _openTripPlanning(focusWaypointIndex: i),
                 );
               },
             );
@@ -2718,7 +2770,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   index: i,
                                   wp: wp,
                                   isLast: i == waypoints.length - 1,
-                                  onTap: () => _openDestinationDetail(i, wp),
+                                  onTap:
+                                      () => _openTripPlanning(
+                                        focusWaypointIndex: i,
+                                      ),
                                 );
                               },
                             ),
@@ -2843,6 +2898,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
+                tooltip: 'Plan trip',
+                icon: const Icon(Icons.edit_note),
+                onPressed: () => _openTripPlanning(),
+              ),
+              IconButton(
                 tooltip: 'Packing list',
                 icon: const Icon(Icons.list),
                 onPressed: _openPackingList,
@@ -2891,118 +2951,154 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           Positioned.fill(
             child: IgnorePointer(
               ignoring: _suspendMapTap,
-              child: MapEmbed(
-                points:
-                    waypoints.map((w) {
-                      return {
-                        'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
-                        'lon': (w['lon'] ?? w['longitude'] ?? w['lng'] ?? 0.0),
-                        'name': w['name'] ?? '',
-                      };
-                    }).toList(),
-                transportMode: _transportMode,
-                routeVia: _routeVia,
-                segmentRoutingTypes: _segmentRoutingTypes,
-                onRouteInstructions: (lines) {
-                  if (!mounted) return;
-                  setState(() => _routeInstructions = lines);
-                },
-                onTransitArrivalStop: (arrivalStop) {
-                  if (!mounted) return;
-                  setState(() => _transitArrivalStop = arrivalStop);
-                  if (_transportMode == 'transit') {
-                    _persistTransitArrivalStop(arrivalStop);
-                  }
-                },
-                secondaryPoints:
-                    waypoints.asMap().entries.expand((entry) {
-                      final wIndex = entry.key;
-                      final w = entry.value;
+              child:
+                  kIsWeb
+                      ? Globe3DEmbed(
+                        points:
+                            waypoints.map((w) {
+                              return {
+                                'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
+                                'lon':
+                                    (w['lon'] ??
+                                        w['longitude'] ??
+                                        w['lng'] ??
+                                        0.0),
+                                'name': w['name'] ?? '',
+                              };
+                            }).toList(),
+                        transportMode: _transportMode.toUpperCase(),
+                        onMapTap:
+                            _editing
+                                ? (lat, lon) => _addWaypointFromTap(lat, lon)
+                                : null,
+                      )
+                      : MapEmbed(
+                        points:
+                            waypoints.map((w) {
+                              return {
+                                'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
+                                'lon':
+                                    (w['lon'] ??
+                                        w['longitude'] ??
+                                        w['lng'] ??
+                                        0.0),
+                                'name': w['name'] ?? '',
+                              };
+                            }).toList(),
+                        transportMode: _transportMode,
+                        routeVia: _routeVia,
+                        segmentRoutingTypes: _segmentRoutingTypes,
+                        onRouteInstructions: (lines) {
+                          if (!mounted) return;
+                          setState(() => _routeInstructions = lines);
+                        },
+                        onTransitArrivalStop: (arrivalStop) {
+                          if (!mounted) return;
+                          setState(() => _transitArrivalStop = arrivalStop);
+                          if (_transportMode == 'transit') {
+                            _persistTransitArrivalStop(arrivalStop);
+                          }
+                        },
+                        secondaryPoints:
+                            waypoints.asMap().entries.expand((entry) {
+                              final wIndex = entry.key;
+                              final w = entry.value;
 
-                      final accs =
-                          (w['accommodations'] as List<dynamic>?) ?? [];
-                      final itinerary =
-                          (w['itinerary'] as List<dynamic>?) ?? [];
+                              final accs =
+                                  (w['accommodations'] as List<dynamic>?) ?? [];
+                              final itinerary =
+                                  (w['itinerary'] as List<dynamic>?) ?? [];
 
-                      final accMarkers = accs
-                          .asMap()
-                          .entries
-                          .where(
-                            (a) =>
-                                (a.value as Map)['lat'] != null &&
-                                (a.value as Map)['lon'] != null,
-                          )
-                          .map(
-                            (a) => {
-                              'lat': (a.value as Map)['lat'],
-                              'lon': (a.value as Map)['lon'],
-                              'kind': 'accommodation',
-                              'category': 'Accommodation',
-                              'waypointIndex': wIndex,
-                              'accommodationIndex': a.key,
-                            },
-                          );
+                              final accMarkers = accs
+                                  .asMap()
+                                  .entries
+                                  .where(
+                                    (a) =>
+                                        (a.value as Map)['lat'] != null &&
+                                        (a.value as Map)['lon'] != null,
+                                  )
+                                  .map(
+                                    (a) => {
+                                      'lat': (a.value as Map)['lat'],
+                                      'lon': (a.value as Map)['lon'],
+                                      'kind': 'accommodation',
+                                      'category': 'Accommodation',
+                                      'waypointIndex': wIndex,
+                                      'accommodationIndex': a.key,
+                                    },
+                                  );
 
-                      final activityMarkers = itinerary.asMap().entries.expand((
-                        dayEntry,
-                      ) {
-                        final dayIndex = dayEntry.key;
-                        final day = (dayEntry.value as Map<String, dynamic>);
-                        final acts =
-                            (day['activities'] as List<dynamic>?) ?? [];
-                        return acts
-                            .asMap()
-                            .entries
-                            .where(
-                              (a) =>
-                                  (a.value as Map)['locationLat'] != null &&
-                                  (a.value as Map)['locationLon'] != null,
-                            )
-                            .map(
-                              (a) => {
-                                'lat': (a.value as Map)['locationLat'],
-                                'lon': (a.value as Map)['locationLon'],
-                                'kind': 'activity',
-                                'category': (a.value as Map)['category'] ?? '',
-                                'waypointIndex': wIndex,
-                                'dayIndex': dayIndex,
-                                'activityIndex': a.key,
-                              },
-                            );
-                      });
+                              final activityMarkers = itinerary
+                                  .asMap()
+                                  .entries
+                                  .expand((dayEntry) {
+                                    final dayIndex = dayEntry.key;
+                                    final day =
+                                        (dayEntry.value
+                                            as Map<String, dynamic>);
+                                    final acts =
+                                        (day['activities'] as List<dynamic>?) ??
+                                        [];
+                                    return acts
+                                        .asMap()
+                                        .entries
+                                        .where(
+                                          (a) =>
+                                              (a.value as Map)['locationLat'] !=
+                                                  null &&
+                                              (a.value as Map)['locationLon'] !=
+                                                  null,
+                                        )
+                                        .map(
+                                          (a) => {
+                                            'lat':
+                                                (a.value as Map)['locationLat'],
+                                            'lon':
+                                                (a.value as Map)['locationLon'],
+                                            'kind': 'activity',
+                                            'category':
+                                                (a.value as Map)['category'] ??
+                                                '',
+                                            'waypointIndex': wIndex,
+                                            'dayIndex': dayIndex,
+                                            'activityIndex': a.key,
+                                          },
+                                        );
+                                  });
 
-                      return [...accMarkers, ...activityMarkers];
-                    }).toList(),
-                onMapTap:
-                    _editing
-                        ? (lat, lon) => _addWaypointFromTap(lat, lon)
-                        : null,
-                onRouteTapAddVia:
-                    (!_editing && canWriteTrip)
-                        ? (afterIndex, lat, lon) => _upsertViaPoint(
-                          afterIndex: afterIndex,
-                          lat: lat,
-                          lon: lon,
-                        )
-                        : null,
-                onViaDragEnd:
-                    (!_editing && canWriteTrip)
-                        ? (viaIndex, lat, lon) => _moveViaPoint(
-                          viaIndex: viaIndex,
-                          lat: lat,
-                          lon: lon,
-                        )
-                        : null,
-                onViaTapDelete:
-                    (!_editing && canWriteTrip)
-                        ? (viaIndex) => _deleteViaPoint(viaIndex: viaIndex)
-                        : null,
-              ),
+                              return [...accMarkers, ...activityMarkers];
+                            }).toList(),
+                        onMapTap:
+                            _editing
+                                ? (lat, lon) => _addWaypointFromTap(lat, lon)
+                                : null,
+                        onRouteTapAddVia:
+                            (!_editing && canWriteTrip)
+                                ? (afterIndex, lat, lon) => _upsertViaPoint(
+                                  afterIndex: afterIndex,
+                                  lat: lat,
+                                  lon: lon,
+                                )
+                                : null,
+                        onViaDragEnd:
+                            (!_editing && canWriteTrip)
+                                ? (viaIndex, lat, lon) => _moveViaPoint(
+                                  viaIndex: viaIndex,
+                                  lat: lat,
+                                  lon: lon,
+                                )
+                                : null,
+                        onViaTapDelete:
+                            (!_editing && canWriteTrip)
+                                ? (viaIndex) =>
+                                    _deleteViaPoint(viaIndex: viaIndex)
+                                : null,
+                      ),
             ),
           ),
           if (kIsWeb && _suspendMapTap)
             Positioned.fill(
-              child: PointerInterceptor(child: const SizedBox.expand()),
+              child: WebInterceptor(child: const SizedBox.expand()),
             ),
 
           // Floating UI layer.

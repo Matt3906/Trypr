@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'screens/home_screen.dart';
 import 'screens/sign_in_screen.dart';
 import 'screens/create_account_screen.dart';
@@ -12,11 +13,22 @@ import 'screens/friends_screen.dart';
 import 'screens/my_trips_screen.dart';
 import 'screens/trip_builder_screen.dart';
 import 'screens/trip_detail_screen.dart';
+import 'screens/unlisted_page_screen.dart';
 import 'services/auth_state.dart';
 import 'services/google_maps_loader.dart';
 import 'firebase_options.dart';
 
+/// The original browser URL captured before Flutter's router can modify it.
+/// This preserves query parameters (e.g. ?joinTrip=...) and path segments
+/// (e.g. /page/slug) that Flutter may strip when setting up its initial route.
+Uri? _initialUri;
+
 Future<void> main() async {
+  // Capture the full URL immediately, before Flutter's router can replace it
+  // via history.replaceState and strip the query parameters.
+  if (kIsWeb) {
+    _initialUri = Uri.base;
+  }
   WidgetsFlutterBinding.ensureInitialized();
   if (kIsWeb) {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.web);
@@ -85,13 +97,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Trypr',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color.fromARGB(255, 0, 71, 27),
-        ),
-        scaffoldBackgroundColor: Colors.grey.shade100,
-        useMaterial3: true,
-      ),
+      theme: TryprTheme.lightTheme,
       routes: {
         '/sign-in': (_) => const SignInScreen(),
         '/create-account': (_) => const CreateAccountScreen(),
@@ -99,6 +105,20 @@ class MyApp extends StatelessWidget {
         '/friends': (_) => const FriendsScreen(),
         '/my-trips': (_) => const MyTripsScreen(),
         '/trip-builder': (_) => const TripBuilderScreen(),
+      },
+      onGenerateRoute: (settings) {
+        // Handle /page/:slug routes for unlisted pages
+        final uri = Uri.tryParse(settings.name ?? '');
+        if (uri != null &&
+            uri.pathSegments.length == 2 &&
+            uri.pathSegments[0] == 'page') {
+          final slug = uri.pathSegments[1];
+          return MaterialPageRoute(
+            builder: (_) => UnlistedPageScreen(pageSlug: slug),
+            settings: settings,
+          );
+        }
+        return null;
       },
       builder: (context, child) {
         // Force a full navigator rebuild when auth changes so the UI updates
@@ -131,17 +151,45 @@ class _JoinTripLinkHandler extends StatefulWidget {
 
 class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
   bool _handled = false;
+  bool _pageHandled = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _maybeHandlePageLink();
     _maybeHandleJoinLink();
   }
 
   @override
   void didUpdateWidget(covariant _JoinTripLinkHandler oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _maybeHandlePageLink();
     _maybeHandleJoinLink();
+  }
+
+  /// Handle /page/:slug URLs for unlisted pages
+  void _maybeHandlePageLink() {
+    if (_pageHandled) return;
+    if (!kIsWeb) return;
+
+    final uri = _initialUri ?? Uri.base;
+    final pathSegments = uri.pathSegments;
+
+    // Check for /page/:slug pattern
+    if (pathSegments.length >= 2 && pathSegments[0] == 'page') {
+      final slug = pathSegments[1];
+      if (slug.isNotEmpty) {
+        _pageHandled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => UnlistedPageScreen(pageSlug: slug),
+            ),
+          );
+        });
+      }
+    }
   }
 
   Map<String, String>? _parseTripRef(String tripRef) {
@@ -222,7 +270,8 @@ class _JoinTripLinkHandlerState extends State<_JoinTripLinkHandler> {
     if (_handled) return;
     if (!kIsWeb) return;
 
-    final joinTrip = Uri.base.queryParameters['joinTrip'];
+    final uri = _initialUri ?? Uri.base;
+    final joinTrip = uri.queryParameters['joinTrip'];
     if (joinTrip == null || joinTrip.trim().isEmpty) return;
 
     final user = FirebaseAuth.instance.currentUser;

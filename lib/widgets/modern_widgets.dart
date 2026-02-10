@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:trypr/theme/app_theme.dart';
 
-/// Gradient button with modern styling
-class GradientButton extends StatelessWidget {
+/// Gradient button with modern styling - Updated to use new Trypr theme
+class GradientButton extends StatefulWidget {
   final VoidCallback onPressed;
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -11,41 +12,57 @@ class GradientButton extends StatelessWidget {
     super.key,
     required this.onPressed,
     required this.child,
-    this.padding = const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-    this.borderRadius = const BorderRadius.all(Radius.circular(8)),
+    this.padding = const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+    this.borderRadius = const BorderRadius.all(Radius.circular(12)),
   });
 
   @override
+  State<GradientButton> createState() => _GradientButtonState();
+}
+
+class _GradientButtonState extends State<GradientButton> {
+  bool _isHovered = false;
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF00695C), Color(0xFF00897B)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: borderRadius,
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF00695C).withValues(alpha: 0.3),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              _isHovered ? TryprColors.primaryDark : TryprColors.primary,
+              _isHovered ? TryprColors.primary : TryprColors.primaryLight,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: borderRadius,
-          child: Padding(
-            padding: padding,
-            child: DefaultTextStyle(
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
+          borderRadius: widget.borderRadius,
+          boxShadow: [
+            BoxShadow(
+              color: TryprColors.primary.withOpacity(_isHovered ? 0.4 : 0.25),
+              blurRadius: _isHovered ? 12 : 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onPressed,
+            borderRadius: widget.borderRadius,
+            child: Padding(
+              padding: widget.padding,
+              child: DefaultTextStyle(
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 15,
+                ),
+                child: widget.child,
               ),
-              child: child,
             ),
           ),
         ),
@@ -54,7 +71,7 @@ class GradientButton extends StatelessWidget {
   }
 }
 
-/// Glass morphism effect card
+/// Soft card with subtle shadow - Updated to use new Trypr theme
 class GlassCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -66,7 +83,7 @@ class GlassCard extends StatelessWidget {
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(16),
-    this.borderRadius = 12,
+    this.borderRadius = 16,
     this.backgroundColor,
     this.border,
   });
@@ -75,28 +92,23 @@ class GlassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: backgroundColor ?? Colors.white.withValues(alpha: 0.9),
+        color: backgroundColor ?? TryprColors.surface,
         borderRadius: BorderRadius.circular(borderRadius),
         border: border,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 8,
-            spreadRadius: 2,
-          ),
-        ],
+        boxShadow: TryprColors.softShadow,
       ),
       child: Padding(padding: padding, child: child),
     );
   }
 }
 
-/// Avatar ring with gradient
+/// Avatar ring with gradient - Updated to use new Trypr theme
 class AvatarRing extends StatelessWidget {
   final String initials;
   final double size;
   final Color? backgroundColor;
   final VoidCallback? onTap;
+  final String? imageUrl;
 
   const AvatarRing({
     super.key,
@@ -104,45 +116,57 @@ class AvatarRing extends StatelessWidget {
     this.size = 48,
     this.backgroundColor,
     this.onTap,
+    this.imageUrl,
   });
 
   @override
   Widget build(BuildContext context) {
+    final color = backgroundColor ?? TryprColors.primary;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: size,
-        height: size,
+        width: size + 4,
+        height: size + 4,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           gradient: LinearGradient(
-            colors: [
-              backgroundColor ?? const Color(0xFF00695C),
-              (backgroundColor ?? const Color(0xFF00695C)).withValues(
-                alpha: 0.7,
-              ),
-            ],
+            colors: [color, color.withOpacity(0.6)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: (backgroundColor ?? const Color(0xFF00695C)).withValues(
-                alpha: 0.3,
-              ),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
         ),
-        child: Center(
-          child: Text(
-            initials,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
-            ),
+        padding: const EdgeInsets.all(2),
+        child: Container(
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white,
+          ),
+          padding: const EdgeInsets.all(2),
+          child: ClipOval(
+            child:
+                imageUrl != null && imageUrl!.isNotEmpty
+                    ? Image.network(
+                      imageUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _buildInitials(color),
+                    )
+                    : _buildInitials(color),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInitials(Color color) {
+    return Container(
+      color: TryprColors.surfaceVariant,
+      child: Center(
+        child: Text(
+          initials.isNotEmpty ? initials[0].toUpperCase() : '?',
+          style: TextStyle(
+            fontSize: size * 0.4,
+            fontWeight: FontWeight.w600,
+            color: color,
           ),
         ),
       ),

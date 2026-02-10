@@ -63,12 +63,17 @@ service cloud.firestore {
     // --------------------
     match /users/{userId} {
       // Keep user docs private by default.
-      allow read, create, update, delete: if isSelf(userId);
+      // Admins can read all user docs for management
+      allow read: if isSelf(userId) || isAdmin();
+      allow create: if isSelf(userId);
+      // Admins can edit any user account for management purposes
+      allow update, delete: if isSelf(userId) || isAdmin();
 
       // User's trips
       match /trips/{tripId} {
         allow create: if isSelf(userId);
-        allow read: if canReadTrip(userId, tripId);
+        // Admins can read all trips for management
+        allow read: if canReadTrip(userId, tripId) || isAdmin();
 
         // Default to owner-only writes for safety.
         // If you want collaborative editing, we can tighten this later with roles.
@@ -171,6 +176,11 @@ service cloud.firestore {
       // Only admins can manage admin marker docs (bootstrap by creating your own
       // admins/{yourUid} doc in the Firebase Console).
       allow create, update, delete: if isAdmin();
+      
+      // Admin notes subcollection - each admin manages their own notes
+      match /notes/{noteId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == uid;
+      }
     }
 
     match /verifiedTrips/{tripId} {
@@ -219,6 +229,29 @@ service cloud.firestore {
         && request.resource.data.status in ['pending', 'approved', 'denied'];
 
       allow delete: if false;
+    }
+
+    // --------------------
+    // Unlisted Pages (admin-created, public-readable pages with forms)
+    // --------------------
+    match /unlistedPages/{pageSlug} {
+      // Anyone can read unlisted pages (they access via direct link)
+      allow read: if true;
+      
+      // Only admins can create, update, or delete pages
+      allow create, update, delete: if isAdmin();
+
+      // Form responses subcollection
+      match /responses/{responseId} {
+        // Anyone can read responses (for confirmation), or restrict to admins only
+        allow read: if isAdmin();
+        
+        // Anyone can submit a form response (create)
+        allow create: if true;
+        
+        // Only admins can update or delete responses
+        allow update, delete: if isAdmin();
+      }
     }
   }
 }

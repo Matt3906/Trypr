@@ -12,7 +12,8 @@ import 'dart:convert';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:http/http.dart' as http;
 
-import 'package:trypr/services/google_maps_loader_web.dart';
+import 'package:trypr/services/directions_web.dart' as directions_web;
+import 'package:trypr/services/google_maps_loader.dart' as maps_loader;
 
 const double _previewBubbleWidth = 280.0;
 const double _previewMapHeight = 160.0;
@@ -171,6 +172,11 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   String? _controllerKeySig;
   Set<gmaps.Marker> _markers = const {};
   Set<gmaps.Polyline> _polylines = const {};
+  bool _mapsReady = false;
+
+  /// Actual routed polyline geometry per segment index.
+  /// Used for accurate nearest-segment detection (critical for loop routes).
+  Map<int, List<gmaps.LatLng>> _segmentGeometry = {};
 
   int _suppressMapTapUntilMs = 0;
 
@@ -189,6 +195,15 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Offset? _previewOffset;
   Size _mapSize = Size.zero;
   Timer? _previewUpdateTimer;
+
+  // ── Garmin-style ghost via marker (route hover + drag) ──
+  gmaps.LatLng? _ghostViaLatLng; // snapped onto the polyline
+  int _ghostViaSegAfterIndex = -1; // which segment it belongs to
+  Offset? _ghostScreenOffset; // where to draw the overlay
+  Timer? _ghostHoverTimer;
+  double _currentZoom = 2.0;
+  bool _isDraggingGhost = false;
+  Offset? _ghostDragScreenOffset; // follows cursor during drag
 
   String _mapKeySig() {
     return '${_instanceId}_${_mainSig}_${_secondarySig}_${widget.transportMode}_${_viaSignature(widget.routeVia)}_${_segmentRoutingSignature(widget.segmentRoutingTypes)}';
@@ -418,6 +433,13 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     super.initState();
     _mainSig = _signature(widget.points);
     _secondarySig = _signature(widget.secondaryPoints);
+    _ensureMapsSDK();
+  }
+
+  Future<void> _ensureMapsSDK() async {
+    await maps_loader.ensureGoogleMapsLoaded();
+    if (!mounted) return;
+    setState(() => _mapsReady = true);
     // _rebuild() uses inherited widgets (e.g. View.of / Theme.of). Defer until
     // after the first frame so initState can complete.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -429,6 +451,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   @override
   void dispose() {
     _previewUpdateTimer?.cancel();
+    _ghostHoverTimer?.cancel();
     super.dispose();
   }
 
@@ -558,22 +581,296 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return dx * dx + dy * dy;
   }
 
-  int _nearestSegmentAfterIndex(gmaps.LatLng tap) {
+  /// Returns the segment index nearest to [tap], or -1 if the tap
+  /// is not close enough to any route segment.
+  ///
+  /// When [_segmentGeometry] is populated (i.e. after routing), the distance
+  /// check runs against the **actual routed path** instead of the simple
+  /// waypoint-to-waypoint straight line. This is critical for loop routes
+  /// (A→B→C→A) where straight-line segments overlap and would cause the
+  /// wrong segment to be selected.
+  int _nearestSegmentAfterIndex(
+    gmaps.LatLng tap, {
+    double maxDistanceDegrees = 0.008,
+  }) {
     final pts = widget.points;
-    if (pts.length < 2) return 0;
+    if (pts.length < 2) return -1;
 
     var best = double.infinity;
     var bestAfter = 0;
-    for (var i = 0; i < pts.length - 1; i++) {
-      final a = gmaps.LatLng(_latOf(pts[i]), _lonOf(pts[i]));
-      final b = gmaps.LatLng(_latOf(pts[i + 1]), _lonOf(pts[i + 1]));
-      final d = _distPointToSegmentSq(tap, a, b);
-      if (d < best) {
-        best = d;
-        bestAfter = i;
+
+    for (var seg = 0; seg < pts.length - 1; seg++) {
+      final geom = _segmentGeometry[seg];
+      if (geom != null && geom.length >= 2) {
+        // Check every sub-segment of the actual routed polyline.
+        for (var j = 0; j < geom.length - 1; j++) {
+          final d = _distPointToSegmentSq(tap, geom[j], geom[j + 1]);
+          if (d < best) {
+            best = d;
+            bestAfter = seg;
+          }
+        }
+      } else {
+        // Fall back to straight-line waypoint connection.
+        final a = gmaps.LatLng(_latOf(pts[seg]), _lonOf(pts[seg]));
+        final b = gmaps.LatLng(_latOf(pts[seg + 1]), _lonOf(pts[seg + 1]));
+        final d = _distPointToSegmentSq(tap, a, b);
+        if (d < best) {
+          best = d;
+          bestAfter = seg;
+        }
       }
     }
+
+    // Proximity gate: only match if tap is within ~maxDistanceDegrees of the route.
+    final bestDist = math.sqrt(best);
+    if (bestDist > maxDistanceDegrees) return -1;
+
     return bestAfter;
+  }
+
+  // ── Garmin-style ghost via marker helpers ──
+
+  /// Project [p] onto line segment [a]→[b], returning the closest point ON
+  /// the segment (clamped to endpoints).
+  gmaps.LatLng _projectOnSegment(
+    gmaps.LatLng p,
+    gmaps.LatLng a,
+    gmaps.LatLng b,
+  ) {
+    final lat0 = (a.latitude + b.latitude) / 2.0;
+    final cosLat = math.cos(lat0 * (math.pi / 180.0));
+
+    final ax = a.longitude * cosLat, ay = a.latitude;
+    final bx = b.longitude * cosLat, by = b.latitude;
+    final px = p.longitude * cosLat, py = p.latitude;
+
+    final abx = bx - ax, aby = by - ay;
+    final apx = px - ax, apy = py - ay;
+    final abLen2 = abx * abx + aby * aby;
+
+    var t = abLen2 > 1e-12 ? (apx * abx + apy * aby) / abLen2 : 0.0;
+    t = t.clamp(0.0, 1.0);
+
+    return gmaps.LatLng(
+      a.latitude + t * (b.latitude - a.latitude),
+      a.longitude + t * (b.longitude - a.longitude),
+    );
+  }
+
+  /// Find the nearest point on any route polyline segment.
+  /// Returns the snapped LatLng, segment index, and squared distance,
+  /// or null if there are no segments.
+  ({gmaps.LatLng point, int segAfterIndex, double distSq})?
+  _nearestPointOnRoute(gmaps.LatLng cursor) {
+    final pts = widget.points;
+    if (pts.length < 2) return null;
+
+    var bestDistSq = double.infinity;
+    var bestPoint = cursor;
+    var bestSeg = 0;
+
+    for (var seg = 0; seg < pts.length - 1; seg++) {
+      final geom = _segmentGeometry[seg];
+      if (geom != null && geom.length >= 2) {
+        for (var j = 0; j < geom.length - 1; j++) {
+          final proj = _projectOnSegment(cursor, geom[j], geom[j + 1]);
+          final d = _distPointToSegmentSq(cursor, geom[j], geom[j + 1]);
+          if (d < bestDistSq) {
+            bestDistSq = d;
+            bestPoint = proj;
+            bestSeg = seg;
+          }
+        }
+      } else {
+        final a = gmaps.LatLng(_latOf(pts[seg]), _lonOf(pts[seg]));
+        final b = gmaps.LatLng(_latOf(pts[seg + 1]), _lonOf(pts[seg + 1]));
+        final proj = _projectOnSegment(cursor, a, b);
+        final d = _distPointToSegmentSq(cursor, a, b);
+        if (d < bestDistSq) {
+          bestDistSq = d;
+          bestPoint = proj;
+          bestSeg = seg;
+        }
+      }
+    }
+
+    return (point: bestPoint, segAfterIndex: bestSeg, distSq: bestDistSq);
+  }
+
+  void _hideGhostVia() {
+    if (_ghostViaLatLng == null) return;
+    setState(() {
+      _ghostViaLatLng = null;
+      _ghostScreenOffset = null;
+      _ghostViaSegAfterIndex = -1;
+    });
+  }
+
+  /// Called on every pointer-hover over the map. Throttled to avoid jank.
+  Future<void> _handlePointerHover(Offset localPosition) async {
+    _ghostHoverTimer?.cancel();
+
+    // Don't update ghost while user is actively dragging it.
+    if (_isDraggingGhost) return;
+
+    // Only show ghost if route shaping is enabled.
+    if (widget.onRouteTapAddVia == null || widget.points.length < 2) {
+      _hideGhostVia();
+      return;
+    }
+
+    _ghostHoverTimer = Timer(const Duration(milliseconds: 40), () async {
+      if (_isDraggingGhost) return;
+      final c = _controller;
+      if (c == null || !mounted) return;
+
+      try {
+        final screenCoord = gmaps.ScreenCoordinate(
+          x: localPosition.dx.round(),
+          y: localPosition.dy.round(),
+        );
+        final latLng = await c.getLatLng(screenCoord);
+        if (!mounted) return;
+
+        final result = _nearestPointOnRoute(latLng);
+        if (result == null) {
+          _hideGhostVia();
+          return;
+        }
+
+        // Pixel-based proximity threshold (~30 px at any zoom level).
+        // 360 / 256 ≈ 1.40625, so 30 pixels ≈ 42° / 2^zoom.
+        final threshold = 42.0 / math.pow(2, _currentZoom);
+        final dist = math.sqrt(result.distSq);
+
+        if (dist < threshold) {
+          final screenPos = await c.getScreenCoordinate(result.point);
+          if (!mounted) return;
+          setState(() {
+            _ghostViaLatLng = result.point;
+            _ghostViaSegAfterIndex = result.segAfterIndex;
+            _ghostScreenOffset = Offset(
+              screenPos.x.toDouble(),
+              screenPos.y.toDouble(),
+            );
+          });
+        } else {
+          _hideGhostVia();
+        }
+      } catch (_) {
+        // Ignore coordinate conversion errors during rapid movement.
+      }
+    });
+  }
+
+  /// Complete a ghost-drag: convert final screen offset to lat/lng and create
+  /// a via point at that location.
+  Future<void> _endGhostDrag() async {
+    final c = _controller;
+    final offset = _ghostDragScreenOffset;
+    final seg = _ghostViaSegAfterIndex;
+
+    setState(() {
+      _isDraggingGhost = false;
+      _ghostDragScreenOffset = null;
+      _ghostViaLatLng = null;
+      _ghostScreenOffset = null;
+      _ghostViaSegAfterIndex = -1;
+    });
+
+    if (c == null || offset == null || seg < 0) return;
+
+    try {
+      final sc = gmaps.ScreenCoordinate(
+        x: offset.dx.round(),
+        y: offset.dy.round(),
+      );
+      final latLng = await c.getLatLng(sc);
+      widget.onRouteTapAddVia?.call(seg, latLng.latitude, latLng.longitude);
+    } catch (_) {
+      // Conversion error – discard the drag.
+    }
+  }
+
+  /// Translucent blue circle overlay shown when the cursor hovers over the
+  /// route line, mimicking Garmin's route-editing ghost handle.
+  /// Supports both tap-to-create and drag-to-reroute.
+  Widget _buildGhostViaOverlay() {
+    // While dragging, show overlay at the drag position.
+    final offset =
+        _isDraggingGhost ? _ghostDragScreenOffset : _ghostScreenOffset;
+    if (offset == null || (_ghostViaLatLng == null && !_isDraggingGhost)) {
+      return const SizedBox.shrink();
+    }
+    final isDragging = _isDraggingGhost;
+    const hitSize = 48.0; // generous touch / click target
+    const dotSize = 28.0;
+    return Positioned(
+      left: offset.dx - hitSize / 2,
+      top: offset.dy - hitSize / 2,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        // Single tap → instantly create via point at the snapped position.
+        onTap: () {
+          if (_ghostViaLatLng != null &&
+              _ghostViaSegAfterIndex >= 0 &&
+              widget.onRouteTapAddVia != null) {
+            final ghost = _ghostViaLatLng!;
+            final seg = _ghostViaSegAfterIndex;
+            _hideGhostVia();
+            widget.onRouteTapAddVia?.call(seg, ghost.latitude, ghost.longitude);
+          }
+        },
+        // Drag → move the ghost freely, then create via on release.
+        onPanStart: (_) {
+          setState(() {
+            _isDraggingGhost = true;
+            _ghostDragScreenOffset = offset;
+          });
+        },
+        onPanUpdate: (details) {
+          final RenderBox? box = context.findRenderObject() as RenderBox?;
+          if (box == null) return;
+          final local = box.globalToLocal(details.globalPosition);
+          setState(() {
+            _ghostDragScreenOffset = local;
+          });
+        },
+        onPanEnd: (_) => _endGhostDrag(),
+        onPanCancel: () {
+          setState(() {
+            _isDraggingGhost = false;
+            _ghostDragScreenOffset = null;
+          });
+        },
+        child: SizedBox(
+          width: hitSize,
+          height: hitSize,
+          child: Center(
+            child: Container(
+              width: dotSize,
+              height: dotSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color:
+                    isDragging
+                        ? const Color(0xFF1565C0).withOpacity(0.70)
+                        : const Color(0xFF1565C0).withOpacity(0.45),
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.25),
+                    blurRadius: 6,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   String _signature(List<Map<String, dynamic>> pts) {
@@ -753,17 +1050,26 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final lat = (v['lat'] as num?)?.toDouble();
       final lon = (v['lon'] as num?)?.toDouble();
       if (lat == null || lon == null) continue;
+      final origin = gmaps.LatLng(lat, lon);
       markers.add(
         gmaps.Marker(
           markerId: gmaps.MarkerId('${_instanceId}_via_$i'),
-          position: gmaps.LatLng(lat, lon),
+          position: origin,
           draggable: widget.onViaDragEnd != null,
           icon: viaIcon,
-          alpha: 0.7,
+          alpha: 0.85,
           anchor: const Offset(0.5, 0.5),
           onDragEnd: (p) {
             _suppressMapTapUntilMs =
                 DateTime.now().millisecondsSinceEpoch + 300;
+            // If the marker barely moved, treat it as a tap → delete.
+            final dLat = (p.latitude - origin.latitude).abs();
+            final dLon = (p.longitude - origin.longitude).abs();
+            if (dLat < 0.0002 && dLon < 0.0002) {
+              widget.onViaTapDelete?.call(i);
+              _hidePreview();
+              return;
+            }
             widget.onViaDragEnd?.call(i, p.latitude, p.longitude);
           },
           onTap: () {
@@ -792,6 +1098,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     final basePts = widget.points;
     if (basePts.length < 2) {
       if (!mounted || seq != _rebuildSeq) return;
+      _segmentGeometry = {};
       setState(() => _polylines = const {});
       return;
     }
@@ -800,6 +1107,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     final standardColor = _standardRouteColor(mode);
 
     final outPolylines = <gmaps.Polyline>{};
+    final segGeometry = <int, List<gmaps.LatLng>>{};
     var distSum = 0.0;
     var durSum = 0.0;
     final instr = <String>[];
@@ -822,6 +1130,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           segDist += _haversineMeters(segLatLngs[i], segLatLngs[i + 1]);
         }
         distSum += segDist;
+        segGeometry[seg] = segLatLngs;
         outPolylines.add(
           gmaps.Polyline(
             polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_flight'),
@@ -842,6 +1151,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           segDist += _haversineMeters(segLatLngs[i], segLatLngs[i + 1]);
         }
         distSum += segDist;
+        segGeometry[seg] = segLatLngs;
         outPolylines.add(
           gmaps.Polyline(
             polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_direct'),
@@ -858,13 +1168,99 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final isTransit = mode == 'transit';
       final isAdventure = _isAdventureMode(mode);
 
-      // Prefer Google Directions ONLY for standard modes.
-      // Adventure modes (bikepacking/backpacking) should fall through to OSRM
-      // so we can pick up OSM trails/paths rather than road-snapping.
+      // ── BRouter: trail-aware routing (like Garmin) ──
+      // BRouter uses OSM trail/path data with elevation awareness to prefer
+      // hiking trails, footpaths, bike lanes, and quiet roads over highways.
+      // Profiles: 'trekking' for hiking/walking, 'safety' for cycling.
+      final useBRouter =
+          !isTransit &&
+          (mode == 'walking' ||
+              mode == 'hiking' ||
+              mode == 'backpacking' ||
+              mode == 'biking' ||
+              mode == 'bikepacking');
+
+      if (useBRouter) {
+        try {
+          final brouterProfile = switch (mode) {
+            'biking' || 'bikepacking' => 'safety',
+            _ => 'trekking',
+          };
+
+          // BRouter uses lon,lat order separated by |
+          final lonlats = segPoints
+              .map((p) => '${_lonOf(p)},${_latOf(p)}')
+              .join('|');
+
+          final url = Uri.parse(
+            'https://brouter.de/brouter?lonlats=$lonlats'
+            '&profile=$brouterProfile'
+            '&alternativeidx=0'
+            '&format=geojson',
+          );
+
+          final resp = await http.get(url).timeout(const Duration(seconds: 10));
+
+          if (resp.statusCode == 200) {
+            final data = jsonDecode(resp.body) as Map<String, dynamic>;
+            final features = data['features'] as List<dynamic>?;
+            if (features != null && features.isNotEmpty) {
+              final feat = features.first as Map<String, dynamic>;
+              final geom = feat['geometry'] as Map<String, dynamic>?;
+              final coordsList =
+                  (geom?['coordinates'] as List<dynamic>?)
+                      ?.cast<List<dynamic>>();
+
+              if (coordsList != null && coordsList.length >= 2) {
+                final path =
+                    coordsList
+                        .map(
+                          (c) => gmaps.LatLng(
+                            (c[1] as num).toDouble(),
+                            (c[0] as num).toDouble(),
+                          ),
+                        )
+                        .toList();
+
+                // Extract distance/duration from properties
+                final props = feat['properties'] as Map<String, dynamic>?;
+                final trackLength = (props?['track-length'] as String?)
+                    ?.replaceAll(RegExp(r'[^0-9.]'), '');
+                final totalTime = (props?['total-time'] as String?)?.replaceAll(
+                  RegExp(r'[^0-9.]'),
+                  '',
+                );
+
+                final segDist = double.tryParse(trackLength ?? '') ?? 0.0;
+                final segDur = double.tryParse(totalTime ?? '') ?? 0.0;
+                distSum += segDist;
+                durSum += segDur;
+
+                outPolylines.add(
+                  gmaps.Polyline(
+                    polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
+                    points: path,
+                    width: isAdventure ? 8 : 5,
+                    color:
+                        isAdventure ? const Color(0xFF00E676) : standardColor,
+                    zIndex: isAdventure ? 10 : 0,
+                  ),
+                );
+                segGeometry[seg] = path;
+                continue; // Routed via BRouter – skip remaining engines.
+              }
+            }
+          }
+        } catch (_) {
+          // BRouter unavailable – fall through to Google / OSRM.
+        }
+      }
+
+      // Use Google Directions for transit, biking, walking (not adventure modes).
+      // On web, use JS API via directions_web.dart to avoid CORS issues.
+      // On non-web, use the REST API directly.
       final useGoogle =
-          !kIsWeb &&
-          (isTransit || mode == 'biking' || mode == 'walking') &&
-          !isAdventure;
+          (isTransit || mode == 'biking' || mode == 'walking') && !isAdventure;
 
       if (useGoogle) {
         final googleMode =
@@ -874,176 +1270,247 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
                 ? 'walking'
                 : 'bicycling';
 
-        try {
-          final origin =
-              '${_latOf(segPoints.first)},${_lonOf(segPoints.first)}';
-          final dest = '${_latOf(segPoints.last)},${_lonOf(segPoints.last)}';
-          final intermediates =
-              segPoints.length > 2
-                  ? segPoints.sublist(1, segPoints.length - 1)
-                  : const <Map<String, dynamic>>[];
-          final waypoints =
-              intermediates.isNotEmpty
-                  ? intermediates
-                      .map((p) => '${_latOf(p)},${_lonOf(p)}')
-                      .join('|')
-                  : '';
+        // Build waypoints for intermediates
+        final intermediates =
+            segPoints.length > 2
+                ? segPoints.sublist(1, segPoints.length - 1)
+                : const <Map<String, dynamic>>[];
+        final waypointsList =
+            intermediates.map((p) => [_latOf(p), _lonOf(p)]).toList();
 
-          final params = <String, String>{
-            'origin': origin,
-            'destination': dest,
-            'mode': googleMode,
-            'key': widget.mapsKey,
-          };
+        bool routed = false;
 
-          if (waypoints.isNotEmpty) {
-            params['waypoints'] = waypoints;
+        // Try web JS API first if on web
+        // Google's bicycling mode already prefers bike paths, bike lanes, and
+        // quieter roads. We also set avoidHighways for biking to further
+        // prioritize trails and less busy roads.
+        if (kIsWeb) {
+          try {
+            final result = await directions_web.getDirections(
+              originLat: _latOf(segPoints.first),
+              originLng: _lonOf(segPoints.first),
+              destLat: _latOf(segPoints.last),
+              destLng: _lonOf(segPoints.last),
+              mode: googleMode,
+              waypoints: waypointsList.isNotEmpty ? waypointsList : null,
+              avoidHighways: googleMode == 'bicycling',
+            );
+
+            if (result != null && result.polylinePoints.isNotEmpty) {
+              final path =
+                  result.polylinePoints
+                      .map((p) => gmaps.LatLng(p[0], p[1]))
+                      .toList();
+
+              distSum += result.distanceMeters;
+              durSum += result.durationSeconds;
+              instr.addAll(result.instructions);
+
+              if (result.transitArrivalStop != null) {
+                lastArrivalStop = result.transitArrivalStop;
+              }
+
+              final color =
+                  result.transitLineColor != null
+                      ? _parseHexColor(result.transitLineColor!)
+                      : standardColor;
+
+              outPolylines.add(
+                gmaps.Polyline(
+                  polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
+                  points: path,
+                  width: 4,
+                  color: isTransit ? (color ?? standardColor) : standardColor,
+                ),
+              );
+              segGeometry[seg] = path;
+              routed = true;
+            }
+          } catch (_) {
+            // Fall through to REST API or OSRM
           }
+        }
 
-          if (isAdventure && googleMode == 'bicycling') {
-            params['avoid'] = 'highways|ferries';
-          }
+        // Try REST API for non-web platforms
+        // Google's bicycling mode prefers bike paths, bike lanes, and quieter
+        // roads. We also set avoid=highways for biking to further prioritize
+        // trails and less busy roads.
+        if (!routed && !kIsWeb) {
+          try {
+            final origin =
+                '${_latOf(segPoints.first)},${_lonOf(segPoints.first)}';
+            final dest = '${_latOf(segPoints.last)},${_lonOf(segPoints.last)}';
+            final waypoints =
+                intermediates.isNotEmpty
+                    ? intermediates
+                        .map((p) => '${_latOf(p)},${_lonOf(p)}')
+                        .join('|')
+                    : '';
 
-          if (googleMode == 'transit') {
-            params['transit_routing_preference'] = 'fewer_transfers';
-            params['departure_time'] =
-                (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
-          }
+            final params = <String, String>{
+              'origin': origin,
+              'destination': dest,
+              'mode': googleMode,
+              'key': widget.mapsKey,
+            };
 
-          final url = Uri.https(
-            'maps.googleapis.com',
-            '/maps/api/directions/json',
-            params,
-          );
+            if (waypoints.isNotEmpty) {
+              params['waypoints'] = waypoints;
+            }
 
-          final resp = await http.get(url);
-          if (resp.statusCode == 200) {
-            final data = jsonDecode(resp.body) as Map<String, dynamic>;
-            final routes = data['routes'] as List<dynamic>?;
-            if (routes != null && routes.isNotEmpty) {
-              final r0 = routes.first as Map<String, dynamic>;
-              final overview = r0['overview_polyline'] as Map<String, dynamic>?;
-              final encoded = (overview?['points'] as String?) ?? '';
-              if (encoded.isNotEmpty) {
-                final path = _decodeGooglePolyline(encoded);
+            // For bicycling, avoid highways to prefer bike-friendly routes
+            if (googleMode == 'bicycling') {
+              params['avoid'] = 'highways';
+            }
 
-                var segDist = 0.0;
-                var segDur = 0.0;
-                Color? segTransitColor;
+            if (googleMode == 'transit') {
+              params['transit_routing_preference'] = 'fewer_transfers';
+              params['departure_time'] =
+                  (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+            }
 
-                final legs = (r0['legs'] as List<dynamic>?) ?? const [];
-                for (final l in legs) {
-                  final leg = (l as Map).cast<String, dynamic>();
-                  final d = (leg['distance'] as Map?)?['value'] as num?;
-                  final t = (leg['duration'] as Map?)?['value'] as num?;
-                  if (d != null) segDist += d.toDouble();
-                  if (t != null) segDur += t.toDouble();
+            final url = Uri.https(
+              'maps.googleapis.com',
+              '/maps/api/directions/json',
+              params,
+            );
 
-                  final steps = (leg['steps'] as List<dynamic>?) ?? const [];
-                  for (final s in steps) {
-                    final step = (s as Map).cast<String, dynamic>();
-                    if (googleMode == 'transit') {
-                      final travelMode =
-                          (step['travel_mode'] ?? '').toString().toUpperCase();
-                      if (travelMode != 'TRANSIT') continue;
+            final resp = await http.get(url);
+            if (resp.statusCode == 200) {
+              final data = jsonDecode(resp.body) as Map<String, dynamic>;
+              final routes = data['routes'] as List<dynamic>?;
+              if (routes != null && routes.isNotEmpty) {
+                final r0 = routes.first as Map<String, dynamic>;
+                final overview =
+                    r0['overview_polyline'] as Map<String, dynamic>?;
+                final encoded = (overview?['points'] as String?) ?? '';
+                if (encoded.isNotEmpty) {
+                  final path = _decodeGooglePolyline(encoded);
 
-                      final td =
-                          (step['transit_details'] as Map?)
-                              ?.cast<String, dynamic>();
-                      final line =
-                          (td?['line'] as Map?)?.cast<String, dynamic>();
-                      final short = (line?['short_name'] ?? '').toString();
-                      final name = (line?['name'] ?? '').toString();
-                      final colorHex = (line?['color'] ?? '').toString();
-                      segTransitColor ??= _parseHexColor(colorHex);
+                  var segDist = 0.0;
+                  var segDur = 0.0;
+                  Color? segTransitColor;
 
-                      final depStop =
-                          (td?['departure_stop'] as Map?)
-                              ?.cast<String, dynamic>();
-                      final arrStop =
-                          (td?['arrival_stop'] as Map?)
-                              ?.cast<String, dynamic>();
-                      final depName = (depStop?['name'] ?? '').toString();
-                      final arrName = (arrStop?['name'] ?? '').toString();
+                  final legs = (r0['legs'] as List<dynamic>?) ?? const [];
+                  for (final l in legs) {
+                    final leg = (l as Map).cast<String, dynamic>();
+                    final d = (leg['distance'] as Map?)?['value'] as num?;
+                    final t = (leg['duration'] as Map?)?['value'] as num?;
+                    if (d != null) segDist += d.toDouble();
+                    if (t != null) segDur += t.toDouble();
 
-                      final arrLoc =
-                          (arrStop?['location'] as Map?)
-                              ?.cast<String, dynamic>();
-                      final arrLat = (arrLoc?['lat'] as num?)?.toDouble();
-                      final arrLng = (arrLoc?['lng'] as num?)?.toDouble();
-                      if (arrLat != null && arrLng != null) {
-                        lastArrivalStop = {
-                          'name': arrName,
-                          'lat': arrLat,
-                          'lon': arrLng,
-                        };
+                    final steps = (leg['steps'] as List<dynamic>?) ?? const [];
+                    for (final s in steps) {
+                      final step = (s as Map).cast<String, dynamic>();
+                      if (googleMode == 'transit') {
+                        final travelMode =
+                            (step['travel_mode'] ?? '')
+                                .toString()
+                                .toUpperCase();
+                        if (travelMode != 'TRANSIT') continue;
+
+                        final td =
+                            (step['transit_details'] as Map?)
+                                ?.cast<String, dynamic>();
+                        final line =
+                            (td?['line'] as Map?)?.cast<String, dynamic>();
+                        final short = (line?['short_name'] ?? '').toString();
+                        final name = (line?['name'] ?? '').toString();
+                        final colorHex = (line?['color'] ?? '').toString();
+                        segTransitColor ??= _parseHexColor(colorHex);
+
+                        final depStop =
+                            (td?['departure_stop'] as Map?)
+                                ?.cast<String, dynamic>();
+                        final arrStop =
+                            (td?['arrival_stop'] as Map?)
+                                ?.cast<String, dynamic>();
+                        final depName = (depStop?['name'] ?? '').toString();
+                        final arrName = (arrStop?['name'] ?? '').toString();
+
+                        final arrLoc =
+                            (arrStop?['location'] as Map?)
+                                ?.cast<String, dynamic>();
+                        final arrLat = (arrLoc?['lat'] as num?)?.toDouble();
+                        final arrLng = (arrLoc?['lng'] as num?)?.toDouble();
+                        if (arrLat != null && arrLng != null) {
+                          lastArrivalStop = {
+                            'name': arrName,
+                            'lat': arrLat,
+                            'lon': arrLng,
+                          };
+                        }
+
+                        final vehicle =
+                            (line?['vehicle'] as Map?)?.cast<String, dynamic>();
+                        final vehicleName = (vehicle?['name'] ?? '').toString();
+                        final headsign = (td?['headsign'] ?? '').toString();
+
+                        final label = [
+                          if (vehicleName.isNotEmpty) vehicleName,
+                          if (short.isNotEmpty)
+                            short
+                          else if (name.isNotEmpty)
+                            name,
+                        ].join(' ');
+
+                        final stopPart =
+                            (depName.isNotEmpty && arrName.isNotEmpty)
+                                ? '$depName → $arrName'
+                                : '';
+                        final headPart =
+                            headsign.isNotEmpty ? '→ $headsign' : '';
+                        final full = [
+                          label,
+                          stopPart,
+                          headPart,
+                        ].where((s) => s.trim().isNotEmpty).join(' — ');
+                        if (full.isNotEmpty) instr.add(full);
+                      } else {
+                        final htmlInstr =
+                            (step['html_instructions'] ?? '').toString();
+                        final clean = _stripHtml(htmlInstr);
+                        if (clean.isEmpty) continue;
+                        final distText =
+                            ((step['distance'] as Map?)?['text'] ?? '')
+                                .toString();
+                        instr.add(
+                          distText.isNotEmpty ? '$clean ($distText)' : clean,
+                        );
                       }
-
-                      final vehicle =
-                          (line?['vehicle'] as Map?)?.cast<String, dynamic>();
-                      final vehicleName = (vehicle?['name'] ?? '').toString();
-                      final headsign = (td?['headsign'] ?? '').toString();
-
-                      final label = [
-                        if (vehicleName.isNotEmpty) vehicleName,
-                        if (short.isNotEmpty)
-                          short
-                        else if (name.isNotEmpty)
-                          name,
-                      ].join(' ');
-
-                      final stopPart =
-                          (depName.isNotEmpty && arrName.isNotEmpty)
-                              ? '$depName → $arrName'
-                              : '';
-                      final headPart = headsign.isNotEmpty ? '→ $headsign' : '';
-                      final full = [
-                        label,
-                        stopPart,
-                        headPart,
-                      ].where((s) => s.trim().isNotEmpty).join(' — ');
-                      if (full.isNotEmpty) instr.add(full);
-                    } else {
-                      final htmlInstr =
-                          (step['html_instructions'] ?? '').toString();
-                      final clean = _stripHtml(htmlInstr);
-                      if (clean.isEmpty) continue;
-                      final distText =
-                          ((step['distance'] as Map?)?['text'] ?? '')
-                              .toString();
-                      instr.add(
-                        distText.isNotEmpty ? '$clean ($distText)' : clean,
-                      );
                     }
                   }
+
+                  distSum += segDist;
+                  durSum += segDur;
+
+                  final color =
+                      (googleMode == 'transit')
+                          ? (segTransitColor ?? standardColor)
+                          : standardColor;
+
+                  outPolylines.add(
+                    gmaps.Polyline(
+                      polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
+                      points: path,
+                      width: 4,
+                      color: color,
+                    ),
+                  );
+                  segGeometry[seg] = path;
+                  routed = true;
                 }
-
-                distSum += segDist;
-                durSum += segDur;
-
-                final color =
-                    (googleMode == 'transit')
-                        ? (segTransitColor ?? standardColor)
-                        : standardColor;
-
-                outPolylines.add(
-                  gmaps.Polyline(
-                    polylineId: gmaps.PolylineId('${_instanceId}_seg_$seg'),
-                    points: path,
-                    width: 4,
-                    color: color,
-                  ),
-                );
-                continue;
               }
             }
+          } catch (_) {
+            // fall through to OSRM/fallback
           }
-        } catch (_) {
-          // fall through to OSRM/fallback
         }
+
+        if (routed) continue;
       }
 
-      // OSRM-style routing fallback for non-google mode (PRIMARY for adventure modes).
+      // OSRM-style routing fallback (used when BRouter + Google both fail).
       // For trail-first profiles, prefer routing.openstreetmap.de (routed-foot / routed-bike)
       // and fall back to the public OSRM demo server if needed.
       try {
@@ -1117,6 +1584,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
               zIndex: isAdventure ? 10 : 0,
             ),
           );
+          segGeometry[seg] = path;
           if (dist != null) distSum += dist;
           if (dur != null) durSum += dur;
           routed = true;
@@ -1129,6 +1597,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       }
 
       // Final segment fallback.
+      segGeometry[seg] = segLatLngs;
       outPolylines.add(
         gmaps.Polyline(
           polylineId: gmaps.PolylineId('${_instanceId}_seg_${seg}_fallback'),
@@ -1140,6 +1609,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       );
     }
 
+    _segmentGeometry = segGeometry;
     _lastInstructions = instr.take(6).toList(growable: false);
     widget.onRouteInstructions?.call(_lastInstructions);
     if (lastArrivalStop != null) {
@@ -1280,6 +1750,16 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_mapsReady) {
+      return const Center(
+        child: SizedBox(
+          width: 32,
+          height: 32,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+
     if (widget.points.isEmpty && widget.secondaryPoints.isEmpty) {
       return const Center(child: Text('No points yet'));
     }
@@ -1298,58 +1778,105 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return LayoutBuilder(
       builder: (ctx, constraints) {
         _mapSize = Size(constraints.maxWidth, constraints.maxHeight);
-        return Stack(
-          children: [
-            gmaps.GoogleMap(
-              // google_maps_flutter on web can occasionally fail to visually update
-              // markers/polylines even when the widget rebuilds. Keying the map by the
-              // computed signatures forces a full re-init when route points change.
-              key: ValueKey(_mapKeySig()),
-              initialCameraPosition: gmaps.CameraPosition(
-                target: initialTarget,
-                zoom: 2,
-              ),
-              mapType: mapType,
-              minMaxZoomPreference: gmaps.MinMaxZoomPreference(
-                widget.minZoom,
-                widget.maxZoom,
-              ),
-              onMapCreated: (c) {
-                _controller = c;
-                _controllerKeySig = _mapKeySig();
-                _fitCamera();
-                _schedulePreviewUpdate();
-              },
-              markers: _markers,
-              polylines: _polylines,
-              onCameraMove: (_) => _schedulePreviewUpdate(),
-              onTap: (p) {
-                _hidePreview();
-                if (widget.disableGestures) return;
-                if (DateTime.now().millisecondsSinceEpoch <
-                    _suppressMapTapUntilMs) {
-                  return;
-                }
-                if (widget.onRouteTapAddVia != null &&
-                    widget.points.length >= 2) {
-                  final after = _nearestSegmentAfterIndex(p);
-                  widget.onRouteTapAddVia?.call(after, p.latitude, p.longitude);
-                  return;
-                }
-                widget.onMapTap?.call(p.latitude, p.longitude);
-              },
-              zoomControlsEnabled:
-                  widget.zoomControlsEnabled && !widget.disableDefaultUi,
-              zoomGesturesEnabled: !widget.disableGestures,
-              scrollGesturesEnabled: !widget.disableGestures,
-              mapToolbarEnabled: false,
-              myLocationButtonEnabled: false,
-              rotateGesturesEnabled: false,
-              tiltGesturesEnabled: false,
-              compassEnabled: false,
+        final showGhost = _ghostViaLatLng != null || _isDraggingGhost;
+        return MouseRegion(
+          cursor:
+              _isDraggingGhost
+                  ? SystemMouseCursors.grabbing
+                  : showGhost
+                  ? SystemMouseCursors.grab
+                  : SystemMouseCursors.basic,
+          onExit: (_) {
+            if (!_isDraggingGhost) _hideGhostVia();
+          },
+          child: Listener(
+            onPointerHover: (event) => _handlePointerHover(event.localPosition),
+            child: Stack(
+              children: [
+                gmaps.GoogleMap(
+                  // google_maps_flutter on web can occasionally fail to visually update
+                  // markers/polylines even when the widget rebuilds. Keying the map by the
+                  // computed signatures forces a full re-init when route points change.
+                  key: ValueKey(_mapKeySig()),
+                  initialCameraPosition: gmaps.CameraPosition(
+                    target: initialTarget,
+                    zoom: 2,
+                  ),
+                  mapType: mapType,
+                  minMaxZoomPreference: gmaps.MinMaxZoomPreference(
+                    widget.minZoom,
+                    widget.maxZoom,
+                  ),
+                  onMapCreated: (c) {
+                    _controller = c;
+                    _controllerKeySig = _mapKeySig();
+                    _fitCamera();
+                    _schedulePreviewUpdate();
+                  },
+                  markers: _markers,
+                  polylines: _polylines,
+                  onCameraMove: (pos) {
+                    _currentZoom = pos.zoom;
+                    _schedulePreviewUpdate();
+                    // Hide ghost during panning/zooming to avoid stale position.
+                    if (!_isDraggingGhost) _hideGhostVia();
+                  },
+                  onTap: (p) {
+                    _hidePreview();
+                    if (widget.disableGestures) return;
+                    if (DateTime.now().millisecondsSinceEpoch <
+                        _suppressMapTapUntilMs) {
+                      return;
+                    }
+
+                    // Garmin-style: if a ghost handle is visible, use its
+                    // polyline-snapped position for pin-point accuracy.
+                    if (_ghostViaLatLng != null &&
+                        _ghostViaSegAfterIndex >= 0 &&
+                        widget.onRouteTapAddVia != null) {
+                      final ghost = _ghostViaLatLng!;
+                      final seg = _ghostViaSegAfterIndex;
+                      _hideGhostVia();
+                      widget.onRouteTapAddVia?.call(
+                        seg,
+                        ghost.latitude,
+                        ghost.longitude,
+                      );
+                      return;
+                    }
+
+                    if (widget.onRouteTapAddVia != null &&
+                        widget.points.length >= 2) {
+                      final after = _nearestSegmentAfterIndex(p);
+                      if (after >= 0) {
+                        widget.onRouteTapAddVia?.call(
+                          after,
+                          p.latitude,
+                          p.longitude,
+                        );
+                        return;
+                      }
+                      // Tap was too far from the route – fall through to normal map tap.
+                    }
+                    widget.onMapTap?.call(p.latitude, p.longitude);
+                  },
+                  zoomControlsEnabled:
+                      widget.zoomControlsEnabled && !widget.disableDefaultUi,
+                  zoomGesturesEnabled:
+                      !widget.disableGestures && !_isDraggingGhost,
+                  scrollGesturesEnabled:
+                      !widget.disableGestures && !_isDraggingGhost,
+                  mapToolbarEnabled: false,
+                  myLocationButtonEnabled: false,
+                  rotateGesturesEnabled: false,
+                  tiltGesturesEnabled: false,
+                  compassEnabled: false,
+                ),
+                _buildGhostViaOverlay(),
+                _buildPreviewOverlay(),
+              ],
             ),
-            _buildPreviewOverlay(),
-          ],
+          ),
         );
       },
     );
@@ -1376,16 +1903,46 @@ class MapPreview3D extends StatefulWidget {
 
 class _MapPreview3DState extends State<MapPreview3D> {
   late final String _viewType;
-  late final html.Element _element;
-  late final html.DivElement _titleElement;
-  late final html.DivElement _regionElement;
+  late html.Element _element;
+  late html.IFrameElement _iframeElement;
+  late html.DivElement _titleElement;
+  late html.DivElement _regionElement;
+  late html.DivElement _mapWrap;
 
   static bool _styleInjected = false;
 
-  static const String _earthMapId = 'DEMO_MAP_ID';
-
   static const double _mapWidthPx = _previewBubbleWidth;
   static const double _mapHeightPx = _previewMapHeight;
+
+  String _resolveApiKey() {
+    const fromDefine = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+    if (fromDefine.isNotEmpty) return fromDefine;
+
+    try {
+      final meta = html.document.querySelector(
+        'meta[name="google-maps-api-key"]',
+      );
+      return meta?.getAttribute('content')?.trim() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _buildEmbedUrl() {
+    final apiKey = _resolveApiKey();
+    final lat = widget.lat;
+    final lon = widget.lon;
+    // Use Maps Embed API with satellite maptype for aerial view
+    return 'https://www.google.com/maps/embed/v1/view'
+        '?key=$apiKey'
+        '&center=$lat,$lon'
+        '&zoom=18'
+        '&maptype=satellite';
+  }
+
+  void _updateIframeSrc() {
+    _iframeElement.src = _buildEmbedUrl();
+  }
 
   @override
   void initState() {
@@ -1402,20 +1959,22 @@ class _MapPreview3DState extends State<MapPreview3D> {
     container.style.pointerEvents = 'none';
     container.style.zIndex = '50';
 
-    final mapWrap = html.DivElement();
-    mapWrap.className = 'trypr-map3d-view';
-    mapWrap.style.width = '100%';
-    mapWrap.style.height = '${_mapHeightPx}px';
+    _mapWrap = html.DivElement();
+    _mapWrap.className = 'trypr-map3d-view';
+    _mapWrap.style.width = '100%';
+    _mapWrap.style.height = '${_mapHeightPx}px';
 
-    final map3d = html.Element.tag('gmp-map-3d');
-    map3d.style.width = '100%';
-    map3d.style.height = '100%';
-    map3d.style.border = '0';
-    map3d.style.pointerEvents = 'none';
+    // Use Maps Embed API iframe for satellite view
+    _iframeElement = html.IFrameElement();
+    _iframeElement.src = _buildEmbedUrl();
+    _iframeElement.style.width = '100%';
+    _iframeElement.style.height = '100%';
+    _iframeElement.style.border = '0';
+    _iframeElement.style.borderRadius = '12px 12px 8px 8px';
+    _iframeElement.style.pointerEvents = 'none';
+    _iframeElement.setAttribute('loading', 'lazy');
 
-    _applyMap3dAttributes(map3d);
-
-    mapWrap.append(map3d);
+    _mapWrap.append(_iframeElement);
 
     final info = html.DivElement();
     info.className = 'trypr-map3d-info';
@@ -1435,7 +1994,7 @@ class _MapPreview3DState extends State<MapPreview3D> {
       ..append(_regionElement);
 
     container
-      ..append(mapWrap)
+      ..append(_mapWrap)
       ..append(info);
 
     _element = container;
@@ -1444,36 +2003,6 @@ class _MapPreview3DState extends State<MapPreview3D> {
       _viewType,
       (int viewId) => _element,
     );
-
-    ensureGoogleMapsLoaded();
-  }
-
-  String _resolveMapId() {
-    const fromDefine = String.fromEnvironment('GOOGLE_MAPS_MAP_ID');
-    if (fromDefine.isNotEmpty) return fromDefine;
-
-    try {
-      final meta = html.document.querySelector(
-        'meta[name="google-maps-map-id"]',
-      );
-      final fromMeta = meta?.getAttribute('content')?.trim() ?? '';
-      return fromMeta;
-    } catch (_) {
-      return '';
-    }
-  }
-
-  void _applyMap3dAttributes(html.Element map3d) {
-    map3d.setAttribute('center', '${widget.lat},${widget.lon},0');
-    map3d.setAttribute('tilt', '60');
-    map3d.setAttribute('heading', '45');
-    map3d.setAttribute('range', '1000');
-    map3d.setAttribute('default-labels-disabled', 'true');
-    final mapId = _resolveMapId();
-    final resolved = mapId.isNotEmpty ? mapId : _earthMapId;
-    // NOTE: Replace DEMO_MAP_ID with a real Map ID configured for Vector
-    // rendering in Google Cloud Console. Map3D requires a Vector map ID.
-    map3d.setAttribute('map-id', resolved);
   }
 
   void _ensureBubbleStyles() {
@@ -1503,12 +2032,13 @@ class _MapPreview3DState extends State<MapPreview3D> {
   height: ${_previewMapHeight}px;
   overflow: hidden;
   border-radius: 12px 12px 8px 8px;
-  background: #f2f2f2;
+  background: #1a3a5c;
 }
-.trypr-map3d-view > gmp-map-3d {
-  width: ${_previewBubbleWidth}px;
-  height: ${_previewMapHeight}px;
+.trypr-map3d-view > iframe {
+  width: 100%;
+  height: 100%;
   display: block;
+  border: 0;
 }
 .trypr-map3d-info {
   padding: 10px 12px 12px;
@@ -1547,10 +2077,7 @@ class _MapPreview3DState extends State<MapPreview3D> {
   void didUpdateWidget(covariant MapPreview3D oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.lat != widget.lat || oldWidget.lon != widget.lon) {
-      final map3d = _element.querySelector('gmp-map-3d');
-      if (map3d != null) {
-        _applyMap3dAttributes(map3d);
-      }
+      _updateIframeSrc();
     }
     if (oldWidget.title != widget.title) {
       _titleElement.text = widget.title;
@@ -1571,12 +2098,12 @@ class _MarkerIconCache {
       'viaDot:${Colors.green.value}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
-        logicalSize: 18.0,
-        background: const Color(0xFF2E7D32),
+        logicalSize: 24.0,
+        background: const Color(0xFF1565C0),
         foreground: Colors.white,
         icon: null,
         text: null,
-        borderWidthLogical: 2.0,
+        borderWidthLogical: 3.0,
       ),
     );
   }

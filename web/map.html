@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trypr 3D Map</title>
+    <meta name="google-maps-api-key" content="" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          'Helvetica Neue', Arial, sans-serif;
+        background: #05091a;
+        overflow: hidden;
+      }
+
+      #map-container {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+
+      gmp-map-3d {
+        width: 100%;
+        height: 100%;
+      }
+
+      .status-overlay {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        background: rgba(3, 7, 18, 0.85);
+        color: #d9e8ff;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 11px;
+        z-index: 10;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        box-shadow: 0 15px 30px rgba(2, 4, 12, 0.6);
+      }
+
+      .trip-info {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        background: rgba(3, 7, 18, 0.95);
+        padding: 16px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #d9e8ff;
+        max-width: 350px;
+        font-size: 13px;
+        z-index: 10;
+        display: none;
+        box-shadow: 0 15px 30px rgba(2, 4, 12, 0.6);
+      }
+
+      .trip-info.active {
+        display: block;
+      }
+
+      .trip-info h3 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: #00ffc2;
+      }
+
+      .trip-info p {
+        margin: 6px 0;
+        color: #b0c4ff;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map-container">
+      <gmp-map-3d
+        mode="hybrid"
+        center="20, 0"
+        range="25000000"
+        heading="0"
+        tilt="30"
+        style="width: 100%; height: 100%"
+      >
+      </gmp-map-3d>
+    </div>
+
+    <div id="status-overlay" class="status-overlay">
+      Initializing 3D Earth…
+    </div>
+
+    <div id="trip-info" class="trip-info">
+      <h3 id="trip-title">Trip Name</h3>
+      <p id="trip-dates">Dates</p>
+      <p id="trip-distance">Distance: N/A</p>
+      <p id="trip-stops">Stops: N/A</p>
+    </div>
+
+    <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw&v=alpha&libraries=maps3d,geometry&loading=async"></script>
+    <script>
+      let map3d = null;
+      let directionsService = null;
+      let currentPolylines = [];
+
+      // Initialize the 3D map once the API loads
+      async function initMap() {
+        try {
+          const mapElement = document.querySelector('gmp-map-3d');
+          if (!mapElement) {
+            throw new Error('gmp-map-3d element not found in DOM');
+          }
+          console.log('[MAP] gmp-map-3d element found, waiting for definition...');
+
+          // Wait for the Web Component to register
+          await customElements.whenDefined('gmp-map-3d');
+          console.log('[MAP] gmp-map-3d custom element defined');
+
+          // The element IS the map for gmp-map-3d
+          map3d = mapElement;
+
+          // Check Google Maps API
+          if (!window.google || !window.google.maps) {
+            throw new Error('Google Maps API not available');
+          }
+          console.log('[MAP] Google Maps API available');
+
+          // Initialize Directions Service
+          directionsService = new google.maps.DirectionsService();
+
+          updateStatus('3D Earth ready');
+          window.parent.postMessage({ type: 'map_ready' }, '*');
+          console.log('[MAP] ✓ 3D Map initialized successfully');
+        } catch (error) {
+          console.error('[MAP] ✗ Initialization error:', error);
+          updateStatus(`Error: ${error.message}`);
+        }
+      }
+
+      // Ensure initialization happens after page loads
+      function startInitialization() {
+        if (window.google && window.google.maps) {
+          initMap();
+        } else {
+          setTimeout(startInitialization, 100);
+        }
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startInitialization);
+      } else {
+        startInitialization();
+      }
+
+      // Draw a route using the Directions Service
+      async function drawRoute(
+        originLat,
+        originLng,
+        destinationLat,
+        destinationLng,
+        waypointsArray = []
+      ) {
+        if (!directionsService || !map3d) {
+          updateStatus('Service not ready');
+          return;
+        }
+
+        try {
+          const origin = `${originLat},${originLng}`;
+          const destination = `${destinationLat},${destinationLng}`;
+
+          // Convert waypoints
+          const waypoints = waypointsArray
+            .map((point) => ({
+              location: new google.maps.LatLng(point.lat, point.lng),
+              stopover: true,
+            }))
+            .slice(0, 8); // Max 8 waypoints for Directions API
+
+          const request = {
+            origin: origin,
+            destination: destination,
+            waypoints: waypoints.length > 0 ? waypoints : undefined,
+            travelMode: google.maps.TravelMode.DRIVING,
+          };
+
+          const result = await directionsService.route(request);
+
+          if (!result.routes || result.routes.length === 0) {
+            updateStatus('No route found');
+            return;
+          }
+
+          // Clear previous polylines
+          clearPolylines();
+
+          // Extract polyline from the route
+          const route = result.routes[0];
+          const polylinePoints = google.maps.geometry.encoding.decodePath(
+            route.overview_polyline.points
+          );
+
+          // Create polyline (Polyline works on gmp-map-3d too)
+          const polylineOptions = {
+            path: polylinePoints,
+            geodesic: true,
+            strokeColor: '#00ffc2',
+            strokeOpacity: 0.9,
+            strokeWeight: 4,
+          };
+
+          const polyline = new google.maps.Polyline(polylineOptions);
+          currentPolylines.push(polyline);
+
+          // Calculate bounds
+          const bounds = new google.maps.LatLngBounds();
+          polylinePoints.forEach((point) => bounds.extend(point));
+
+          // Calculate range and center for 3D camera
+          const rangeInMeters = getRangeForBounds(bounds);
+          const centerLat = bounds.getCenter().lat();
+          const centerLng = bounds.getCenter().lng();
+
+          // Calculate total distance
+          const totalDistance = calculateDistance(polylinePoints);
+
+          // Fly to the route
+          await flyToTrip(centerLat, centerLng, rangeInMeters);
+
+          updateStatus(
+            `Route: ${totalDistance.toFixed(1)} km • ${polylinePoints.length} points`
+          );
+        } catch (error) {
+          console.error('Route error:', error);
+          updateStatus(`Route error: ${error.message}`);
+        }
+      }
+
+      // Smooth camera fly-to animation using range (meters) for gmp-map-3d
+      async function flyToTrip(latitude, longitude, rangeInMeters = 5000) {
+        if (!map3d) return;
+
+        try {
+          // Parse current center from attribute
+          const currentCenterStr = map3d.getAttribute('center') || '20, 0';
+          const [startLat, startLng] = currentCenterStr.split(',').map(x => parseFloat(x.trim()));
+          const startRange = parseFloat(map3d.getAttribute('range') || '25000000');
+          const targetRange = Math.max(Math.min(rangeInMeters, 50000000), 100);
+
+          const steps = 40;
+          const stepDuration = 20; // ms
+
+          for (let i = 0; i <= steps; i++) {
+            const progress = i / steps;
+            // Easing: ease-in-out-cubic
+            const easeProgress =
+              progress < 0.5
+                ? 4 * progress * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+
+            const interpLat = startLat + (latitude - startLat) * easeProgress;
+            const interpLng = startLng + (longitude - startLng) * easeProgress;
+            const interpRange = startRange + (targetRange - startRange) * easeProgress;
+            const interpTilt = 30 + (45 - 30) * easeProgress;
+
+            map3d.setAttribute('center', `${interpLat.toFixed(6)}, ${interpLng.toFixed(6)}`);
+            map3d.setAttribute('range', interpRange.toFixed(0));
+            map3d.setAttribute('tilt', interpTilt.toFixed(1));
+
+            await new Promise((resolve) => setTimeout(resolve, stepDuration));
+          }
+
+          // Final snap
+          map3d.setAttribute('center', `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+          map3d.setAttribute('range', targetRange.toFixed(0));
+          map3d.setAttribute('tilt', '45');
+          console.log('[MAP] Camera flew to:', { lat: latitude, lng: longitude, range: targetRange });
+        } catch (error) {
+          console.error('[MAP] Fly-to error:', error);
+        }
+      }
+
+      // Clear all polylines
+      function clearPolylines() {
+        currentPolylines.forEach((polyline) => {
+          polyline.setMap(null);
+        });
+        currentPolylines = [];
+      }
+
+      // Calculate total distance (in km)
+      function calculateDistance(points) {
+        let distance = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+          distance += google.maps.geometry.spherical.computeDistanceBetween(
+            points[i],
+            points[i + 1]
+          );
+        }
+        return distance / 1000;
+      }
+
+      // Compute appropriate range (in meters) for bounds - for gmp-map-3d
+      function getRangeForBounds(bounds) {
+        const EARTH_RADIUS = 6371000; // meters
+
+        const ne = bounds.getNorthEast();
+        const sw = bounds.getSouthWest();
+
+        // Calculate distance between corners
+        const latDiff = ne.lat() - sw.lat();
+        const lngDiff = Math.abs(ne.lng() - sw.lng());
+
+        // Use the larger dimension to determine range
+        const maxDiff = Math.max(latDiff, lngDiff);
+
+        // Convert degrees to approximate meters (rough approximation at equator)
+        const maxDistanceMeters = maxDiff * EARTH_RADIUS * (Math.PI / 180);
+
+        // Add buffer (multiply by 1.5 for comfortable viewing)
+        const range = Math.max(maxDistanceMeters * 1.5, 5000);
+
+        return Math.min(range, 500000000); // Cap at reasonable max
+      }
+
+      // Update status
+      function updateStatus(message) {
+        const statusEl = document.getElementById('status-overlay');
+        if (statusEl) {
+          statusEl.textContent = message;
+        }
+        console.log('[MAP] ' + message);
+      }
+
+      // Show trip info
+      function showTripInfo(tripName, dates, distance, stops) {
+        const tripInfoEl = document.getElementById('trip-info');
+        document.getElementById('trip-title').textContent = tripName;
+        document.getElementById('trip-dates').textContent = `📅 ${dates}`;
+        document.getElementById('trip-distance').textContent =
+          distance && distance > 0
+            ? `📍 Distance: ${distance.toFixed(1)} km`
+            : '📍 Distance: N/A';
+        document.getElementById('trip-stops').textContent =
+          `🛑 Stops: ${stops} location${stops !== 1 ? 's' : ''}`;
+        tripInfoEl.classList.add('active');
+      }
+
+      // Hide trip info
+      function hideTripInfo() {
+        const tripInfoEl = document.getElementById('trip-info');
+        tripInfoEl.classList.remove('active');
+      }
+
+      // Handle messages from Flutter
+      window.addEventListener('message', async (event) => {
+        const msg = event.data || {};
+        const { type, data } = msg;
+
+        if (!type) return;
+
+        console.log('[MAP] Message received:', type);
+
+        switch (type) {
+          case 'configure':
+            // API key configuration from Flutter (optional, already in script tag)
+            console.log('[MAP] Configuration received');
+            break;
+
+          case 'route':
+            if (data && data.origin && data.destination) {
+              if (data.tripInfo) {
+                showTripInfo(
+                  data.tripInfo.name || 'Trip',
+                  data.tripInfo.dates || '',
+                  data.tripInfo.distance,
+                  data.tripInfo.stops || 0
+                );
+              }
+              await drawRoute(
+                data.origin.lat,
+                data.origin.lng,
+                data.destination.lat,
+                data.destination.lng,
+                data.waypoints || []
+              );
+            }
+            break;
+
+          case 'clearRoute':
+            clearPolylines();
+            hideTripInfo();
+            updateStatus('Route cleared');
+            break;
+
+          case 'flyTo':
+            if (data && data.lat !== undefined && data.lng !== undefined) {
+              await flyToTrip(data.lat, data.lng, data.range || 5000);
+            }
+            break;
+
+          case 'ping':
+          case 'flutter_ping':
+            window.parent.postMessage({ type: 'pong' }, '*');
+            console.log('[MAP] Ping received, pong sent');
+            break;
+
+          default:
+            console.warn('[MAP] Unknown message type:', type);
+
+        }
+      });
+    </script>
+  </body>
+</html>

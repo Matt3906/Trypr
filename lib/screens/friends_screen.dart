@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class FriendsScreen extends StatefulWidget {
@@ -218,8 +219,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
     final myStream = _myDocStream();
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
+      backgroundColor: TryprColors.background,
       body: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(TryprSpacing.lg),
         child: Column(
           children: [
             Row(
@@ -227,56 +229,58 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 Expanded(
                   child: Text(
                     'Friends',
-                    style: Theme.of(context).textTheme.titleLarge,
+                    style: Theme.of(context).textTheme.displaySmall,
                   ),
                 ),
-                ElevatedButton.icon(
+                PrimaryButton(
+                  label: 'Add Friend',
+                  icon: Icons.person_add_outlined,
                   onPressed: () => _showAddFriendDialog(context),
-                  icon: const Icon(Icons.person_add),
-                  label: const Text('Add'),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
-                  stream: myStream,
-                  builder: (ctx, snap) {
-                    if (!snap.hasData) {
-                      return const SizedBox(
-                        height: 120,
-                        child: Center(child: CircularProgressIndicator()),
-                      );
-                    }
-                    final data = snap.data!.data() ?? {};
-                    final friendsRaw = data['friends'] as List<dynamic>? ?? [];
-                    if (friendsRaw.isEmpty) {
-                      return const SizedBox(
-                        height: 120,
-                        child: Center(child: Text('No friends yet')),
-                      );
-                    }
-                    final friends =
-                        friendsRaw
-                            .map<Map<String, dynamic>>(
-                              (f) =>
-                                  f is Map
-                                      ? Map<String, dynamic>.from(f)
-                                      : {'id': f.toString()},
-                            )
-                            .toList();
-                    return SizedBox(
-                      height: 160,
-                      child: ListView.separated(
-                        itemCount: friends.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (ctx2, i) => _friendTile(friends[i]),
+            const SizedBox(height: TryprSpacing.xl),
+            SoftCard(
+              padding: const EdgeInsets.all(TryprSpacing.lg),
+              child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
+                stream: myStream,
+                builder: (ctx, snap) {
+                  if (!snap.hasData) {
+                    return const SizedBox(
+                      height: 120,
+                      child: Center(
+                        child: CircularProgressIndicator(
+                          color: TryprColors.primary,
+                        ),
                       ),
                     );
-                  },
-                ),
+                  }
+                  final data = snap.data!.data() ?? {};
+                  final friendsRaw = data['friends'] as List<dynamic>? ?? [];
+                  if (friendsRaw.isEmpty) {
+                    return const SizedBox(
+                      height: 120,
+                      child: Center(child: Text('No friends yet')),
+                    );
+                  }
+                  final friends =
+                      friendsRaw
+                          .map<Map<String, dynamic>>(
+                            (f) =>
+                                f is Map
+                                    ? Map<String, dynamic>.from(f)
+                                    : {'id': f.toString()},
+                          )
+                          .toList();
+                  return SizedBox(
+                    height: 160,
+                    child: ListView.separated(
+                      itemCount: friends.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (ctx2, i) => _friendTile(friends[i]),
+                    ),
+                  );
+                },
               ),
             ),
             const SizedBox(height: 12),
