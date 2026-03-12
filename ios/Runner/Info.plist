@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Trypr needs photo library access so you can share trip photos with your group.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Trypr can save and manage shared trip images for your travel archive.</string>
 </dict>
 </plist>

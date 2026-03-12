@@ -1,0 +1,610 @@
+{
+  "startedAt": "2026-03-03T19:55:18.143Z",
+  "finishedAt": "2026-03-03T19:56:32.547Z",
+  "appUrl": "http://127.0.0.1:5002/trip-builder",
+  "consoleLogs": [
+    {
+      "ts": "2026-03-03T19:55:18.159Z",
+      "type": "debug",
+      "text": "Installing/Activating first service worker.",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.495Z",
+      "type": "debug",
+      "text": "Activated new service worker.",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.496Z",
+      "type": "debug",
+      "text": "Injecting <script> tag. Using callback.",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.870Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: gis-dart",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.874Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_core",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.875Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_core",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.875Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_firestore",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.875Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_firestore",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.875Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_functions",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.875Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_functions",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_app_check",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_app_check",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_auth",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_auth",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "TrustedTypes available. Creating policy: flutterfire-firebase_storage",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.876Z",
+      "type": "debug",
+      "text": "Initializing Firebase firebase_storage",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.979Z",
+      "type": "log",
+      "text": "initState - currentUser: null",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.979Z",
+      "type": "log",
+      "text": "syncDocs called - user: null, mounted: true",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.982Z",
+      "type": "log",
+      "text": "Admin stream check - _adminDoc is NULL",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.985Z",
+      "type": "log",
+      "text": "verificationAutoloadTrip enabled stops=3 tripRange=2026-03-03 00:00:00.000 - 2026-03-06 00:00:00.000",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.986Z",
+      "type": "log",
+      "text": "initState - currentUser: null",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.986Z",
+      "type": "log",
+      "text": "syncDocs called - user: null, mounted: true",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.987Z",
+      "type": "log",
+      "text": "Admin stream check - _adminDoc is NULL",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "authStateChanges fired - user: null",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "syncDocs called - user: null, mounted: true",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "authStateChanges fired - user: null",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "syncDocs called - user: null, mounted: true",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "Admin stream check - _adminDoc is NULL",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:18.994Z",
+      "type": "log",
+      "text": "Admin stream check - _adminDoc is NULL",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:19.064Z",
+      "type": "warning",
+      "text": "WARNING: Falling back to CPU-only rendering. WebGL support not detected.",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:19.421Z",
+      "type": "warning",
+      "text": "Could not find a set of Noto fonts to display all missing characters. Please add a font asset for the missing characters. See: https://flutter.dev/docs/cookbook/design/fonts",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.411Z",
+      "type": "log",
+      "text": "MAPS_KEY present: true len=39",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.411Z",
+      "type": "log",
+      "text": "ORS_KEY present: true len=38",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.411Z",
+      "type": "log",
+      "text": "GRAPHHOPPER_KEY present: true len=42",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.411Z",
+      "type": "log",
+      "text": "STRICT_ROUTING enabled: true",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.411Z",
+      "type": "log",
+      "text": "ROUTING_PROXY_URL: /api/route",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:24.922Z",
+      "type": "warning",
+      "text": "As of February 21st, 2024, google.maps.Marker is deprecated. Please use google.maps.marker.AdvancedMarkerElement instead. At this time, google.maps.Marker is not scheduled to be discontinued, but google.maps.marker.AdvancedMarkerElement is recommended over google.maps.Marker. While google.maps.Marker will continue to receive bug fixes for any major regressions, existing bugs in google.maps.Marker will not be addressed. At least 12 months notice will be given before support is discontinued. Please see https://developers.google.com/maps/deprecations for additional details and https://developers.google.com/maps/documentation/javascript/advanced-markers/migration for the migration guide.",
+      "mode": "boot"
+    },
+    {
+      "ts": "2026-03-03T19:55:29.444Z",
+      "type": "log",
+      "text": "googleDirections request_exception mode=driving err=TimeoutException after 0:00:05.000000: Future not completed",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:55:29.444Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=car segType=calculated",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:55:29.650Z",
+      "type": "warning",
+      "text": "google.maps.DirectionsService is deprecated as of February 25th, 2026. Please use google.maps.routes.Route.computeRoutes instead. At this time, google.maps.DirectionsService is not scheduled to be discontinued, but google.maps.routes.Route.computeRoutes is recommended over google.maps.DirectionsService.route. While google.maps.DirectionsService will continue to receive bug fixes for any major regressions, existing bugs in google.maps.DirectionsService will not be addressed. At least 12 months notice will be given before support is discontinued. Please see https://developers.google.com/maps/legacy for additional details and https://developers.google.com/maps/documentation/javascript/routes/routes-js-migration for the migration guide.",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:55:34.699Z",
+      "type": "log",
+      "text": "activeRoutingMode=plane",
+      "mode": "plane"
+    },
+    {
+      "ts": "2026-03-03T19:55:34.724Z",
+      "type": "log",
+      "text": "modeLayerCounts mode=plane polylines=2 trail_segments=0 campsite_markers=0 gas_markers=0",
+      "mode": "plane"
+    },
+    {
+      "ts": "2026-03-03T19:55:39.292Z",
+      "type": "log",
+      "text": "activeRoutingMode=train",
+      "mode": "train"
+    },
+    {
+      "ts": "2026-03-03T19:55:40.509Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "train"
+    },
+    {
+      "ts": "2026-03-03T19:55:40.509Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=rail mode=train status=403",
+      "mode": "train"
+    },
+    {
+      "ts": "2026-03-03T19:55:40.510Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=rail mode=train err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=rail mode=train status=403",
+      "mode": "train"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.397Z",
+      "type": "log",
+      "text": "activeRoutingMode=walk",
+      "mode": "walk"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.866Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "walk"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.867Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-walking mode=walk status=403",
+      "mode": "walk"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.867Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-walking mode=walk err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-walking mode=walk status=403",
+      "mode": "walk"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.501Z",
+      "type": "log",
+      "text": "activeRoutingMode=bike",
+      "mode": "bike"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.948Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "bike"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.948Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=cycling mode=bike status=403",
+      "mode": "bike"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.948Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=cycling mode=bike err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=cycling mode=bike status=403",
+      "mode": "bike"
+    },
+    {
+      "ts": "2026-03-03T19:55:57.659Z",
+      "type": "log",
+      "text": "activeRoutingMode=hiking",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:55:58.115Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:55:58.115Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:55:58.115Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:05.842Z",
+      "type": "log",
+      "text": "activeRoutingMode=gas_stops",
+      "mode": "gas_stops"
+    },
+    {
+      "ts": "2026-03-03T19:56:10.874Z",
+      "type": "log",
+      "text": "googleDirections request_exception mode=driving err=TimeoutException after 0:00:05.000000: Future not completed",
+      "mode": "gas_stops"
+    },
+    {
+      "ts": "2026-03-03T19:56:10.874Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=gas_stops segType=calculated",
+      "mode": "gas_stops"
+    },
+    {
+      "ts": "2026-03-03T19:56:12.945Z",
+      "type": "log",
+      "text": "activeRoutingMode=hiking",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:13.394Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:13.394Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:13.394Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:20.249Z",
+      "type": "log",
+      "text": "activeRoutingMode=car",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.275Z",
+      "type": "log",
+      "text": "googleDirections request_exception mode=driving err=TimeoutException after 0:00:05.000000: Future not completed",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.275Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=car segType=calculated",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.354Z",
+      "type": "log",
+      "text": "activeRoutingMode=hiking",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.813Z",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.813Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.813Z",
+      "type": "log",
+      "text": "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+      "mode": "hiking"
+    }
+  ],
+  "pageErrors": [
+    {
+      "ts": "2026-03-03T19:55:29.445Z",
+      "message": "Error",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:55:40.510Z",
+      "message": "Error",
+      "mode": "train"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.867Z",
+      "message": "Error",
+      "mode": "walk"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.948Z",
+      "message": "Error",
+      "mode": "bike"
+    },
+    {
+      "ts": "2026-03-03T19:55:58.115Z",
+      "message": "Error",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:10.874Z",
+      "message": "Error",
+      "mode": "gas_stops"
+    },
+    {
+      "ts": "2026-03-03T19:56:13.395Z",
+      "message": "Error",
+      "mode": "hiking"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.276Z",
+      "message": "Error",
+      "mode": "car"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.814Z",
+      "message": "Error",
+      "mode": "hiking"
+    }
+  ],
+  "requests": [
+    {
+      "ts": "2026-03-03T19:55:18.960Z",
+      "mode": "boot",
+      "method": "GET",
+      "url": "https://maps.googleapis.com/maps/api/js?key=AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw&libraries=places&loading=async",
+      "postData": ""
+    },
+    {
+      "ts": "2026-03-03T19:55:19.198Z",
+      "mode": "boot",
+      "method": "GET",
+      "url": "https://maps.googleapis.com/maps/api/mapsjs/gen_204?csp_test=true",
+      "postData": ""
+    },
+    {
+      "ts": "2026-03-03T19:55:39.324Z",
+      "mode": "train",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"rail\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.433Z",
+      "mode": "walk",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"foot-walking\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.522Z",
+      "mode": "bike",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"cycling\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    },
+    {
+      "ts": "2026-03-03T19:55:57.688Z",
+      "mode": "hiking",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    },
+    {
+      "ts": "2026-03-03T19:56:12.972Z",
+      "mode": "hiking",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.389Z",
+      "mode": "hiking",
+      "method": "POST",
+      "url": "http://127.0.0.1:5002/api/route",
+      "postData": "{\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"coordinates\":[[-115.5708,51.1784],[-114.0719,51.0447]]}"
+    }
+  ],
+  "responses": [
+    {
+      "ts": "2026-03-03T19:55:19.093Z",
+      "mode": "boot",
+      "method": "GET",
+      "status": 200,
+      "url": "https://maps.googleapis.com/maps/api/js?key=AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw&libraries=places&loading=async",
+      "bodySnippet": ""
+    },
+    {
+      "ts": "2026-03-03T19:55:19.278Z",
+      "mode": "boot",
+      "method": "GET",
+      "status": 200,
+      "url": "https://maps.googleapis.com/maps/api/mapsjs/gen_204?csp_test=true",
+      "bodySnippet": ""
+    },
+    {
+      "ts": "2026-03-03T19:55:40.510Z",
+      "mode": "train",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"rail\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    },
+    {
+      "ts": "2026-03-03T19:55:45.871Z",
+      "mode": "walk",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"foot-walking\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    },
+    {
+      "ts": "2026-03-03T19:55:51.948Z",
+      "mode": "bike",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"cycling\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    },
+    {
+      "ts": "2026-03-03T19:55:58.115Z",
+      "mode": "hiking",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    },
+    {
+      "ts": "2026-03-03T19:56:13.395Z",
+      "mode": "hiking",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    },
+    {
+      "ts": "2026-03-03T19:56:25.814Z",
+      "mode": "hiking",
+      "method": "POST",
+      "status": 403,
+      "url": "http://127.0.0.1:5002/api/route",
+      "bodySnippet": "{\"error\":\"ORS_UPSTREAM_ERROR\",\"provider\":\"ors\",\"profile\":\"foot-hiking\",\"upstreamStatus\":403,\"upstreamBodyPreview\":\"{\\n    \\\"error\\\": \\\"Access to this API has been disallowed\\\"\\n}\"}"
+    }
+  ]
+}

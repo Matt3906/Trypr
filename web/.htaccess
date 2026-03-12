@@ -1,6 +1,13 @@
 # Enable rewrite engine
 RewriteEngine On
 
+# Serve Tournament Planner shell for direct and deep links.
+RewriteRule ^tournamentPlanner/?$ /tournamentPlanner/index.html [L,QSA]
+RewriteCond %{REQUEST_URI} ^/tournamentPlanner/.+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^tournamentPlanner/.*$ /tournamentPlanner/index.html [L,QSA]
+
 # If the requested file or directory exists, serve it directly
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
@@ -11,6 +18,12 @@ RewriteRule ^(.*)$ /index.html [L,QSA]
 # Enable gzip compression
 <IfModule mod_deflate.c>
   AddOutputFilterByPolicy DEFLATE text/html text/plain text/css application/javascript application/json application/wasm
+</IfModule>
+
+# Ensure browsers can stream-compile CanvasKit/SKWasm modules.
+<IfModule mod_mime.c>
+  AddType application/javascript .js .mjs
+  AddType application/wasm .wasm
 </IfModule>
 
 # Cache static assets

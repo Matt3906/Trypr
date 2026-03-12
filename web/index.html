@@ -19,13 +19,33 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="description" content="A new Flutter project.">
+  <meta
+    name="description"
+    content="Trypr is a collaborative trip planner for multi-stop adventures. Build routes in 2D or 3D, organize itineraries, packing lists, budgets, and travel together."
+  >
+  <meta property="og:title" content="Trypr | Collaborative Trip Planner">
+  <meta
+    property="og:description"
+    content="Plan multi-stop trips with route tools, shared itineraries, packing, expenses, and group chat in one place."
+  >
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/images/TryprLogo_Black.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Trypr | Collaborative Trip Planner">
+  <meta
+    name="twitter:description"
+    content="Plan and manage trips with routes, itineraries, packing, expenses, and collaboration."
+  >
 
   <!-- Google Maps API key for hosted builds (alternative to --dart-define=GOOGLE_MAPS_API_KEY=...) -->
-  <meta name="google-maps-api-key" content="">
+  <meta name="google-maps-api-key" content="AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw">
 
   <!-- Google Maps Map ID for vector/3D maps (optional for hosted builds) -->
   <meta name="google-maps-map-id" content="">
+
+  <!-- Optional routing keys for Trip Builder mode-specific engines -->
+  <meta name="openrouteservice-api-key" content="">
+  <meta name="graphhopper-api-key" content="">
 
   <!-- Google Maps JS is loaded inside iframe-based widgets (map.html, map_embed_web) -->
   <!-- No script tag needed here – prevents __gmapsCallback interop errors -->
@@ -33,7 +53,7 @@
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="trypr">
+  <meta name="apple-mobile-web-app-title" content="Trypr">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
@@ -109,7 +129,7 @@
     }
   </style>
 
-  <title>trypr</title>
+  <title>Trypr | Collaborative Trip Planner</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
@@ -142,6 +162,23 @@
         setTimeout(function() { loading.remove(); }, 500);
       }
     }, 15000);
+  </script>
+  <script>
+    (function () {
+      var hostname = window.location.hostname;
+      var isLocalhost =
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '::1';
+      if (!isLocalhost || !('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(
+          regs.map(function (reg) {
+            return reg.unregister();
+          }),
+        );
+      });
+    })();
   </script>
   
   <script src="flutter_bootstrap.js" async></script>

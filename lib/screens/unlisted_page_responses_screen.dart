@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -44,13 +45,15 @@ class _UnlistedPageResponsesScreenState
       if (doc.exists) {
         final formFields = doc.data()?['formFields'] as List<dynamic>? ?? [];
         final map = <String, dynamic>{};
-        for (final field in formFields) {
+        for (var i = 0; i < formFields.length; i++) {
+          final field = formFields[i];
           if (field is Map) {
             final id = field['id']?.toString() ?? '';
             if (id.isNotEmpty) {
               map[id] = {
                 'label': field['label']?.toString() ?? 'Unlabeled Field',
                 'type': field['type']?.toString() ?? 'text',
+                'order': i,
               };
             }
           }
@@ -72,7 +75,29 @@ class _UnlistedPageResponsesScreenState
   ) {
     final formatted = <Map<String, dynamic>>[];
 
-    rawResponses.forEach((key, value) {
+    final entries =
+        rawResponses.entries.where((entry) {
+          final key = entry.key;
+          return key != 'submittedAt' &&
+              key != 'submittedByUid' &&
+              key != 'submittedByEmail' &&
+              key != 'submittedByName' &&
+              key != 'responses' &&
+              key != 'formattedResponses';
+        }).toList();
+
+    entries.sort((a, b) {
+      final orderA =
+          (_formFieldsMap?[a.key]?['order'] as num?)?.toInt() ?? (1 << 30);
+      final orderB =
+          (_formFieldsMap?[b.key]?['order'] as num?)?.toInt() ?? (1 << 30);
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      return a.key.compareTo(b.key);
+    });
+
+    for (var i = 0; i < entries.length; i++) {
+      final key = entries[i].key;
+      final value = entries[i].value;
       // Skip metadata fields
       if (key == 'submittedAt' ||
           key == 'submittedByUid' ||
@@ -80,7 +105,7 @@ class _UnlistedPageResponsesScreenState
           key == 'submittedByName' ||
           key == 'responses' ||
           key == 'formattedResponses') {
-        return;
+        continue;
       }
 
       String label = key;
@@ -93,12 +118,18 @@ class _UnlistedPageResponsesScreenState
       } else {
         // Clean up field_xxx format
         if (key.startsWith('field_')) {
-          label = 'Field ${formatted.length + 1}';
+          final cleaned =
+              key
+                  .replaceFirst('field_', '')
+                  .replaceAll(RegExp(r'[_\-]+'), ' ')
+                  .replaceAll(RegExp(r'\d+$'), '')
+                  .trim();
+          label = cleaned.isEmpty ? 'Field ${i + 1}' : cleaned;
         }
       }
 
       formatted.add({'label': label, 'type': type, 'value': value});
-    });
+    }
 
     return formatted;
   }
@@ -106,9 +137,9 @@ class _UnlistedPageResponsesScreenState
   /// Generate PDF for all responses
   Future<void> _exportToPdf() async {
     if (_allResponses.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('No responses to export')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('No responses to export')),
+      );
       return;
     }
 
@@ -428,61 +459,176 @@ class _ResponseCard extends StatelessWidget {
     this.formFieldsMap,
   });
 
+  static const Set<String> _metaKeys = {
+    'submittedAt',
+    'submittedByUid',
+    'submittedByEmail',
+    'submittedByName',
+    'responses',
+    'formattedResponses',
+  };
+
+  bool _looksLikeFieldId(String value) {
+    final v = value.trim().toLowerCase();
+    return v.startsWith('field_') || v.startsWith('fld_');
+  }
+
+  int _fieldOrder(String? fieldId) {
+    if (fieldId == null || fieldId.isEmpty || formFieldsMap == null) {
+      return 1 << 30;
+    }
+    final order = formFieldsMap![fieldId]?['order'];
+    if (order is int) return order;
+    if (order is num) return order.toInt();
+    return 1 << 30;
+  }
+
+  String _cleanFieldId(String value) {
+    var out = value;
+    if (out.startsWith('field_')) out = out.substring('field_'.length);
+    out = out.replaceAll(RegExp(r'[_\-]+'), ' ').trim();
+    out = out.replaceAll(RegExp(r'\d+$'), '').trim();
+    if (out.isEmpty) return '';
+    return out
+        .split(' ')
+        .where((p) => p.isNotEmpty)
+        .map((p) => '${p[0].toUpperCase()}${p.substring(1)}')
+        .join(' ');
+  }
+
+  String _resolveLabel({
+    required String? fieldId,
+    required String? fallbackLabel,
+    required int fallbackIndex,
+  }) {
+    if (fieldId != null && fieldId.isNotEmpty && formFieldsMap != null) {
+      final mapped = formFieldsMap![fieldId]?['label']?.toString();
+      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+    }
+
+    final label = (fallbackLabel ?? '').trim();
+    if (label.isNotEmpty) {
+      if (formFieldsMap != null && formFieldsMap!.containsKey(label)) {
+        final mapped = formFieldsMap![label]?['label']?.toString();
+        if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+      }
+      if (!_looksLikeFieldId(label)) return label;
+      final cleaned = _cleanFieldId(label);
+      if (cleaned.isNotEmpty) return cleaned;
+    }
+
+    if (fieldId != null && fieldId.isNotEmpty) {
+      final cleaned = _cleanFieldId(fieldId);
+      if (cleaned.isNotEmpty) return cleaned;
+    }
+
+    return 'Field ${fallbackIndex + 1}';
+  }
+
+  String _resolveType({required String? fieldId, required String? fallback}) {
+    if (fieldId != null && fieldId.isNotEmpty && formFieldsMap != null) {
+      final mapped = formFieldsMap![fieldId]?['type']?.toString();
+      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+    }
+    final type = (fallback ?? '').trim();
+    return type.isEmpty ? 'text' : type;
+  }
+
   List<Map<String, dynamic>> _getFormattedResponses() {
-    // First try the new formattedResponses array
-    if (responseData['formattedResponses'] != null) {
-      return (responseData['formattedResponses'] as List).cast<Map>().map((e) {
-        return Map<String, dynamic>.from(e);
-      }).toList();
+    final rows = <Map<String, dynamic>>[];
+
+    final formattedResponsesRaw = responseData['formattedResponses'];
+    if (formattedResponsesRaw is List) {
+      for (var i = 0; i < formattedResponsesRaw.length; i++) {
+        final item = formattedResponsesRaw[i];
+        if (item is! Map) continue;
+        final row = Map<String, dynamic>.from(item.cast<dynamic, dynamic>());
+        var fieldId =
+            row['fieldId']?.toString() ??
+            row['id']?.toString() ??
+            row['key']?.toString();
+        final rawLabel = row['label']?.toString();
+        if ((fieldId == null || fieldId.isEmpty) &&
+            rawLabel != null &&
+            (formFieldsMap?.containsKey(rawLabel) ?? false)) {
+          fieldId = rawLabel;
+        }
+        rows.add({
+          'label': _resolveLabel(
+            fieldId: fieldId,
+            fallbackLabel: rawLabel,
+            fallbackIndex: i,
+          ),
+          'type': _resolveType(
+            fieldId: fieldId,
+            fallback: row['type']?.toString(),
+          ),
+          'value': row['value'],
+          '_order': _fieldOrder(fieldId),
+          '_fallback': i,
+        });
+      }
     }
 
-    // Fall back to parsing old format
-    final formatted = <Map<String, dynamic>>[];
+    if (rows.isEmpty) {
+      Map<dynamic, dynamic> rawResponses;
+      if (responseData['responses'] is Map) {
+        rawResponses = responseData['responses'] as Map<dynamic, dynamic>;
+      } else {
+        rawResponses = responseData;
+      }
 
-    // Check if there's a nested 'responses' object (old format)
-    Map<dynamic, dynamic>? rawResponses;
-    if (responseData['responses'] != null && responseData['responses'] is Map) {
-      rawResponses = responseData['responses'] as Map<dynamic, dynamic>;
-    } else {
-      // If no nested responses, treat the entire responseData as responses
-      rawResponses = responseData;
+      final entries =
+          rawResponses.entries
+              .where((e) => !_metaKeys.contains(e.key.toString()))
+              .toList();
+
+      for (var i = 0; i < entries.length; i++) {
+        final keyStr = entries[i].key.toString();
+        rows.add({
+          'label': _resolveLabel(
+            fieldId: keyStr,
+            fallbackLabel: keyStr,
+            fallbackIndex: i,
+          ),
+          'type': _resolveType(fieldId: keyStr, fallback: null),
+          'value': entries[i].value,
+          '_order': _fieldOrder(keyStr),
+          '_fallback': i,
+        });
+      }
     }
 
-    rawResponses.forEach((key, value) {
-      final keyStr = key.toString();
-
-      // Skip metadata fields
-      if (keyStr == 'submittedAt' ||
-          keyStr == 'submittedByUid' ||
-          keyStr == 'submittedByEmail' ||
-          keyStr == 'submittedByName' ||
-          keyStr == 'responses' ||
-          keyStr == 'formattedResponses') {
-        return;
-      }
-
-      String label = keyStr;
-      String type = 'text';
-
-      // Try to get label from form fields map
-      if (formFieldsMap != null && formFieldsMap!.containsKey(keyStr)) {
-        label = formFieldsMap![keyStr]['label'] ?? keyStr;
-        type = formFieldsMap![keyStr]['type'] ?? 'text';
-      } else if (keyStr.startsWith('field_')) {
-        // Make field IDs more readable by extracting a cleaner name
-        final cleanLabel = keyStr
-            .replaceFirst('field_', '')
-            .replaceAll(RegExp(r'\d+'), '');
-        label =
-            cleanLabel.isNotEmpty
-                ? cleanLabel
-                : 'Response ${formatted.length + 1}';
-      }
-
-      formatted.add({'label': label, 'type': type, 'value': value});
+    rows.sort((a, b) {
+      final orderA = (a['_order'] as int?) ?? (1 << 30);
+      final orderB = (b['_order'] as int?) ?? (1 << 30);
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      final fallbackA = (a['_fallback'] as int?) ?? 0;
+      final fallbackB = (b['_fallback'] as int?) ?? 0;
+      return fallbackA.compareTo(fallbackB);
     });
 
-    return formatted;
+    return rows
+        .map(
+          (row) => {
+            'label': row['label'],
+            'type': row['type'],
+            'value': row['value'],
+          },
+        )
+        .toList();
+  }
+
+  bool _isAnswered(dynamic value) {
+    if (value == null) return false;
+    if (value is String) return value.trim().isNotEmpty;
+    if (value is List) return value.isNotEmpty;
+    if (value is Map) {
+      return value.values.any(
+        (v) => v != null && v.toString().trim().isNotEmpty,
+      );
+    }
+    return true;
   }
 
   @override
@@ -491,12 +637,17 @@ class _ResponseCard extends StatelessWidget {
     final submittedByName = responseData['submittedByName']?.toString();
     final submittedByEmail = responseData['submittedByEmail']?.toString();
     final formattedResponses = _getFormattedResponses();
+    final answeredCount =
+        formattedResponses.where((r) => _isAnswered(r['value'])).length;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
+      clipBehavior: Clip.antiAlias,
+      elevation: 1.5,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ExpansionTile(
-        tilePadding: const EdgeInsets.all(16),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        childrenPadding: EdgeInsets.zero,
         leading: CircleAvatar(
           backgroundColor: const Color(0xFF00B894),
           child: Text(
@@ -512,51 +663,61 @@ class _ResponseCard extends StatelessWidget {
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          submittedAt != null
-              ? DateFormat('MMM dd, yyyy • h:mm a').format(submittedAt.toDate())
-              : 'Date unknown',
+          '${submittedAt != null ? DateFormat('MMM dd, yyyy • h:mm a').format(submittedAt.toDate()) : 'Date unknown'} • $answeredCount/${formattedResponses.length} answered',
           style: TextStyle(color: Colors.grey[600], fontSize: 13),
         ),
         children: [
-          const Divider(),
-          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Divider(height: 16),
 
-          // User info
-          if (submittedByEmail != null) ...[
-            _InfoRow(
-              icon: Icons.email,
-              label: 'Email',
-              value: submittedByEmail,
-            ),
-            const SizedBox(height: 12),
-          ],
+                if (submittedByEmail != null) ...[
+                  _InfoRow(
+                    icon: Icons.email_outlined,
+                    label: 'Email',
+                    value: submittedByEmail,
+                  ),
+                  const SizedBox(height: 14),
+                ],
 
-          // Form responses
-          if (formattedResponses.isNotEmpty) ...[
-            const Text(
-              'Form Responses',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                if (formattedResponses.isNotEmpty) ...[
+                  const Text(
+                    'Form Responses',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 10),
+                  ...formattedResponses.map((response) {
+                    final label = response['label']?.toString() ?? 'Field';
+                    final value = response['value'];
+                    final type = response['type']?.toString() ?? 'text';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: _ResponseField(
+                          label: label,
+                          value: value,
+                          type: type,
+                        ),
+                      ),
+                    );
+                  }),
+                ] else ...[
+                  const Text(
+                    'No form data available',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontStyle: FontStyle.italic,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(height: 12),
-            ...formattedResponses.map((response) {
-              final label = response['label']?.toString() ?? 'Field';
-              final value = response['value'];
-              final type = response['type']?.toString() ?? 'text';
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _ResponseField(label: label, value: value, type: type),
-              );
-            }),
-          ] else ...[
-            const Text(
-              'No form data available',
-              style: TextStyle(
-                fontSize: 14,
-                fontStyle: FontStyle.italic,
-                color: Colors.grey,
-              ),
-            ),
-          ],
+          ),
         ],
       ),
     );
@@ -576,29 +737,46 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 20, color: Colors.grey[600]),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(value, style: const TextStyle(fontSize: 14)),
-            ],
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 17, color: Colors.grey[700]),
           ),
-        ),
-      ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                SelectableText(value, style: const TextStyle(fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -690,10 +868,11 @@ class _ResponseField extends StatelessWidget {
         displayValue == '(none selected)';
 
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isEmpty ? Colors.grey[100] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: isEmpty ? Colors.grey.shade300 : Colors.grey.shade200,
         ),
@@ -705,16 +884,16 @@ class _ResponseField extends StatelessWidget {
             label,
             style: TextStyle(
               fontSize: 13,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
               color: isEmpty ? Colors.grey[600] : const Color(0xFF00695C),
             ),
           ),
           const SizedBox(height: 6),
-          Text(
+          SelectableText(
             displayValue,
             style: TextStyle(
               fontSize: 14,
-              height: 1.5,
+              height: 1.45,
               color: isEmpty ? Colors.grey[500] : Colors.black87,
               fontStyle: isEmpty ? FontStyle.italic : FontStyle.normal,
             ),

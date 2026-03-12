@@ -1,41 +1,21 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 
 Future<void> showPremiumUpsellDialog(
   BuildContext context, {
   String? title,
   String? message,
 }) async {
-  return showDialog<void>(
-    context: context,
-    builder: (ctx) {
-      return AlertDialog(
-        title: Text(title ?? 'Trypr Premium'),
-        content: Text(
-          message ??
-              'Unlock AI Travel Agent. Upgrade to Trypr Premium to get instant, personalized travel suggestions and save hours of planning.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Not now'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00897B),
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Premium upgrade flow coming soon'),
-                ),
-              );
-            },
-            child: const Text('Upgrade Now'),
-          ),
-        ],
-      );
-    },
-  );
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showTryprSnackBar(
+      const SnackBar(content: Text('Sign in to unlock premium features.')),
+    );
+    return;
+  }
+
+  if (!context.mounted) return;
+  await Navigator.of(context).pushNamed('/premium');
 }

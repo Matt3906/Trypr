@@ -13,10 +13,10 @@ class PremiumAccessService {
     final user = _auth.currentUser;
     if (user == null) return false;
 
-    // Mirror the backend logic:
+    // Mirror backend logic:
     // - admins/{uid} exists => admin
-    // - userEntitlements/{uid}.subscription == 'premium' OR subscriptionStatus == 'premium'
-    // - userEntitlements/{uid}.role/roles includes 'admin'
+    // - userEntitlements/{uid} controls premium fields
+    // - userEntitlements/{uid}.role/roles includes admin
     try {
       final uid = user.uid;
       final entRef = _firestore.doc('userEntitlements/$uid');

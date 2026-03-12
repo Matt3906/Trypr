@@ -37,8 +37,12 @@ bool _isMapsLoaded() {
 /// then falls back to the `<meta name="google-maps-api-key">` tag.
 Future<void> ensureGoogleMapsLoaded() {
   if (_isMapsLoaded()) return Future.value();
-  if (_loadCompleter != null) return _loadCompleter!.future;
+  if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+    return _loadCompleter!.future;
+  }
 
+  // Reset the completer on every call (unless already loaded).
+  // This allows retries if a previous attempt failed.
   _loadCompleter = Completer<void>();
 
   final key = _resolveMapsKey();
@@ -61,7 +65,7 @@ Future<void> ensureGoogleMapsLoaded() {
   final script =
       html.ScriptElement()
         ..src =
-            'https://maps.googleapis.com/maps/api/js?key=$key&libraries=places'
+            'https://maps.googleapis.com/maps/api/js?key=$key&libraries=places&loading=async'
         ..async = true;
 
   script.onLoad.listen((_) {
@@ -70,7 +74,10 @@ Future<void> ensureGoogleMapsLoaded() {
 
   script.onError.listen((_) {
     if (!_loadCompleter!.isCompleted) {
-      _loadCompleter!.complete(); // Complete anyway to unblock the UI.
+      // Reset the completer so the next call to ensureGoogleMapsLoaded()
+      // can try again instead of returning a stale "completed" future.
+      _loadCompleter!.complete();
+      _loadCompleter = null;
     }
   });
 
@@ -82,12 +89,17 @@ Future<void> ensureGoogleMapsLoaded() {
 /// may not be defined immediately.  Poll briefly to be safe.
 void _pollForMaps([int attempts = 0]) {
   if (_isMapsLoaded()) {
-    if (!_loadCompleter!.isCompleted) _loadCompleter!.complete();
+    if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+      _loadCompleter!.complete();
+    }
     return;
   }
   if (attempts > 50) {
-    // Give up after ~5 s.
-    if (!_loadCompleter!.isCompleted) _loadCompleter!.complete();
+    // Give up after ~5 s.  Reset the completer so a future call can retry.
+    if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+      _loadCompleter!.complete();
+    }
+    _loadCompleter = null;
     return;
   }
   Future.delayed(

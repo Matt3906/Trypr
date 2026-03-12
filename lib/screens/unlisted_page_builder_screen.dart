@@ -1,13 +1,12 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:flutter/services.dart';
 import 'package:trypr/services/pick_image_data_url.dart';
-import 'package:trypr/widgets/top_taskbar.dart';
 
 /// Admin screen for creating/editing unlisted pages
 class UnlistedPageBuilderScreen extends StatefulWidget {
@@ -205,9 +204,9 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('You must be signed in')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('You must be signed in')),
+      );
       return;
     }
 
@@ -216,7 +215,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
       '',
     );
     if (slug.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(content: Text('Please enter a valid page ID/slug')),
       );
       return;
@@ -235,7 +234,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
         final existing = await docRef.get();
         if (existing.exists) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
+            ScaffoldMessenger.of(context).showTryprSnackBar(
               const SnackBar(
                 content: Text(
                   'This page ID already exists. Choose a different one.',
@@ -275,7 +274,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
       await docRef.set(pageData, SetOptions(merge: true));
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           SnackBar(
             content: Text(isEditing ? 'Page updated' : 'Page created'),
             action: SnackBarAction(
@@ -283,7 +282,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
               onPressed: () {
                 final url = '${Uri.base.origin}/page/$slug';
                 Clipboard.setData(ClipboardData(text: url));
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(context).showTryprSnackBar(
                   const SnackBar(content: Text('Link copied to clipboard')),
                 );
               },
@@ -296,7 +295,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error saving: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Error saving: $e')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -308,9 +307,9 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
     if (slug.isEmpty) return;
     final url = '${Uri.base.origin}/page/$slug';
     Clipboard.setData(ClipboardData(text: url));
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Link copied to clipboard')));
+    ScaffoldMessenger.of(context).showTryprSnackBar(
+      const SnackBar(content: Text('Link copied to clipboard')),
+    );
   }
 
   @override
@@ -520,7 +519,7 @@ class _UnlistedPageBuilderScreenState extends State<UnlistedPageBuilderScreen> {
                         Switch(
                           value: _formEnabled,
                           onChanged: (v) => setState(() => _formEnabled = v),
-                          activeColor: const Color(0xFF00B894),
+                          activeThumbColor: const Color(0xFF00B894),
                         ),
                       ],
                     ),
@@ -760,7 +759,7 @@ class _FormFieldEditor extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: DropdownButtonFormField<String>(
-                  value: field['type']?.toString() ?? 'text',
+                  initialValue: field['type']?.toString() ?? 'text',
                   decoration: const InputDecoration(
                     labelText: 'Type',
                     isDense: true,

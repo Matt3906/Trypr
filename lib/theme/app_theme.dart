@@ -121,6 +121,16 @@ class TryprTheme {
       ),
       scaffoldBackgroundColor: TryprColors.background,
       textTheme: _textTheme,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: _PremiumPageTransitionsBuilder(),
+          TargetPlatform.iOS: _PremiumPageTransitionsBuilder(),
+          TargetPlatform.macOS: _PremiumPageTransitionsBuilder(),
+          TargetPlatform.windows: _PremiumPageTransitionsBuilder(),
+          TargetPlatform.linux: _PremiumPageTransitionsBuilder(),
+          TargetPlatform.fuchsia: _PremiumPageTransitionsBuilder(),
+        },
+      ),
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -242,12 +252,25 @@ class TryprTheme {
         ),
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: TryprColors.textPrimary,
-        contentTextStyle: const TextStyle(color: Colors.white),
+        backgroundColor: const Color(0xFFF8FBFF),
+        contentTextStyle: const TextStyle(
+          color: TryprColors.textSecondary,
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+        ),
+        actionTextColor: TryprColors.primaryDark,
+        disabledActionTextColor: TryprColors.textTertiary,
+        elevation: 0,
+        width: 360,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(TryprRadius.md),
+          borderRadius: BorderRadius.circular(TryprRadius.lg),
+          side: BorderSide(
+            color: TryprColors.primary.withValues(alpha: 0.22),
+            width: 1,
+          ),
         ),
         behavior: SnackBarBehavior.floating,
+        insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
       ),
       dividerTheme: const DividerThemeData(
         color: Color(0xFFE2E8F0),
@@ -347,6 +370,40 @@ class TryprTheme {
         color: TryprColors.textTertiary,
         letterSpacing: 0.5,
       ),
+    );
+  }
+}
+
+class _PremiumPageTransitionsBuilder extends PageTransitionsBuilder {
+  const _PremiumPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    if (route.settings.name == null && route.fullscreenDialog == false) {
+      // Keep initial/home route paint instant.
+      if (animation.status == AnimationStatus.completed) return child;
+    }
+
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    final opacity = Tween<double>(begin: 0.92, end: 1.0).animate(curved);
+    final offset = Tween<Offset>(
+      begin: const Offset(0.0, 0.02),
+      end: Offset.zero,
+    ).animate(curved);
+
+    return FadeTransition(
+      opacity: opacity,
+      child: SlideTransition(position: offset, child: child),
     );
   }
 }
@@ -674,74 +731,93 @@ class PrimaryButton extends StatefulWidget {
 
 class _PrimaryButtonState extends State<PrimaryButton> {
   bool _isHovered = false;
+  bool _isPressed = false;
 
   @override
   Widget build(BuildContext context) {
+    final visualScale = _isPressed ? 0.985 : (_isHovered ? 1.01 : 1.0);
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: widget.fullWidth ? double.infinity : null,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              _isHovered ? TryprColors.primaryDark : TryprColors.primary,
-              _isHovered ? TryprColors.primary : TryprColors.primaryLight,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(TryprRadius.md),
-          boxShadow: [
-            BoxShadow(
-              color: TryprColors.primary.withOpacity(_isHovered ? 0.4 : 0.25),
-              blurRadius: _isHovered ? 12 : 8,
-              offset: const Offset(0, 4),
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutCubic,
+        scale: visualScale,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: widget.fullWidth ? double.infinity : null,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                _isHovered ? TryprColors.primaryDark : TryprColors.primary,
+                _isHovered ? TryprColors.primary : TryprColors.primaryLight,
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: widget.isLoading ? null : widget.onPressed,
             borderRadius: BorderRadius.circular(TryprRadius.md),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: TryprSpacing.xl,
-                vertical: TryprSpacing.lg,
+            boxShadow: [
+              BoxShadow(
+                color: TryprColors.primary.withOpacity(_isHovered ? 0.4 : 0.25),
+                blurRadius: _isHovered ? 12 : 8,
+                offset: const Offset(0, 4),
               ),
-              child:
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: widget.isLoading ? null : widget.onPressed,
+              onTapDown:
                   widget.isLoading
-                      ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation(Colors.white),
-                        ),
-                      )
-                      : Row(
-                        mainAxisSize:
-                            widget.fullWidth
-                                ? MainAxisSize.max
-                                : MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          if (widget.icon != null) ...[
-                            Icon(widget.icon, size: 18, color: Colors.white),
-                            const SizedBox(width: TryprSpacing.sm),
-                          ],
-                          Text(
-                            widget.label,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
+                      ? null
+                      : (_) => setState(() => _isPressed = true),
+              onTapUp:
+                  widget.isLoading
+                      ? null
+                      : (_) => setState(() => _isPressed = false),
+              onTapCancel:
+                  widget.isLoading
+                      ? null
+                      : () => setState(() => _isPressed = false),
+              borderRadius: BorderRadius.circular(TryprRadius.md),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: TryprSpacing.xl,
+                  vertical: TryprSpacing.lg,
+                ),
+                child:
+                    widget.isLoading
+                        ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(Colors.white),
                           ),
-                        ],
-                      ),
+                        )
+                        : Row(
+                          mainAxisSize:
+                              widget.fullWidth
+                                  ? MainAxisSize.max
+                                  : MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (widget.icon != null) ...[
+                              Icon(widget.icon, size: 18, color: Colors.white),
+                              const SizedBox(width: TryprSpacing.sm),
+                            ],
+                            Text(
+                              widget.label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+              ),
             ),
           ),
         ),
@@ -768,18 +844,23 @@ class SectionHeader extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            color: TryprColors.textPrimary,
+        Expanded(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: TryprColors.textPrimary,
+            ),
           ),
         ),
         if (onSeeAll != null)
           GestureDetector(
             onTap: onSeeAll,
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   seeAllText,

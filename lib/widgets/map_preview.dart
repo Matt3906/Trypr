@@ -3,36 +3,96 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:latlong2/latlong.dart' as latlng;
+import 'package:trypr/utils/route_cache.dart';
 
 class MapPreview extends StatelessWidget {
   final List<dynamic> waypoints;
-  const MapPreview({super.key, required this.waypoints});
+  final List<dynamic> routeGeometry;
+  final String transportMode;
+  final List<String> segmentTransportModes;
 
-  static const _mapsKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+  const MapPreview({
+    super.key,
+    required this.waypoints,
+    this.routeGeometry = const [],
+    this.transportMode = 'car',
+    this.segmentTransportModes = const [],
+  });
 
-  List<latlng.LatLng> _toLatLngs() {
+  List<latlng.LatLng> _waypointLatLngs() {
     final pts = <latlng.LatLng>[];
     for (final w in waypoints) {
       try {
         if (w is Map) {
-          final lat = (w['lat'] ?? w['latitude']) as num?;
+          final lat = (w['lat'] ?? w['latitude'] ?? w['locationLat']) as num?;
           final lon =
-              (w['lon'] ?? w['longitude'] ?? w['lng'] ?? w['lng']) as num?;
+              (w['lon'] ?? w['longitude'] ?? w['lng'] ?? w['locationLon'])
+                  as num?;
           if (lat != null && lon != null) {
             pts.add(latlng.LatLng(lat.toDouble(), lon.toDouble()));
           }
         }
       } catch (_) {
-        // skip malformed
+        continue;
       }
     }
     return pts;
   }
 
+  List<latlng.LatLng> _routeLatLngs() {
+    final cached = simplifyRouteGeometry(
+      readRouteGeometry(routeGeometry),
+      maxPoints: 160,
+    );
+    if (cached.isNotEmpty) {
+      return cached
+          .map(
+            (p) => latlng.LatLng(
+              (p['lat'] as num).toDouble(),
+              ((p['lon'] ?? p['lng']) as num).toDouble(),
+            ),
+          )
+          .toList(growable: false);
+    }
+    return _waypointLatLngs();
+  }
+
+  String _activeMode() {
+    final normalizedSegments = segmentTransportModes
+        .map(normalizeRouteMode)
+        .where((mode) => mode.isNotEmpty)
+        .toList(growable: false);
+    if (normalizedSegments.isNotEmpty) return normalizedSegments.first;
+    return normalizeRouteMode(transportMode);
+  }
+
+  Color _routeColor() {
+    switch (_activeMode()) {
+      case 'flying':
+        return const Color(0xFF3949AB);
+      case 'train':
+        return const Color(0xFF546E7A);
+      case 'walking':
+        return const Color(0xFF00897B);
+      case 'biking':
+        return const Color(0xFF1565C0);
+      case 'hiking':
+        return const Color(0xFF8E24AA);
+      case 'portaging':
+        return const Color(0xFFD81B60);
+      case 'driving':
+      default:
+        return const Color(0xFF1E88E5);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final pts = _toLatLngs();
-    if (pts.isEmpty) {
+    final waypointPts = _waypointLatLngs();
+    final routePts = _routeLatLngs();
+    final allPts = <latlng.LatLng>[...routePts, ...waypointPts];
+
+    if (allPts.isEmpty) {
       return Container(
         color: Colors.grey.shade200,
         child: const Center(
@@ -42,31 +102,22 @@ class MapPreview extends StatelessWidget {
     }
 
     if (kIsWeb) {
-      if (_mapsKey.isEmpty) {
-        return Container(
-          color: Colors.grey.shade200,
-          alignment: Alignment.center,
-          padding: const EdgeInsets.all(12),
-          child: const Text(
-            'Google Maps is not configured. Build with '
-            '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
-            textAlign: TextAlign.center,
-          ),
-        );
-      }
-      return _MapPreviewWeb(pts: pts);
+      return _MapPreviewWeb(
+        waypointPts: waypointPts,
+        routePts: routePts,
+        routeColor: _routeColor(),
+      );
     }
 
-    final bounds = LatLngBounds.fromPoints(pts);
-
+    final bounds = LatLngBounds.fromPoints(allPts);
+    final routeColor = _routeColor();
     return FlutterMap(
       options: MapOptions(
         bounds: bounds,
         boundsOptions: FitBoundsOptions(
           padding: const EdgeInsets.all(24),
-          maxZoom: pts.length <= 1 ? 12 : 10,
+          maxZoom: allPts.length <= 1 ? 12 : 10,
         ),
-        // Allow panning/zooming on the card preview so users can move the map.
         interactiveFlags: InteractiveFlag.all,
       ),
       children: [
@@ -75,19 +126,26 @@ class MapPreview extends StatelessWidget {
           subdomains: const ['a', 'b', 'c'],
           userAgentPackageName: 'com.example.trypr',
         ),
-        if (pts.length > 1)
+        if (routePts.length > 1)
           PolylineLayer(
             polylines: [
               Polyline(
-                points: pts,
-                color: Colors.blue.withOpacity(0.8),
+                points: routePts,
+                color: Colors.white.withValues(alpha: 0.7),
+                strokeWidth: 5.0,
+              ),
+              Polyline(
+                points: routePts,
+                color: routeColor.withValues(alpha: 0.9),
                 strokeWidth: 3.0,
               ),
             ],
           ),
         MarkerLayer(
-          markers:
-              pts.asMap().entries.map((e) {
+          markers: waypointPts
+              .asMap()
+              .entries
+              .map((e) {
                 final idx = e.key;
                 final p = e.value;
                 return Marker(
@@ -97,22 +155,23 @@ class MapPreview extends StatelessWidget {
                   builder:
                       (ctx) => Container(
                         decoration: BoxDecoration(
-                          color: Colors.blue,
+                          color: Colors.white,
                           shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
+                          border: Border.all(color: routeColor, width: 2),
                         ),
                         alignment: Alignment.center,
                         child: Text(
                           '${idx + 1}',
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: routeColor,
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
                 );
-              }).toList(),
+              })
+              .toList(growable: false),
         ),
       ],
     );
@@ -120,8 +179,15 @@ class MapPreview extends StatelessWidget {
 }
 
 class _MapPreviewWeb extends StatefulWidget {
-  final List<latlng.LatLng> pts;
-  const _MapPreviewWeb({required this.pts});
+  final List<latlng.LatLng> waypointPts;
+  final List<latlng.LatLng> routePts;
+  final Color routeColor;
+
+  const _MapPreviewWeb({
+    required this.waypointPts,
+    required this.routePts,
+    required this.routeColor,
+  });
 
   @override
   State<_MapPreviewWeb> createState() => _MapPreviewWebState();
@@ -159,12 +225,12 @@ class _MapPreviewWebState extends State<_MapPreviewWeb> {
   Future<void> _fit() async {
     final c = _controller;
     if (c == null) return;
-    final pts = widget.pts;
+    final pts = <latlng.LatLng>[...widget.routePts, ...widget.waypointPts];
     if (pts.isEmpty) return;
     if (pts.length == 1) {
       await c.moveCamera(
         gmaps.CameraUpdate.newLatLngZoom(
-          gmaps.LatLng(pts[0].latitude, pts[0].longitude),
+          gmaps.LatLng(pts.first.latitude, pts.first.longitude),
           12,
         ),
       );
@@ -177,9 +243,13 @@ class _MapPreviewWebState extends State<_MapPreviewWeb> {
 
   @override
   Widget build(BuildContext context) {
-    final pts = widget.pts;
+    final pts = <latlng.LatLng>[...widget.routePts, ...widget.waypointPts];
+    if (pts.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     final markers = <gmaps.Marker>{
-      for (final e in pts.asMap().entries)
+      for (final e in widget.waypointPts.asMap().entries)
         gmaps.Marker(
           markerId: gmaps.MarkerId('p_${e.key}'),
           position: gmaps.LatLng(e.value.latitude, e.value.longitude),
@@ -190,16 +260,25 @@ class _MapPreviewWebState extends State<_MapPreviewWeb> {
         ),
     };
     final polylines =
-        pts.length > 1
+        widget.routePts.length > 1
             ? <gmaps.Polyline>{
+              gmaps.Polyline(
+                polylineId: const gmaps.PolylineId('preview_outline'),
+                points:
+                    widget.routePts
+                        .map((p) => gmaps.LatLng(p.latitude, p.longitude))
+                        .toList(),
+                width: 5,
+                color: Colors.white.withValues(alpha: 0.7),
+              ),
               gmaps.Polyline(
                 polylineId: const gmaps.PolylineId('preview'),
                 points:
-                    pts
+                    widget.routePts
                         .map((p) => gmaps.LatLng(p.latitude, p.longitude))
                         .toList(),
                 width: 3,
-                color: Colors.blue.withOpacity(0.8),
+                color: widget.routeColor.withValues(alpha: 0.9),
               ),
             }
             : const <gmaps.Polyline>{};
@@ -215,6 +294,12 @@ class _MapPreviewWebState extends State<_MapPreviewWeb> {
       },
       markers: markers,
       polylines: polylines,
+      zoomControlsEnabled: false,
+      zoomGesturesEnabled: false,
+      scrollGesturesEnabled: false,
+      rotateGesturesEnabled: false,
+      tiltGesturesEnabled: false,
+      compassEnabled: false,
       mapToolbarEnabled: false,
       myLocationButtonEnabled: false,
     );

@@ -1,6 +1,14 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:trypr/services/pick_file_data_url.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 /// Public view for unlisted pages - accessible via direct link
@@ -23,6 +31,7 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
   final _formKey = GlobalKey<FormState>();
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, dynamic> _formValues = {}; // For non-text fields
+  final Set<String> _uploadingFileFieldIds = <String>{};
   bool _submitting = false;
   bool _submitted = false;
   String? _submissionError;
@@ -33,6 +42,99 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  ({Uint8List bytes, String contentType})? _decodeDataUrl(String dataUrl) {
+    final raw = dataUrl.trim();
+    if (!raw.startsWith('data:')) return null;
+    final comma = raw.indexOf(',');
+    if (comma <= 0) return null;
+
+    final header = raw.substring(0, comma);
+    final payload = raw.substring(comma + 1);
+
+    String contentType = 'application/octet-stream';
+    if (header.startsWith('data:')) {
+      final meta = header.substring(5);
+      final parts = meta.split(';');
+      if (parts.isNotEmpty && parts.first.trim().isNotEmpty) {
+        contentType = parts.first.trim();
+      }
+    }
+
+    try {
+      return (bytes: base64Decode(payload), contentType: contentType);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _sanitizeFileName(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return 'file.bin';
+    return trimmed.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  }
+
+  String _normalizeMarkdown(String raw) {
+    return raw.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trim();
+  }
+
+  Future<Map<String, dynamic>?> _pickAndUploadFormFile({
+    required String fieldId,
+    required String fieldLabel,
+  }) async {
+    if (!kIsWeb) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('File upload is currently web-only.')),
+        );
+      }
+      return null;
+    }
+
+    final picked = await pickFileDataUrl(
+      accept: '.pdf,.png,.jpg,.jpeg,.webp,.txt,.doc,.docx,.xls,.xlsx,.csv,.rtf',
+    );
+    if (picked == null) return null;
+
+    final decoded = _decodeDataUrl(picked.dataUrl);
+    if (decoded == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Unsupported file selected.')),
+        );
+      }
+      return null;
+    }
+
+    final safeName = _sanitizeFileName(picked.fileName);
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final storagePath =
+        'unlistedFormUploads/${widget.pageSlug}/$fieldId/${ts}_$safeName';
+    final ref = FirebaseStorage.instance.ref(storagePath);
+
+    final task = await ref.putData(
+      decoded.bytes,
+      SettableMetadata(
+        contentType: decoded.contentType,
+        customMetadata: {
+          'pageSlug': widget.pageSlug,
+          'fieldId': fieldId,
+          'fieldLabel': fieldLabel,
+          'originalName': picked.fileName,
+        },
+      ),
+    );
+    final url = await task.ref.getDownloadURL();
+
+    return {
+      'fileName': picked.fileName,
+      'url': url,
+      'contentType': decoded.contentType,
+      'sizeBytes': decoded.bytes.length,
+      'storagePath': storagePath,
+      'uploadedAt': DateTime.now().toIso8601String(),
+    };
   }
 
   Future<void> _submitForm(Map<String, dynamic> pageData) async {
@@ -62,6 +164,17 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
             fieldType == 'date' ||
             fieldType == 'checkbox') {
           value = _formValues[fieldId] ?? '';
+        } else if (fieldType == 'file') {
+          final fileData = _formValues[fieldId];
+          if (fileData is Map) {
+            value = Map<String, dynamic>.from(
+              fileData.cast<dynamic, dynamic>(),
+            );
+          } else if (fileData is String && fileData.trim().isNotEmpty) {
+            value = {'fileName': fileData.trim(), 'url': fileData.trim()};
+          } else {
+            value = <String, dynamic>{};
+          }
         } else if (fieldType == 'name') {
           final nameData = _formValues[fieldId] as Map?;
           value =
@@ -193,6 +306,8 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
           final title = data['title']?.toString() ?? 'Untitled Page';
           final description = data['description']?.toString() ?? '';
           final content = data['content']?.toString() ?? '';
+          final normalizedDescription = _normalizeMarkdown(description);
+          final normalizedContent = _normalizeMarkdown(content);
           final coverImage = data['coverImage']?.toString() ?? '';
           final formFields = (data['formFields'] as List<dynamic>?) ?? [];
           final formEnabled = data['formEnabled'] == true;
@@ -279,18 +394,60 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (description.isNotEmpty) ...[
-                        Text(
-                          description,
-                          style: TextStyle(
-                            fontSize: 18,
-                            color: Colors.grey[700],
+                      if (normalizedDescription.isNotEmpty) ...[
+                        MarkdownBody(
+                          data: normalizedDescription,
+                          selectable: true,
+                          styleSheet: MarkdownStyleSheet.fromTheme(
+                            Theme.of(context),
+                          ).copyWith(
+                            p: TextStyle(
+                              fontSize: 18,
+                              color: Colors.grey[700],
+                              height: 1.5,
+                            ),
+                            h1: const TextStyle(
+                              fontSize: 30,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            h2: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            h3: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 24),
                       ],
-                      if (content.isNotEmpty) ...[
-                        Text(content, style: const TextStyle(fontSize: 16)),
+                      if (normalizedContent.isNotEmpty) ...[
+                        MarkdownBody(
+                          data: normalizedContent,
+                          selectable: true,
+                          styleSheet: MarkdownStyleSheet.fromTheme(
+                            Theme.of(context),
+                          ).copyWith(
+                            p: const TextStyle(fontSize: 16, height: 1.55),
+                            h1: const TextStyle(
+                              fontSize: 34,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            h2: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            h3: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            h4: const TextStyle(
+                              fontSize: 19,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
                         const SizedBox(height: 32),
                       ],
 
@@ -495,7 +652,7 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
 
       case 'dropdown':
         return DropdownButtonFormField<String>(
-          value: _formValues[fieldId] as String?,
+          initialValue: _formValues[fieldId] as String?,
           decoration: decoration,
           items:
               options
@@ -668,13 +825,30 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
         );
 
       case 'file':
-        return FormField<String>(
-          initialValue: _formValues[fieldId] as String?,
+        return FormField<Map<String, dynamic>>(
+          initialValue:
+              _formValues[fieldId] is Map
+                  ? Map<String, dynamic>.from(
+                    (_formValues[fieldId] as Map).cast<dynamic, dynamic>(),
+                  )
+                  : null,
           validator:
               required
-                  ? (v) => v == null || v.isEmpty ? 'Required' : null
+                  ? (v) {
+                    final url = (v?['url'] ?? '').toString().trim();
+                    return url.isEmpty ? 'Required' : null;
+                  }
                   : null,
           builder: (field) {
+            final current =
+                _formValues[fieldId] is Map
+                    ? Map<String, dynamic>.from(
+                      (_formValues[fieldId] as Map).cast<dynamic, dynamic>(),
+                    )
+                    : <String, dynamic>{};
+            final fileName = (current['fileName'] ?? '').toString();
+            final hasFile = (current['url'] ?? '').toString().trim().isNotEmpty;
+            final uploading = _uploadingFileFieldIds.contains(fieldId);
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -687,30 +861,72 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                 ),
                 const SizedBox(height: 8),
                 OutlinedButton.icon(
-                  onPressed: () {
-                    // Placeholder for file upload
-                    setState(
-                      () => _formValues[fieldId] = 'file_placeholder.pdf',
-                    );
-                    field.didChange('file_placeholder.pdf');
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('File upload coming soon'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.upload_file),
+                  onPressed:
+                      uploading
+                          ? null
+                          : () async {
+                            setState(() {
+                              _uploadingFileFieldIds.add(fieldId);
+                            });
+                            try {
+                              final uploaded = await _pickAndUploadFormFile(
+                                fieldId: fieldId,
+                                fieldLabel: label,
+                              );
+                              if (uploaded != null && mounted) {
+                                setState(() => _formValues[fieldId] = uploaded);
+                                field.didChange(uploaded);
+                              }
+                            } catch (e) {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showTryprSnackBar(
+                                SnackBar(
+                                  content: Text('File upload failed: $e'),
+                                ),
+                              );
+                            } finally {
+                              if (mounted) {
+                                setState(() {
+                                  _uploadingFileFieldIds.remove(fieldId);
+                                });
+                              }
+                            }
+                          },
+                  icon:
+                      uploading
+                          ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                          : const Icon(Icons.upload_file),
                   label: Text(
-                    (_formValues[fieldId] as String?)?.isNotEmpty == true
-                        ? 'File Selected'
+                    uploading
+                        ? 'Uploading...'
+                        : hasFile
+                        ? fileName
                         : 'Choose File',
+                    overflow: TextOverflow.ellipsis,
                   ),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.all(16),
                     alignment: Alignment.centerLeft,
                   ),
                 ),
+                if (hasFile)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _formValues.remove(fieldId);
+                        });
+                        field.didChange(null);
+                      },
+                      icon: const Icon(Icons.delete_outline, size: 16),
+                      label: const Text('Remove file'),
+                    ),
+                  ),
                 if (field.hasError)
                   Padding(
                     padding: const EdgeInsets.only(left: 12, top: 8),
@@ -734,10 +950,12 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
               required
                   ? (v) {
                     if (v == null) return 'Required';
-                    if (v['first']?.trim().isEmpty ?? true)
+                    if (v['first']?.trim().isEmpty ?? true) {
                       return 'First name required';
-                    if (v['last']?.trim().isEmpty ?? true)
+                    }
+                    if (v['last']?.trim().isEmpty ?? true) {
                       return 'Last name required';
+                    }
                     return null;
                   }
                   : null,
@@ -813,14 +1031,18 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
               required
                   ? (v) {
                     if (v == null) return 'Required';
-                    if (v['street']?.trim().isEmpty ?? true)
+                    if (v['street']?.trim().isEmpty ?? true) {
                       return 'Street required';
-                    if (v['city']?.trim().isEmpty ?? true)
+                    }
+                    if (v['city']?.trim().isEmpty ?? true) {
                       return 'City required';
-                    if (v['province']?.trim().isEmpty ?? true)
+                    }
+                    if (v['province']?.trim().isEmpty ?? true) {
                       return 'Province required';
-                    if (v['postal']?.trim().isEmpty ?? true)
+                    }
+                    if (v['postal']?.trim().isEmpty ?? true) {
                       return 'Postal code required';
+                    }
                     return null;
                   }
                   : null,
@@ -989,7 +1211,7 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                                     'SIGNED_${DateTime.now().millisecondsSinceEpoch}';
                               });
                               field.didChange(_formValues[fieldId] as String);
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              ScaffoldMessenger.of(context).showTryprSnackBar(
                                 const SnackBar(
                                   content: Text('Signature captured'),
                                   duration: Duration(seconds: 1),

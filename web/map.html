@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Trypr 3D Map</title>
-    <meta name="google-maps-api-key" content="" />
+    <meta name="google-maps-api-key" content="AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw" />
     <style>
       * {
         margin: 0;
@@ -104,11 +104,78 @@
       <p id="trip-stops">Stops: N/A</p>
     </div>
 
-    <script async src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw&v=alpha&libraries=maps3d,geometry&loading=async"></script>
     <script>
       let map3d = null;
       let directionsService = null;
       let currentPolylines = [];
+      let mapsScriptLoadPromise = null;
+
+      const PARENT_ORIGIN =
+        window.location.origin && window.location.origin !== 'null'
+          ? window.location.origin
+          : '*';
+
+      function postToParent(payload) {
+        window.parent.postMessage(payload, PARENT_ORIGIN);
+      }
+
+      function parseMessageData(data) {
+        if (!data) return null;
+        if (typeof data === 'string') {
+          try {
+            return JSON.parse(data);
+          } catch (_) {
+            return null;
+          }
+        }
+        if (typeof data === 'object') {
+          return data;
+        }
+        return null;
+      }
+
+      function resolveMapsApiKey() {
+        const queryKey = new URLSearchParams(window.location.search).get('key');
+        if (queryKey && queryKey.trim()) {
+          return queryKey.trim();
+        }
+
+        const metaKey = (
+          document
+            .querySelector('meta[name="google-maps-api-key"]')
+            ?.getAttribute('content') || ''
+        ).trim();
+        return metaKey;
+      }
+
+      async function ensureMapsApiLoaded() {
+        if (window.google && window.google.maps) return;
+
+        if (!mapsScriptLoadPromise) {
+          mapsScriptLoadPromise = new Promise((resolve, reject) => {
+            const mapsApiKey = resolveMapsApiKey();
+            if (!mapsApiKey) {
+              reject(new Error('Google Maps API key missing'));
+              return;
+            }
+
+            const script = document.createElement('script');
+            script.async = true;
+            script.dataset.tryprGmaps = '1';
+            script.src =
+              'https://maps.googleapis.com/maps/api/js' +
+              '?key=' +
+              encodeURIComponent(mapsApiKey) +
+              '&v=alpha&libraries=maps3d,geometry&loading=async';
+            script.onload = () => resolve();
+            script.onerror = () =>
+              reject(new Error('Failed to load Google Maps JavaScript API'));
+            document.head.appendChild(script);
+          });
+        }
+
+        await mapsScriptLoadPromise;
+      }
 
       // Initialize the 3D map once the API loads
       async function initMap() {
@@ -136,7 +203,7 @@
           directionsService = new google.maps.DirectionsService();
 
           updateStatus('3D Earth ready');
-          window.parent.postMessage({ type: 'map_ready' }, '*');
+          postToParent({ type: 'map_ready' });
           console.log('[MAP] ✓ 3D Map initialized successfully');
         } catch (error) {
           console.error('[MAP] ✗ Initialization error:', error);
@@ -145,11 +212,13 @@
       }
 
       // Ensure initialization happens after page loads
-      function startInitialization() {
-        if (window.google && window.google.maps) {
-          initMap();
-        } else {
-          setTimeout(startInitialization, 100);
+      async function startInitialization() {
+        try {
+          await ensureMapsApiLoaded();
+          await initMap();
+        } catch (error) {
+          console.error('[MAP] Bootstrap error:', error);
+          updateStatus(`Error: ${error.message}`);
         }
       }
 
@@ -361,7 +430,16 @@
 
       // Handle messages from Flutter
       window.addEventListener('message', async (event) => {
-        const msg = event.data || {};
+        if (
+          event.origin &&
+          window.location.origin !== 'null' &&
+          event.origin !== window.location.origin
+        ) {
+          return;
+        }
+
+        const msg = parseMessageData(event.data);
+        if (!msg) return;
         const { type, data } = msg;
 
         if (!type) return;
@@ -370,7 +448,7 @@
 
         switch (type) {
           case 'configure':
-            // API key configuration from Flutter (optional, already in script tag)
+            // API key is configured via query string or meta tag.
             console.log('[MAP] Configuration received');
             break;
 
@@ -408,7 +486,7 @@
 
           case 'ping':
           case 'flutter_ping':
-            window.parent.postMessage({ type: 'pong' }, '*');
+            postToParent({ type: 'pong' });
             console.log('[MAP] Ping received, pong sent');
             break;
 

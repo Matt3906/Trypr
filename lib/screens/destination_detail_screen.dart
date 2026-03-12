@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 import 'package:trypr/services/address_search.dart';
 import 'package:trypr/services/ai_suggestions.dart';
 import 'package:trypr/widgets/activity_finder_modal.dart';
 import 'package:trypr/widgets/premium_upsell_dialog.dart';
+import 'package:trypr/widgets/web_interceptor.dart';
 
 /// Destination Detail Screen V4: Fixed text issues, calendar grid, start/end time, better saving
 class DestinationDetailScreen extends StatefulWidget {
@@ -73,6 +77,11 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   // Horizontal scroll controllers for each week view (itinerary)
   final Map<int, ScrollController> _weekItineraryScrollControllers = {};
 
+  Widget _overlaySafe(Widget child) {
+    if (!kIsWeb) return child;
+    return WebInterceptor(child: child);
+  }
+
   void _showPremiumUpsell() {
     showPremiumUpsellDialog(context);
   }
@@ -116,9 +125,9 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       _destData['itinerary'] = updated;
     });
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Added to Day ${dayIndex + 1}')));
+    ScaffoldMessenger.of(context).showTryprSnackBar(
+      SnackBar(content: Text('Added to Day ${dayIndex + 1}')),
+    );
   }
 
   Future<void> _openActivityFinder() async {
@@ -126,15 +135,15 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
         (_destData['startDate'] ?? '').toString().isNotEmpty &&
         (_destData['endDate'] ?? '').toString().isNotEmpty;
     if (!datesOk) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Select trip dates first')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Select trip dates first')),
+      );
       return;
     }
 
     final coords = _tryGetDestinationLatLon();
     if (coords == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(content: Text('Missing destination coordinates')),
       );
       return;
@@ -420,7 +429,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           const SnackBar(content: Text('✓ Destination plan saved')),
         );
       }
@@ -428,7 +437,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Failed to save: $e')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -605,14 +614,14 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
+          LayoutBuilder(
+            builder: (ctx, box) {
+              final compact = box.maxWidth < 560;
+              final title = Text(
                 'Accommodations',
                 style: Theme.of(context).textTheme.titleLarge,
-              ),
-              GradientButton(
+              );
+              final aiAction = GradientButton(
                 onPressed: () => _showAIAssistant('accommodations'),
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
@@ -622,8 +631,20 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                     Text('AI Suggest'),
                   ],
                 ),
-              ),
-            ],
+              );
+
+              if (compact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [title, const SizedBox(height: 10), aiAction],
+                );
+              }
+
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [title, aiAction],
+              );
+            },
           ),
           const SizedBox(height: 16),
           ...accommodations.asMap().entries.map((entry) {
@@ -917,12 +938,16 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Itinerary', style: Theme.of(context).textTheme.titleLarge),
-              Row(
-                mainAxisSize: MainAxisSize.min,
+          child: LayoutBuilder(
+            builder: (ctx, box) {
+              final compact = box.maxWidth < 760;
+              final title = Text(
+                'Itinerary',
+                style: Theme.of(context).textTheme.titleLarge,
+              );
+              final actions = Wrap(
+                spacing: 10,
+                runSpacing: 8,
                 children: [
                   TextButton.icon(
                     style: TextButton.styleFrom(
@@ -932,7 +957,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                     icon: const Icon(Icons.explore),
                     label: const Text('Find Things to Do'),
                   ),
-                  const SizedBox(width: 10),
                   GradientButton(
                     onPressed: () => _showAIAssistant('itinerary'),
                     child: const Row(
@@ -945,8 +969,29 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
                     ),
                   ),
                 ],
-              ),
-            ],
+              );
+
+              if (compact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [title, const SizedBox(height: 10), actions],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: title),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: actions,
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
         // Week tabbar
@@ -1323,361 +1368,385 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       builder:
           (ctx) => StatefulBuilder(
             builder:
-                (ctx, setDialogState) => AlertDialog(
-                  title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
-                  content: SingleChildScrollView(
-                    child: SizedBox(
-                      width: 400,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Title
-                          TextField(
-                            controller: titleCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Activity Title',
-                              border: OutlineInputBorder(),
+                (ctx, setDialogState) => _overlaySafe(
+                  AlertDialog(
+                    title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
+                    content: SingleChildScrollView(
+                      child: SizedBox(
+                        width: 400,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Title
+                            TextField(
+                              controller: titleCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Activity Title',
+                                border: OutlineInputBorder(),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 12),
-                          // Start Time picker (clock only)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: Colors.grey.shade400,
+                            const SizedBox(height: 12),
+                            // Start Time picker (clock only)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: Colors.grey.shade400,
+                                      ),
+                                      borderRadius: BorderRadius.circular(4),
                                     ),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Start Time',
-                                        style:
-                                            Theme.of(ctx).textTheme.labelSmall,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        startTime.isEmpty
-                                            ? 'Not set'
-                                            : startTime,
-                                        style:
-                                            Theme.of(ctx).textTheme.titleSmall,
-                                      ),
-                                    ],
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Start Time',
+                                          style:
+                                              Theme.of(
+                                                ctx,
+                                              ).textTheme.labelSmall,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          startTime.isEmpty
+                                              ? 'Not set'
+                                              : startTime,
+                                          style:
+                                              Theme.of(
+                                                ctx,
+                                              ).textTheme.titleSmall,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              GradientButton(
-                                onPressed: () async {
-                                  final timeOfDay = await showTimePicker(
-                                    context: ctx,
-                                    initialTime: TimeOfDay.now(),
-                                  );
-                                  if (timeOfDay != null) {
-                                    final formatted =
-                                        '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
-                                    setDialogState(() {
-                                      startTime = formatted;
-                                    });
-                                  }
-                                },
-                                child: const Icon(Icons.access_time, size: 20),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          // End Time picker (clock only)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: Colors.grey.shade400,
-                                    ),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'End Time',
-                                        style:
-                                            Theme.of(ctx).textTheme.labelSmall,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        endTime.isEmpty ? 'Not set' : endTime,
-                                        style:
-                                            Theme.of(ctx).textTheme.titleSmall,
-                                      ),
-                                    ],
+                                const SizedBox(width: 8),
+                                GradientButton(
+                                  onPressed: () async {
+                                    final timeOfDay = await showTimePicker(
+                                      context: ctx,
+                                      initialTime: TimeOfDay.now(),
+                                    );
+                                    if (timeOfDay != null) {
+                                      final formatted =
+                                          '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
+                                      setDialogState(() {
+                                        startTime = formatted;
+                                      });
+                                    }
+                                  },
+                                  child: const Icon(
+                                    Icons.access_time,
+                                    size: 20,
                                   ),
                                 ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            // End Time picker (clock only)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: Colors.grey.shade400,
+                                      ),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'End Time',
+                                          style:
+                                              Theme.of(
+                                                ctx,
+                                              ).textTheme.labelSmall,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          endTime.isEmpty ? 'Not set' : endTime,
+                                          style:
+                                              Theme.of(
+                                                ctx,
+                                              ).textTheme.titleSmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                GradientButton(
+                                  onPressed: () async {
+                                    final timeOfDay = await showTimePicker(
+                                      context: ctx,
+                                      initialTime: TimeOfDay.now(),
+                                    );
+                                    if (timeOfDay != null) {
+                                      final formatted =
+                                          '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
+                                      setDialogState(() {
+                                        endTime = formatted;
+                                      });
+                                    }
+                                  },
+                                  child: const Icon(
+                                    Icons.access_time,
+                                    size: 20,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            // Location
+                            TextField(
+                              controller: locationCtrl,
+                              decoration: InputDecoration(
+                                labelText: 'Location',
+                                border: const OutlineInputBorder(),
+                                suffixIcon:
+                                    locationLoading
+                                        ? const Padding(
+                                          padding: EdgeInsets.all(12.0),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          ),
+                                        )
+                                        : null,
                               ),
-                              const SizedBox(width: 8),
-                              GradientButton(
-                                onPressed: () async {
-                                  final timeOfDay = await showTimePicker(
-                                    context: ctx,
-                                    initialTime: TimeOfDay.now(),
-                                  );
-                                  if (timeOfDay != null) {
-                                    final formatted =
-                                        '${timeOfDay.hour.toString().padLeft(2, '0')}:${timeOfDay.minute.toString().padLeft(2, '0')}';
+                              onChanged: (v) {
+                                locationDebounce?.cancel();
+                                if (v.trim().isEmpty) {
+                                  setDialogState(() {
+                                    locationSuggestions = [];
+                                    locationLoading = false;
+                                    locationLat = null;
+                                    locationLon = null;
+                                  });
+                                  return;
+                                }
+                                locationDebounce = Timer(
+                                  const Duration(milliseconds: 350),
+                                  () async {
+                                    setDialogState(
+                                      () => locationLoading = true,
+                                    );
+                                    final results =
+                                        await AddressSearchService.search(
+                                          v.trim(),
+                                        );
+                                    if (!mounted) return;
                                     setDialogState(() {
-                                      endTime = formatted;
+                                      locationSuggestions = results;
+                                      locationLoading = false;
                                     });
-                                  }
-                                },
-                                child: const Icon(Icons.access_time, size: 20),
+                                  },
+                                );
+                              },
+                            ),
+                            if (locationSuggestions.isNotEmpty)
+                              Container(
+                                margin: const EdgeInsets.only(top: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  border: Border.all(
+                                    color: Colors.grey.shade300,
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.04),
+                                      blurRadius: 8,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                constraints: const BoxConstraints(
+                                  maxHeight: 200,
+                                ),
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: locationSuggestions.length,
+                                  itemBuilder: (ctx, i) {
+                                    final s = locationSuggestions[i];
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text(
+                                        s.displayName,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      onTap: () {
+                                        setDialogState(() {
+                                          locationCtrl.text = s.displayName;
+                                          locationLat = s.lat;
+                                          locationLon = s.lon;
+                                          locationSuggestions = [];
+                                        });
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          // Location
-                          TextField(
-                            controller: locationCtrl,
-                            decoration: InputDecoration(
-                              labelText: 'Location',
-                              border: const OutlineInputBorder(),
-                              suffixIcon:
-                                  locationLoading
-                                      ? const Padding(
-                                        padding: EdgeInsets.all(12.0),
-                                        child: SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
+                            if (locationLoading && locationSuggestions.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 6),
+                                child: LinearProgressIndicator(minHeight: 2),
+                              ),
+                            const SizedBox(height: 12),
+                            // Notes
+                            TextField(
+                              controller: notesCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Notes',
+                                border: OutlineInputBorder(),
+                              ),
+                              maxLines: 3,
+                            ),
+                            const SizedBox(height: 12),
+                            // Category dropdown
+                            DropdownButtonFormField<String>(
+                              initialValue: selectedCategory,
+                              decoration: const InputDecoration(
+                                labelText: 'Category',
+                                border: OutlineInputBorder(),
+                              ),
+                              items:
+                                  travelCategories.keys
+                                      .map(
+                                        (cat) => DropdownMenuItem(
+                                          value: cat,
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 12,
+                                                height: 12,
+                                                decoration: BoxDecoration(
+                                                  color: travelCategories[cat],
+                                                  borderRadius:
+                                                      BorderRadius.circular(2),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(cat),
+                                            ],
                                           ),
                                         ),
                                       )
-                                      : null,
-                            ),
-                            onChanged: (v) {
-                              locationDebounce?.cancel();
-                              if (v.trim().isEmpty) {
+                                      .toList(),
+                              onChanged: (value) {
                                 setDialogState(() {
-                                  locationSuggestions = [];
-                                  locationLoading = false;
-                                  locationLat = null;
-                                  locationLon = null;
+                                  selectedCategory = value ?? 'Hiking';
                                 });
-                                return;
-                              }
-                              locationDebounce = Timer(
-                                const Duration(milliseconds: 350),
-                                () async {
-                                  setDialogState(() => locationLoading = true);
-                                  final results =
-                                      await AddressSearchService.search(
-                                        v.trim(),
-                                      );
-                                  if (!mounted) return;
-                                  setDialogState(() {
-                                    locationSuggestions = results;
-                                    locationLoading = false;
-                                  });
-                                },
-                              );
-                            },
-                          ),
-                          if (locationSuggestions.isNotEmpty)
-                            Container(
-                              margin: const EdgeInsets.only(top: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                border: Border.all(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(8),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.04),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              constraints: const BoxConstraints(maxHeight: 200),
-                              child: ListView.builder(
-                                shrinkWrap: true,
-                                itemCount: locationSuggestions.length,
-                                itemBuilder: (ctx, i) {
-                                  final s = locationSuggestions[i];
-                                  return ListTile(
-                                    dense: true,
-                                    title: Text(
-                                      s.displayName,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    onTap: () {
-                                      setDialogState(() {
-                                        locationCtrl.text = s.displayName;
-                                        locationLat = s.lat;
-                                        locationLon = s.lon;
-                                        locationSuggestions = [];
-                                      });
-                                    },
-                                  );
-                                },
-                              ),
+                              },
                             ),
-                          if (locationLoading && locationSuggestions.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 6),
-                              child: LinearProgressIndicator(minHeight: 2),
-                            ),
-                          const SizedBox(height: 12),
-                          // Notes
-                          TextField(
-                            controller: notesCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Notes',
-                              border: OutlineInputBorder(),
-                            ),
-                            maxLines: 3,
-                          ),
-                          const SizedBox(height: 12),
-                          // Category dropdown
-                          DropdownButtonFormField<String>(
-                            initialValue: selectedCategory,
-                            decoration: const InputDecoration(
-                              labelText: 'Category',
-                              border: OutlineInputBorder(),
-                            ),
-                            items:
-                                travelCategories.keys
-                                    .map(
-                                      (cat) => DropdownMenuItem(
-                                        value: cat,
-                                        child: Row(
-                                          children: [
-                                            Container(
-                                              width: 12,
-                                              height: 12,
-                                              decoration: BoxDecoration(
-                                                color: travelCategories[cat],
-                                                borderRadius:
-                                                    BorderRadius.circular(2),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(cat),
-                                          ],
-                                        ),
-                                      ),
-                                    )
-                                    .toList(),
-                            onChanged: (value) {
-                              setDialogState(() {
-                                selectedCategory = value ?? 'Hiking';
-                              });
-                            },
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () {
-                        locationDebounce?.cancel();
-                        Navigator.pop(ctx);
-                      },
-                      child: const Text('Cancel'),
-                    ),
-                    if (isEdit)
+                    actions: [
                       TextButton(
                         onPressed: () {
                           locationDebounce?.cancel();
+                          Navigator.pop(ctx);
+                        },
+                        child: const Text('Cancel'),
+                      ),
+                      if (isEdit)
+                        TextButton(
+                          onPressed: () {
+                            locationDebounce?.cancel();
+                            setState(() {
+                              final idx = activities.indexOf(existingActivity);
+                              if (idx >= 0) {
+                                activities.removeAt(idx);
+                              }
+                              dayData['activities'] = activities;
+                              itinerary[dayIndex] = dayData;
+                              _destData['itinerary'] = itinerary;
+                            });
+                            Navigator.pop(ctx);
+                          },
+                          child: const Text(
+                            'Delete',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ),
+                      TextButton(
+                        onPressed: () {
+                          locationDebounce?.cancel();
+                          // Validate required fields
+                          if (titleCtrl.text.isEmpty) {
+                            ScaffoldMessenger.of(ctx).showTryprSnackBar(
+                              const SnackBar(
+                                content: Text('Please enter an activity title'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                            return;
+                          }
+                          if (startTime.isEmpty) {
+                            ScaffoldMessenger.of(ctx).showTryprSnackBar(
+                              const SnackBar(
+                                content: Text('Please set a start time'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                            return;
+                          }
+                          if (endTime.isEmpty) {
+                            ScaffoldMessenger.of(ctx).showTryprSnackBar(
+                              const SnackBar(
+                                content: Text('Please set an end time'),
+                                duration: Duration(seconds: 2),
+                              ),
+                            );
+                            return;
+                          }
+
                           setState(() {
-                            final idx = activities.indexOf(existingActivity);
-                            if (idx >= 0) {
-                              activities.removeAt(idx);
+                            final newActivity = {
+                              'title': titleCtrl.text,
+                              'startTime': startTime,
+                              'endTime': endTime,
+                              'location': locationCtrl.text,
+                              'notes': notesCtrl.text,
+                              'category': selectedCategory,
+                              if (locationLat != null)
+                                'locationLat': locationLat,
+                              if (locationLon != null)
+                                'locationLon': locationLon,
+                            };
+
+                            if (isEdit) {
+                              final idx = activities.indexOf(existingActivity);
+                              if (idx >= 0) {
+                                activities[idx] = newActivity;
+                              }
+                            } else {
+                              activities.add(newActivity);
                             }
+
                             dayData['activities'] = activities;
                             itinerary[dayIndex] = dayData;
                             _destData['itinerary'] = itinerary;
                           });
                           Navigator.pop(ctx);
                         },
-                        child: const Text(
-                          'Delete',
-                          style: TextStyle(color: Colors.red),
-                        ),
+                        child: const Text('Save'),
                       ),
-                    TextButton(
-                      onPressed: () {
-                        locationDebounce?.cancel();
-                        // Validate required fields
-                        if (titleCtrl.text.isEmpty) {
-                          ScaffoldMessenger.of(ctx).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter an activity title'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          return;
-                        }
-                        if (startTime.isEmpty) {
-                          ScaffoldMessenger.of(ctx).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please set a start time'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          return;
-                        }
-                        if (endTime.isEmpty) {
-                          ScaffoldMessenger.of(ctx).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please set an end time'),
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          return;
-                        }
-
-                        setState(() {
-                          final newActivity = {
-                            'title': titleCtrl.text,
-                            'startTime': startTime,
-                            'endTime': endTime,
-                            'location': locationCtrl.text,
-                            'notes': notesCtrl.text,
-                            'category': selectedCategory,
-                            if (locationLat != null) 'locationLat': locationLat,
-                            if (locationLon != null) 'locationLon': locationLon,
-                          };
-
-                          if (isEdit) {
-                            final idx = activities.indexOf(existingActivity);
-                            if (idx >= 0) {
-                              activities[idx] = newActivity;
-                            }
-                          } else {
-                            activities.add(newActivity);
-                          }
-
-                          dayData['activities'] = activities;
-                          itinerary[dayIndex] = dayData;
-                          _destData['itinerary'] = itinerary;
-                        });
-                        Navigator.pop(ctx);
-                      },
-                      child: const Text('Save'),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
           ),
     );
@@ -1756,15 +1825,15 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
         (_destData['startDate'] ?? '').toString().isNotEmpty &&
         (_destData['endDate'] ?? '').toString().isNotEmpty;
     if (!datesOk) {
-      ScaffoldMessenger.of(
-        this.context,
-      ).showSnackBar(const SnackBar(content: Text('Select trip dates first')));
+      ScaffoldMessenger.of(this.context).showTryprSnackBar(
+        const SnackBar(content: Text('Select trip dates first')),
+      );
       return;
     }
 
     final coords = _tryGetDestinationLatLon();
     if (coords == null) {
-      ScaffoldMessenger.of(this.context).showSnackBar(
+      ScaffoldMessenger.of(this.context).showTryprSnackBar(
         const SnackBar(content: Text('Missing destination coordinates')),
       );
       return;
@@ -1779,17 +1848,19 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       context: this.context,
       barrierDismissible: false,
       builder:
-          (_) => const AlertDialog(
-            content: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 12),
-                Expanded(child: Text('Generating suggestions...')),
-              ],
+          (_) => _overlaySafe(
+            const AlertDialog(
+              content: Row(
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 12),
+                  Expanded(child: Text('Generating suggestions...')),
+                ],
+              ),
             ),
           ),
     );
@@ -1818,7 +1889,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
         Navigator.of(this.context).pop();
 
         if (suggestions.isEmpty) {
-          ScaffoldMessenger.of(this.context).showSnackBar(
+          ScaffoldMessenger.of(this.context).showTryprSnackBar(
             const SnackBar(content: Text('No suggestions returned')),
           );
           return;
@@ -1828,7 +1899,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
           await _applyAccommodationSuggestion(suggestions.first);
 
           if (!mounted) return;
-          ScaffoldMessenger.of(this.context).showSnackBar(
+          ScaffoldMessenger.of(this.context).showTryprSnackBar(
             SnackBar(
               content: const Text('Filled accommodation fields from AI'),
               action:
@@ -1852,11 +1923,6 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
 
         // Itinerary suggestions
         setState(() {
-          final itinerary = List<Map<String, dynamic>>.from(
-            (_destData['itinerary'] as List<dynamic>? ?? []).map(
-              (d) => Map<String, dynamic>.from(d as Map),
-            ),
-          );
           _ensureItineraryLength(_dayCount);
 
           final updated = List<Map<String, dynamic>>.from(
@@ -1896,17 +1962,28 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
           _destData['itinerary'] = updated;
         });
 
-        ScaffoldMessenger.of(this.context).showSnackBar(
+        ScaffoldMessenger.of(this.context).showTryprSnackBar(
           SnackBar(content: Text('Added ${suggestions.length} activities')),
         );
       } on PremiumRequiredException {
         if (mounted) Navigator.of(this.context).pop();
         _showPremiumUpsell();
+      } on FirebaseFunctionsException catch (e) {
+        if (mounted) Navigator.of(this.context).pop();
+        final code = e.code;
+        final message = (e.message ?? '').trim();
+        ScaffoldMessenger.of(this.context).showTryprSnackBar(
+          SnackBar(
+            content: Text(
+              'AI Suggest failed [$code]: ${message.isEmpty ? 'See backend logs for aiSuggest.' : message}',
+            ),
+          ),
+        );
       } catch (e) {
         if (mounted) Navigator.of(this.context).pop();
         ScaffoldMessenger.of(
           this.context,
-        ).showSnackBar(SnackBar(content: Text('AI Suggest failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('AI Suggest failed: $e')));
       }
     }();
   }

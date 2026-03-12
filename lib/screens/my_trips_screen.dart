@@ -1,7 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/theme/app_theme.dart';
+import 'package:trypr/widgets/map_preview.dart';
+import 'package:trypr/widgets/share_trip_dialog.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/screens/trip_detail_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
@@ -57,8 +60,39 @@ class _HoverableState extends State<_Hoverable> {
   }
 }
 
+class _TripCardPreview extends StatelessWidget {
+  final List<dynamic> waypoints;
+  final List<dynamic> routeGeometry;
+  final String transportMode;
+  final List<String> segmentTransportModes;
+
+  const _TripCardPreview({
+    required this.waypoints,
+    required this.routeGeometry,
+    required this.transportMode,
+    required this.segmentTransportModes,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(color: Color(0xFFE5EEF5)),
+      child: IgnorePointer(
+        child: MapPreview(
+          waypoints: waypoints,
+          routeGeometry: routeGeometry,
+          transportMode: transportMode,
+          segmentTransportModes: segmentTransportModes,
+        ),
+      ),
+    );
+  }
+}
+
 class _MyTripsScreenState extends State<MyTripsScreen> {
   User? get _user => FirebaseAuth.instance.currentUser;
+  final Map<String, String> _resolveKeyByDocId = {};
+  final Map<String, Future<Map<String, dynamic>>> _resolveFutureByDocId = {};
 
   Stream<QuerySnapshot<Map<String, dynamic>>>? _tripsStream() {
     final u = _user;
@@ -109,16 +143,145 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
     return emoji.isNotEmpty ? emoji : '🧭';
   }
 
-  List<Map<String, dynamic>> _mapPoints(List<dynamic> waypoints) {
-    return waypoints
-        .map(
-          (w) => {
-            'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
-            'lon': (w['lon'] ?? w['longitude'] ?? w['lng'] ?? 0.0),
-            'name': w['name'] ?? '',
-          },
-        )
-        .toList();
+  String? _tripRefPathFromData(Map<String, dynamic> data) {
+    final raw = data['tripRef'];
+    if (raw is String) {
+      final v = raw.trim();
+      return v.isEmpty ? null : v;
+    }
+    if (raw is DocumentReference) return raw.path;
+    final v = raw?.toString().trim();
+    if (v == null || v.isEmpty) return null;
+    return v;
+  }
+
+  bool _hasWaypoints(Map<String, dynamic> data) {
+    final w = data['waypoints'];
+    return w is List && w.isNotEmpty;
+  }
+
+  String _resolveKey(String docId, Map<String, dynamic> data) {
+    final tripRef = _tripRefPathFromData(data) ?? '';
+    final waypointCount = (data['waypoints'] as List?)?.length ?? 0;
+    final updated = (data['updatedAt'] ?? data['createdAt'] ?? '').toString();
+    return '$docId|$tripRef|$waypointCount|$updated';
+  }
+
+  Future<Map<String, dynamic>> _resolvedTripData(
+    String docId,
+    Map<String, dynamic> data,
+  ) {
+    final key = _resolveKey(docId, data);
+    final existingKey = _resolveKeyByDocId[docId];
+    if (existingKey == key && _resolveFutureByDocId[docId] != null) {
+      return _resolveFutureByDocId[docId]!;
+    }
+    _resolveKeyByDocId[docId] = key;
+    final future = _resolveTripDataImpl(docId, data);
+    _resolveFutureByDocId[docId] = future;
+    return future;
+  }
+
+  Future<Map<String, dynamic>> _resolveTripDataImpl(
+    String docId,
+    Map<String, dynamic> local,
+  ) async {
+    final out = Map<String, dynamic>.from(local);
+    final tripRefPath = _tripRefPathFromData(out);
+    if (tripRefPath == null) return out;
+
+    final needsHydration =
+        !_hasWaypoints(out) ||
+        out['transportMode'] == null ||
+        out['segmentTransportModes'] == null ||
+        out['segmentRoutingTypes'] == null ||
+        out['routeVia'] == null ||
+        out['routeGeometry3d'] == null ||
+        out['routeInstructions'] == null ||
+        out['routeCacheKey'] == null;
+    if (!needsHydration) return out;
+
+    try {
+      final remoteDoc = await FirebaseFirestore.instance.doc(tripRefPath).get();
+      if (!remoteDoc.exists) return out;
+      final remote = remoteDoc.data() ?? <String, dynamic>{};
+      final merged = Map<String, dynamic>.from(remote)..addAll(out);
+      final syncPayload = <String, dynamic>{};
+      final remoteWaypoints = remote['waypoints'] ?? remote['stops'];
+      if (!_hasWaypoints(local) &&
+          remoteWaypoints is List &&
+          remoteWaypoints.isNotEmpty) {
+        merged['waypoints'] = remoteWaypoints;
+        syncPayload['waypoints'] = remoteWaypoints;
+      }
+      if (local['startDate'] == null && merged['startDate'] != null) {
+        syncPayload['startDate'] = merged['startDate'];
+      }
+      if (local['endDate'] == null && merged['endDate'] != null) {
+        syncPayload['endDate'] = merged['endDate'];
+      }
+      if (local['totalKm'] == null && merged['totalKm'] != null) {
+        syncPayload['totalKm'] = merged['totalKm'];
+      }
+      if (local['transportMode'] == null && merged['transportMode'] != null) {
+        syncPayload['transportMode'] = merged['transportMode'];
+      }
+      if (local['segmentTransportModes'] == null &&
+          merged['segmentTransportModes'] != null) {
+        syncPayload['segmentTransportModes'] = merged['segmentTransportModes'];
+      }
+      if (local['segmentRoutingTypes'] == null &&
+          merged['segmentRoutingTypes'] != null) {
+        syncPayload['segmentRoutingTypes'] = merged['segmentRoutingTypes'];
+      }
+      if (local['routeVia'] == null && merged['routeVia'] != null) {
+        syncPayload['routeVia'] = merged['routeVia'];
+      }
+      if (local['routeGeometry3d'] == null &&
+          merged['routeGeometry3d'] != null) {
+        syncPayload['routeGeometry3d'] = merged['routeGeometry3d'];
+      }
+      if (local['routeInstructions'] == null &&
+          merged['routeInstructions'] != null) {
+        syncPayload['routeInstructions'] = merged['routeInstructions'];
+      }
+      if (local['routeCacheKey'] == null && merged['routeCacheKey'] != null) {
+        syncPayload['routeCacheKey'] = merged['routeCacheKey'];
+      }
+      if (local['transitArrivalStop'] == null &&
+          merged['transitArrivalStop'] != null) {
+        syncPayload['transitArrivalStop'] = merged['transitArrivalStop'];
+      }
+      merged['tripRef'] = tripRefPath;
+
+      // Backfill local cache so previews/opening stay populated for old shared trips.
+      final me = _user;
+      if (me != null && syncPayload.isNotEmpty) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(me.uid)
+            .collection('trips')
+            .doc(docId)
+            .set(syncPayload, SetOptions(merge: true));
+      }
+
+      return merged;
+    } catch (_) {
+      return out;
+    }
+  }
+
+  Future<void> _openTripFromMyTrips(
+    String docId,
+    Map<String, dynamic> data,
+  ) async {
+    final resolved = await _resolvedTripData(docId, data);
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TripDetailScreen(docId: docId, data: resolved),
+      ),
+    );
   }
 
   Future<void> _deleteTrip(String docId) async {
@@ -143,9 +306,9 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       final tripDoc = await FirebaseFirestore.instance.doc(tripRefPath).get();
       if (!tripDoc.exists) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Trip not available')));
+          ScaffoldMessenger.of(context).showTryprSnackBar(
+            const SnackBar(content: Text('Trip not available')),
+          );
         }
         return;
       }
@@ -167,7 +330,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Open failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Open failed: $e')));
       }
     }
   }
@@ -184,13 +347,15 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       final tripDoc = await FirebaseFirestore.instance.doc(tripRefPath).get();
       if (!tripDoc.exists) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showTryprSnackBar(
             const SnackBar(content: Text('Original trip not found')),
           );
         }
         return;
       }
       final ownerName = data['ownerName'] ?? data['ownerUid'] ?? '';
+      final remoteData = tripDoc.data() ?? <String, dynamic>{};
+      final remoteWaypoints = remoteData['waypoints'] ?? remoteData['stops'];
       await FirebaseFirestore.instance
           .collection('users')
           .doc(u.uid)
@@ -200,6 +365,22 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                 data['tripName'] ?? tripDoc.data()?['name'] ?? 'Shared Trip',
             'tripRef': tripRefPath,
             'sharedFrom': ownerName,
+            if (remoteWaypoints is List && remoteWaypoints.isNotEmpty)
+              'waypoints': remoteWaypoints,
+            if (remoteData['startDate'] != null)
+              'startDate': remoteData['startDate'],
+            if (remoteData['endDate'] != null) 'endDate': remoteData['endDate'],
+            if (remoteData['totalKm'] != null) 'totalKm': remoteData['totalKm'],
+            if (remoteData['transportMode'] != null)
+              'transportMode': remoteData['transportMode'],
+            if (remoteData['segmentTransportModes'] != null)
+              'segmentTransportModes': remoteData['segmentTransportModes'],
+            if (remoteData['segmentRoutingTypes'] != null)
+              'segmentRoutingTypes': remoteData['segmentRoutingTypes'],
+            if (remoteData['routeVia'] != null)
+              'routeVia': remoteData['routeVia'],
+            if (remoteData['transitArrivalStop'] != null)
+              'transitArrivalStop': remoteData['transitArrivalStop'],
             'createdAt': FieldValue.serverTimestamp(),
           });
       await FirebaseFirestore.instance
@@ -209,7 +390,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           .doc(sharedDoc.id)
           .delete();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           const SnackBar(content: Text('Trip accepted and added to My Trips')),
         );
       }
@@ -217,7 +398,7 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Accept failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Accept failed: $e')));
       }
     }
   }
@@ -235,15 +416,15 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
           .doc(sharedDoc.id)
           .delete();
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Shared invite declined')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Shared invite declined')),
+        );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Decline failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Decline failed: $e')));
       }
     }
   }
@@ -254,121 +435,93 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
   ) async {
     final u = _user;
     if (u == null) return;
-    final meDoc =
-        await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
-    final friendsRaw = meDoc.data()?['friends'] as List<dynamic>? ?? [];
-    final friends =
-        friendsRaw.map<Map<String, dynamic>>((f) {
-          if (f is Map) return Map<String, dynamic>.from(f);
-          return {'id': f.toString()};
-        }).toList();
+    final tripRefPath = 'users/${u.uid}/trips/$tripId';
+    final tripName = (tripData['name'] ?? '').toString();
+    await ShareTripDialog.show(
+      context,
+      tripRefPath: tripRefPath,
+      tripId: tripId,
+      tripName: tripName,
+    );
+  }
 
-    final selected = <String>{};
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Share trip with friends'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: SizedBox(
-              width: double.maxFinite,
-              child: StatefulBuilder(
-                builder: (ctx2, setState2) {
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (friends.isEmpty)
-                        const Text('No friends to share with'),
-                      if (friends.isNotEmpty)
-                        SizedBox(
-                          height: 280,
-                          child: ListView.builder(
-                            itemCount: friends.length,
-                            itemBuilder: (ctx3, i) {
-                              final f = friends[i];
-                              final uid = (f['uid'] ?? f['id'])?.toString();
-                              final label =
-                                  (f['displayName'] ??
-                                          f['name'] ??
-                                          f['email'] ??
-                                          uid ??
-                                          'Friend')
-                                      .toString();
-                              return CheckboxListTile(
-                                value: uid != null && selected.contains(uid),
-                                onChanged: (v) {
-                                  if (uid == null) return;
-                                  setState2(() {
-                                    if (v == true) {
-                                      selected.add(uid);
-                                    } else {
-                                      selected.remove(uid);
-                                    }
-                                  });
-                                },
-                                title: Text(label),
-                                subtitle: Text((f['email'] ?? '').toString()),
-                              );
-                            },
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
+  Widget _statTile({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color accent,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(TryprSpacing.md),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(TryprRadius.lg),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+        boxShadow: TryprColors.softShadow,
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 18, color: accent),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: TryprColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: TryprColors.textSecondary,
+                  ),
+                ),
+              ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
+        ],
+      ),
+    );
+  }
+
+  Widget _frostBadge({required IconData icon, required String text}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(TryprRadius.full),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
-            TextButton(
-              onPressed: () async {
-                Navigator.of(ctx).pop();
-                if (selected.isEmpty) return;
-                try {
-                  final tripRef = FirebaseFirestore.instance
-                      .collection('users')
-                      .doc(u.uid)
-                      .collection('trips')
-                      .doc(tripId);
-                  await tripRef.update({
-                    'sharedWith': FieldValue.arrayUnion(selected.toList()),
-                  });
-                  for (final uid in selected) {
-                    final dest = FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(uid)
-                        .collection('sharedTrips')
-                        .doc(tripId);
-                    await dest.set({
-                      'ownerUid': u.uid,
-                      'ownerName': u.displayName ?? u.email ?? u.uid,
-                      'tripRef': tripRef.path,
-                      'tripName': tripData['name'] ?? '',
-                      'createdAt': FieldValue.serverTimestamp(),
-                    });
-                  }
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Trip shared')),
-                    );
-                  }
-                } catch (e) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(SnackBar(content: Text('Share failed: $e')));
-                  }
-                }
-              },
-              child: const Text('Share'),
-            ),
-          ],
-        );
-      },
+          ),
+        ],
+      ),
     );
   }
 
@@ -380,205 +533,380 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
     final panelContent =
         stream == null
             ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Sign in to view your saved trips',
-                    style: TextStyle(fontSize: 18),
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton(
-                    onPressed:
-                        () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const SignInScreen(),
+              child: SoftCard(
+                elevated: true,
+                padding: const EdgeInsets.all(TryprSpacing.xl),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: TryprColors.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(TryprRadius.lg),
+                      ),
+                      child: const Icon(
+                        Icons.route_outlined,
+                        color: TryprColors.primaryDark,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(height: TryprSpacing.md),
+                    Text(
+                      'Sign in to view your saved trips',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: TryprSpacing.sm),
+                    Text(
+                      'Your past and upcoming adventures will appear here.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: TryprSpacing.lg),
+                    ElevatedButton.icon(
+                      onPressed:
+                          () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SignInScreen(),
+                            ),
                           ),
-                        ),
-                    child: const Text('Sign in'),
-                  ),
-                ],
+                      icon: const Icon(Icons.login),
+                      label: const Text('Sign in'),
+                    ),
+                  ],
+                ),
               ),
             )
             : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: stream,
               builder: (ctx, snap) {
                 if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const Center(
+                    child: CircularProgressIndicator(
+                      color: TryprColors.primary,
+                    ),
+                  );
                 }
                 final docs = snap.data?.docs ?? [];
+                final sharedByMeCount =
+                    docs.where((d) {
+                      final data = d.data();
+                      final sharedWith = data['sharedWith'];
+                      return sharedWith is List && sharedWith.isNotEmpty;
+                    }).length;
+                final totalStops = docs.fold<int>(0, (total, d) {
+                  final list = d.data()['waypoints'] as List?;
+                  return total + (list?.length ?? 0);
+                });
+                final avgStops =
+                    docs.isEmpty ? 0 : (totalStops / docs.length).round();
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
+                return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _sharedStream(),
+                  builder: (sctx, ssnap) {
+                    final sdocs = ssnap.data?.docs ?? const [];
+                    final isCompact = MediaQuery.sizeOf(context).width < 760;
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(
-                          child: Text(
-                            'Welcome back, $userName! Here are your adventures.',
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        ElevatedButton.icon(
-                          onPressed:
-                              () => Navigator.of(
-                                context,
-                              ).pushNamed('/trip-builder'),
-                          icon: const Icon(Icons.add),
-                          label: const Text('Create New Trip'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFFFD54F),
-                            foregroundColor: Colors.black87,
-                            shape: const StadiumBorder(),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 14,
+                        Container(
+                          padding: const EdgeInsets.all(TryprSpacing.xl),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [
+                                Color(0xFF1D74B7),
+                                TryprColors.primary,
+                                Color(0xFF2BB7A2),
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
                             ),
-                            elevation: 2,
+                            borderRadius: BorderRadius.circular(TryprRadius.xl),
+                            boxShadow: TryprColors.elevatedShadow,
                           ),
+                          child:
+                              isCompact
+                                  ? Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Welcome back, $userName',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.headlineSmall?.copyWith(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      const Text(
+                                        'Your adventures, shared plans, and route ideas all in one place.',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      const SizedBox(height: TryprSpacing.md),
+                                      SizedBox(
+                                        width: double.infinity,
+                                        child: ElevatedButton.icon(
+                                          onPressed:
+                                              () => Navigator.of(
+                                                context,
+                                              ).pushNamed('/trip-builder'),
+                                          icon: const Icon(Icons.add),
+                                          label: const Text('Create New Trip'),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.white,
+                                            foregroundColor:
+                                                TryprColors.primaryDark,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                  : Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Welcome back, $userName',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .displaySmall
+                                                  ?.copyWith(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            const Text(
+                                              'Your adventures, shared plans, and route ideas all in one place.',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: TryprSpacing.lg),
+                                      ElevatedButton.icon(
+                                        onPressed:
+                                            () => Navigator.of(
+                                              context,
+                                            ).pushNamed('/trip-builder'),
+                                        icon: const Icon(Icons.add),
+                                        label: const Text('Create New Trip'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.white,
+                                          foregroundColor:
+                                              TryprColors.primaryDark,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: _sharedStream(),
-                      builder: (sctx, ssnap) {
-                        if (!ssnap.hasData) return const SizedBox.shrink();
-                        final sdocs = ssnap.data!.docs;
-                        if (sdocs.isEmpty) return const SizedBox.shrink();
-                        return Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
+                        const SizedBox(height: TryprSpacing.lg),
+                        LayoutBuilder(
+                          builder: (ctx4, box) {
+                            final tiles = <Widget>[
+                              _statTile(
+                                icon: Icons.map_outlined,
+                                label: 'Total Trips',
+                                value: '${docs.length}',
+                                accent: TryprColors.primary,
+                              ),
+                              _statTile(
+                                icon: Icons.mail_outline,
+                                label: 'Shared Invites',
+                                value: '${sdocs.length}',
+                                accent: TryprColors.secondary,
+                              ),
+                              _statTile(
+                                icon: Icons.people_alt_outlined,
+                                label: 'Trips You Shared',
+                                value: '$sharedByMeCount',
+                                accent: TryprColors.peach,
+                              ),
+                              _statTile(
+                                icon: Icons.route_outlined,
+                                label: 'Avg Stops per Trip',
+                                value: '$avgStops',
+                                accent: TryprColors.mint,
+                              ),
+                            ];
+
+                            if (box.maxWidth < 760) {
+                              return Column(
+                                children: [
+                                  for (var i = 0; i < tiles.length; i++) ...[
+                                    tiles[i],
+                                    if (i < tiles.length - 1)
+                                      const SizedBox(height: TryprSpacing.sm),
+                                  ],
+                                ],
+                              );
+                            }
+
+                            return Row(
+                              children: [
+                                for (var i = 0; i < tiles.length; i++) ...[
+                                  Expanded(child: tiles[i]),
+                                  if (i < tiles.length - 1)
+                                    const SizedBox(width: TryprSpacing.sm),
+                                ],
+                              ],
+                            );
+                          },
+                        ),
+                        if (sdocs.isNotEmpty) ...[
+                          const SizedBox(height: TryprSpacing.lg),
+                          SoftCard(
+                            elevated: true,
+                            padding: const EdgeInsets.all(TryprSpacing.lg),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Shared Trips',
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w600),
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 34,
+                                      height: 34,
+                                      decoration: BoxDecoration(
+                                        color: TryprColors.secondary.withValues(
+                                          alpha: 0.14,
+                                        ),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: const Icon(
+                                        Icons.move_to_inbox_outlined,
+                                        color: TryprColors.secondary,
+                                        size: 18,
+                                      ),
+                                    ),
+                                    const SizedBox(width: TryprSpacing.sm),
+                                    Expanded(
+                                      child: Text(
+                                        'Shared Trip Invites',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    Text(
+                                      '${sdocs.length} pending',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall?.copyWith(
+                                        color: TryprColors.textSecondary,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 8),
+                                const SizedBox(height: TryprSpacing.md),
                                 SizedBox(
-                                  height: 180,
+                                  height: 196,
                                   child: ListView.separated(
                                     scrollDirection: Axis.horizontal,
                                     itemCount: sdocs.length,
                                     separatorBuilder:
-                                        (_, __) => const SizedBox(width: 8),
+                                        (_, __) => const SizedBox(
+                                          width: TryprSpacing.md,
+                                        ),
                                     itemBuilder: (ctx2, si) {
                                       final sd = sdocs[si];
                                       final sdata = sd.data();
                                       final owner =
-                                          sdata['ownerName'] ??
-                                          sdata['ownerUid'] ??
-                                          'Someone';
+                                          (sdata['ownerName'] ??
+                                                  sdata['ownerUid'] ??
+                                                  'Someone')
+                                              .toString();
                                       final title =
-                                          sdata['tripName'] ?? 'Shared Trip';
-                                      return SizedBox(
-                                        width: 340,
-                                        child: Card(
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(8.0),
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
+                                          (sdata['tripName'] ?? 'Shared Trip')
+                                              .toString();
+
+                                      return Container(
+                                        width: 320,
+                                        decoration: BoxDecoration(
+                                          gradient: const LinearGradient(
+                                            colors: [
+                                              Color(0xFFF7FBFF),
+                                              Colors.white,
+                                            ],
+                                            begin: Alignment.topLeft,
+                                            end: Alignment.bottomRight,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            TryprRadius.lg,
+                                          ),
+                                          border: Border.all(
+                                            color: const Color(0xFFE5EEF7),
+                                          ),
+                                        ),
+                                        padding: const EdgeInsets.all(
+                                          TryprSpacing.md,
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 15,
+                                                color: TryprColors.textPrimary,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              'From ${owner.toString()}',
+                                              style: const TextStyle(
+                                                color:
+                                                    TryprColors.textSecondary,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                            const Spacer(),
+                                            Wrap(
+                                              spacing: 8,
+                                              runSpacing: 8,
                                               children: [
-                                                Text(
-                                                  title,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
+                                                ElevatedButton(
+                                                  onPressed:
+                                                      () => _openSharedTrip(sd),
+                                                  child: const Text('Open'),
                                                 ),
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  'From: ${owner.toString()}',
-                                                  style: const TextStyle(
-                                                    color: Colors.black54,
-                                                    fontSize: 12,
-                                                  ),
+                                                OutlinedButton(
+                                                  onPressed:
+                                                      () =>
+                                                          _acceptSharedTrip(sd),
+                                                  child: const Text('Accept'),
                                                 ),
-                                                const Spacer(),
-                                                Wrap(
-                                                  spacing: 8,
-                                                  runSpacing: 6,
-                                                  children: [
-                                                    ElevatedButton(
-                                                      onPressed:
-                                                          () => _openSharedTrip(
-                                                            sd,
-                                                          ),
-                                                      style: ElevatedButton.styleFrom(
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              horizontal: 12,
-                                                              vertical: 8,
-                                                            ),
-                                                        minimumSize: const Size(
-                                                          0,
-                                                          36,
-                                                        ),
-                                                        tapTargetSize:
-                                                            MaterialTapTargetSize
-                                                                .shrinkWrap,
+                                                TextButton(
+                                                  onPressed:
+                                                      () => _declineSharedTrip(
+                                                        sd,
                                                       ),
-                                                      child: const Text('Open'),
-                                                    ),
-                                                    OutlinedButton(
-                                                      onPressed:
-                                                          () =>
-                                                              _acceptSharedTrip(
-                                                                sd,
-                                                              ),
-                                                      style: OutlinedButton.styleFrom(
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              horizontal: 12,
-                                                              vertical: 8,
-                                                            ),
-                                                        minimumSize: const Size(
-                                                          0,
-                                                          36,
-                                                        ),
-                                                        tapTargetSize:
-                                                            MaterialTapTargetSize
-                                                                .shrinkWrap,
-                                                      ),
-                                                      child: const Text(
-                                                        'Accept',
-                                                      ),
-                                                    ),
-                                                    TextButton(
-                                                      onPressed:
-                                                          () =>
-                                                              _declineSharedTrip(
-                                                                sd,
-                                                              ),
-                                                      style: TextButton.styleFrom(
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              horizontal: 12,
-                                                              vertical: 8,
-                                                            ),
-                                                        minimumSize: const Size(
-                                                          0,
-                                                          36,
-                                                        ),
-                                                        tapTargetSize:
-                                                            MaterialTapTargetSize
-                                                                .shrinkWrap,
-                                                      ),
-                                                      child: const Text(
-                                                        'Decline',
-                                                      ),
-                                                    ),
-                                                  ],
+                                                  child: const Text('Decline'),
                                                 ),
                                               ],
                                             ),
-                                          ),
+                                          ],
                                         ),
                                       );
                                     },
@@ -587,287 +915,378 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                               ],
                             ),
                           ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    if (docs.isEmpty)
-                      Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
+                        ],
+                        const SizedBox(height: TryprSpacing.lg),
+                        Row(
                           children: [
-                            const Text(
-                              'No saved trips yet',
-                              style: TextStyle(fontSize: 18),
-                            ),
-                            const SizedBox(height: 8),
-                            ElevatedButton(
-                              onPressed:
-                                  () => Navigator.of(
-                                    context,
-                                  ).pushNamed('/trip-builder'),
-                              child: const Text('Create a trip'),
+                            Expanded(
+                              child: Text(
+                                'My Trips',
+                                style: Theme.of(context).textTheme.headlineSmall
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
                             ),
                           ],
                         ),
-                      )
-                    else
-                      GridView.builder(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount:
-                              MediaQuery.sizeOf(context).width >= 1100
-                                  ? 3
-                                  : MediaQuery.sizeOf(context).width >= 720
-                                  ? 2
-                                  : 1,
-                          mainAxisSpacing: 16,
-                          crossAxisSpacing: 16,
-                          childAspectRatio: 4 / 3,
-                        ),
-                        itemCount: docs.length,
-                        itemBuilder: (ctx, i) {
-                          final d = docs[i];
-                          final data = d.data();
-                          final name =
-                              (data['name'] ?? 'Untitled Trip').toString();
-                          final waypoints =
-                              (data['waypoints'] as List<dynamic>?) ?? [];
-                          final isShared =
-                              ((data['sharedWith'] as List?)?.isNotEmpty ??
-                                  false) ||
-                              (data['sharedFrom'] != null &&
-                                  data['sharedFrom'].toString().isNotEmpty);
-
-                          return _Hoverable(
-                            onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder:
-                                      (_) => TripDetailScreen(
-                                        docId: d.id,
-                                        data: data,
-                                      ),
+                        const SizedBox(height: TryprSpacing.sm),
+                        if (docs.isEmpty)
+                          SoftCard(
+                            elevated: true,
+                            padding: const EdgeInsets.all(TryprSpacing.xl),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 56,
+                                  height: 56,
+                                  decoration: BoxDecoration(
+                                    color: TryprColors.surfaceVariant,
+                                    borderRadius: BorderRadius.circular(
+                                      TryprRadius.lg,
+                                    ),
+                                  ),
+                                  child: const Icon(
+                                    Icons.luggage_outlined,
+                                    color: TryprColors.textSecondary,
+                                    size: 28,
+                                  ),
                                 ),
-                              );
-                            },
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(18),
-                              child: Stack(
-                                children: [
-                                  // Gradient background instead of 2D map
-                                  Positioned.fill(
-                                    child: Container(
-                                      decoration: const BoxDecoration(
-                                        gradient: LinearGradient(
-                                          begin: Alignment.topLeft,
-                                          end: Alignment.bottomRight,
-                                          colors: [
-                                            Color(0xFF1a1a2e),
-                                            Color(0xFF16213e),
-                                            Color(0xFF0f3460),
-                                          ],
+                                const SizedBox(height: TryprSpacing.md),
+                                Text(
+                                  'No saved trips yet',
+                                  style: Theme.of(context).textTheme.titleLarge
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                                const SizedBox(height: TryprSpacing.sm),
+                                Text(
+                                  'Create your first itinerary and it will appear here.',
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
+                                const SizedBox(height: TryprSpacing.lg),
+                                ElevatedButton.icon(
+                                  onPressed:
+                                      () => Navigator.of(
+                                        context,
+                                      ).pushNamed('/trip-builder'),
+                                  icon: const Icon(Icons.add),
+                                  label: const Text('Create a trip'),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          LayoutBuilder(
+                            builder: (gridCtx, gridBox) {
+                              final width = gridBox.maxWidth;
+                              final crossAxisCount =
+                                  width >= 1100
+                                      ? 3
+                                      : width >= 720
+                                      ? 2
+                                      : 1;
+                              final aspectRatio =
+                                  crossAxisCount == 1
+                                      ? 1.9
+                                      : crossAxisCount == 2
+                                      ? 1.35
+                                      : 1.1;
+
+                              return GridView.builder(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                gridDelegate:
+                                    SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: crossAxisCount,
+                                      mainAxisSpacing: 16,
+                                      crossAxisSpacing: 16,
+                                      childAspectRatio: aspectRatio,
+                                    ),
+                                itemCount: docs.length,
+                                itemBuilder: (ctx5, i) {
+                                  final d = docs[i];
+                                  final localData = d.data();
+                                  final data = localData;
+                                  final name =
+                                      (data['name'] ?? 'Untitled Trip')
+                                          .toString();
+                                  final waypoints =
+                                      (data['waypoints'] as List<dynamic>?) ??
+                                      const <dynamic>[];
+                                  final transportMode =
+                                      (data['transportMode'] ?? 'car')
+                                          .toString();
+                                  final segmentTransportModesRaw =
+                                      data['segmentTransportModes'];
+                                  final segmentTransportModes =
+                                      (segmentTransportModesRaw is List)
+                                          ? segmentTransportModesRaw
+                                              .map((e) => e.toString())
+                                              .toList(growable: false)
+                                          : const <String>[];
+                                  final stopCount = waypoints.length;
+                                  final isShared =
+                                      ((data['sharedWith'] as List?)
+                                              ?.isNotEmpty ??
+                                          false) ||
+                                      (data['sharedFrom'] != null &&
+                                          data['sharedFrom']
+                                              .toString()
+                                              .isNotEmpty);
+
+                                  return _Hoverable(
+                                    onTap:
+                                        () => _openTripFromMyTrips(
+                                          d.id,
+                                          localData,
                                         ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(
+                                        TryprRadius.xl,
                                       ),
-                                      child: Center(
-                                        child: Text(
-                                          _tripEmoji(data),
-                                          style: TextStyle(
-                                            fontSize: 56,
-                                            color: Colors.white.withOpacity(
-                                              0.15,
+                                      child: Stack(
+                                        children: [
+                                          Positioned.fill(
+                                            child: _TripCardPreview(
+                                              waypoints: waypoints,
+                                              routeGeometry:
+                                                  (data['routeGeometry3d']
+                                                      as List<dynamic>?) ??
+                                                  const <dynamic>[],
+                                              transportMode: transportMode,
+                                              segmentTransportModes:
+                                                  segmentTransportModes,
                                             ),
                                           ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Positioned.fill(
-                                    child: DecoratedBox(
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          begin: Alignment.bottomCenter,
-                                          end: Alignment.topCenter,
-                                          colors: [
-                                            Colors.black.withValues(
-                                              alpha: 0.65,
-                                            ),
-                                            Colors.transparent,
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Positioned(
-                                    left: 16,
-                                    right: 16,
-                                    bottom: 14,
-                                    child: Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          _tripEmoji(data),
-                                          style: const TextStyle(fontSize: 22),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(
-                                                name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: Colors.white,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                _dateRange(data),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: Colors.white
-                                                      .withValues(alpha: 0.85),
-                                                  fontSize: 13,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  if (isShared)
-                                    Positioned(
-                                      top: 12,
-                                      right: 12,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.6,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: const [
-                                            Icon(
-                                              Icons.people,
-                                              size: 14,
-                                              color: Colors.white,
-                                            ),
-                                            SizedBox(width: 6),
-                                            Text(
-                                              'Shared',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  Positioned(
-                                    top: 8,
-                                    left: 8,
-                                    child: PopupMenuButton<String>(
-                                      iconColor: Colors.white,
-                                      onSelected: (v) async {
-                                        if (v == 'delete') {
-                                          final ok = await showDialog<bool>(
-                                            context: context,
-                                            builder:
-                                                (ctx) => AlertDialog(
-                                                  title: const Text(
-                                                    'Delete trip?',
-                                                  ),
-                                                  content: const Text(
-                                                    'This will permanently delete the trip.',
-                                                  ),
-                                                  actions: [
-                                                    TextButton(
-                                                      onPressed:
-                                                          () => Navigator.of(
-                                                            ctx,
-                                                          ).pop(false),
-                                                      child: const Text(
-                                                        'Cancel',
-                                                      ),
+                                          Positioned.fill(
+                                            child: DecoratedBox(
+                                              decoration: BoxDecoration(
+                                                gradient: LinearGradient(
+                                                  begin: Alignment.bottomCenter,
+                                                  end: Alignment.topCenter,
+                                                  colors: [
+                                                    Colors.black.withValues(
+                                                      alpha: 0.72,
                                                     ),
-                                                    TextButton(
-                                                      onPressed:
-                                                          () => Navigator.of(
-                                                            ctx,
-                                                          ).pop(true),
-                                                      child: const Text(
-                                                        'Delete',
-                                                      ),
+                                                    Colors.black.withValues(
+                                                      alpha: 0.24,
                                                     ),
+                                                    Colors.transparent,
                                                   ],
                                                 ),
-                                          );
-                                          if (ok == true) {
-                                            await _deleteTrip(d.id);
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(
-                                                context,
-                                              ).showSnackBar(
-                                                const SnackBar(
-                                                  content: Text('Trip deleted'),
+                                              ),
+                                            ),
+                                          ),
+                                          Positioned(
+                                            top: 12,
+                                            left: 12,
+                                            child: Container(
+                                              decoration: BoxDecoration(
+                                                color: Colors.black.withValues(
+                                                  alpha: 0.42,
                                                 ),
-                                              );
-                                            }
-                                          }
-                                        } else if (v == 'share') {
-                                          await _shareTripFromMyTrips(
-                                            d.id,
-                                            data,
-                                          );
-                                        }
-                                      },
-                                      itemBuilder:
-                                          (_) => const [
-                                            PopupMenuItem(
-                                              value: 'share',
-                                              child: Text('Share'),
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                      TryprRadius.full,
+                                                    ),
+                                              ),
+                                              child: PopupMenuButton<String>(
+                                                iconColor: Colors.white,
+                                                onSelected: (v) async {
+                                                  if (v == 'delete') {
+                                                    final ok = await showDialog<
+                                                      bool
+                                                    >(
+                                                      context: context,
+                                                      builder:
+                                                          (ctx6) => AlertDialog(
+                                                            title: const Text(
+                                                              'Delete trip?',
+                                                            ),
+                                                            content: const Text(
+                                                              'This will permanently delete the trip.',
+                                                            ),
+                                                            actions: [
+                                                              TextButton(
+                                                                onPressed:
+                                                                    () =>
+                                                                        Navigator.of(
+                                                                          ctx6,
+                                                                        ).pop(
+                                                                          false,
+                                                                        ),
+                                                                child:
+                                                                    const Text(
+                                                                      'Cancel',
+                                                                    ),
+                                                              ),
+                                                              TextButton(
+                                                                onPressed:
+                                                                    () =>
+                                                                        Navigator.of(
+                                                                          ctx6,
+                                                                        ).pop(
+                                                                          true,
+                                                                        ),
+                                                                child:
+                                                                    const Text(
+                                                                      'Delete',
+                                                                    ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                    );
+                                                    if (ok == true) {
+                                                      await _deleteTrip(d.id);
+                                                      if (context.mounted) {
+                                                        ScaffoldMessenger.of(
+                                                          context,
+                                                        ).showTryprSnackBar(
+                                                          const SnackBar(
+                                                            content: Text(
+                                                              'Trip deleted',
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                                                    }
+                                                  } else if (v == 'share') {
+                                                    await _shareTripFromMyTrips(
+                                                      d.id,
+                                                      data,
+                                                    );
+                                                  }
+                                                },
+                                                itemBuilder:
+                                                    (_) => const [
+                                                      PopupMenuItem(
+                                                        value: 'share',
+                                                        child: Text('Share'),
+                                                      ),
+                                                      PopupMenuItem(
+                                                        value: 'delete',
+                                                        child: Text('Delete'),
+                                                      ),
+                                                    ],
+                                              ),
                                             ),
-                                            PopupMenuItem(
-                                              value: 'delete',
-                                              child: Text('Delete'),
+                                          ),
+                                          Positioned(
+                                            top: 12,
+                                            right: 12,
+                                            child: Wrap(
+                                              spacing: 8,
+                                              runSpacing: 8,
+                                              children: [
+                                                _frostBadge(
+                                                  icon: Icons.place_outlined,
+                                                  text: '$stopCount stops',
+                                                ),
+                                                if (isShared)
+                                                  _frostBadge(
+                                                    icon: Icons.people,
+                                                    text: 'Shared',
+                                                  ),
+                                              ],
                                             ),
-                                          ],
+                                          ),
+                                          Positioned(
+                                            left: 14,
+                                            right: 14,
+                                            bottom: 14,
+                                            child: Container(
+                                              padding: const EdgeInsets.all(
+                                                TryprSpacing.md,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: Colors.black.withValues(
+                                                  alpha: 0.38,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                      TryprRadius.lg,
+                                                    ),
+                                              ),
+                                              child: Row(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    _tripEmoji(data),
+                                                    style: const TextStyle(
+                                                      fontSize: 22,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Text(
+                                                          name,
+                                                          maxLines: 1,
+                                                          overflow:
+                                                              TextOverflow
+                                                                  .ellipsis,
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 18,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700,
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                              ),
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 4,
+                                                        ),
+                                                        Text(
+                                                          _dateRange(data),
+                                                          maxLines: 1,
+                                                          overflow:
+                                                              TextOverflow
+                                                                  .ellipsis,
+                                                          style: TextStyle(
+                                                            color: Colors.white
+                                                                .withValues(
+                                                                  alpha: 0.9,
+                                                                ),
+                                                            fontSize: 13,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                  ],
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                      ],
+                    );
+                  },
                 );
               },
             );
 
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
+      backgroundColor: TryprColors.background,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1280),

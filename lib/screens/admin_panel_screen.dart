@@ -1,12 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:flutter/services.dart';
 import 'package:trypr/screens/trip_detail_screen.dart';
 import 'package:trypr/screens/unlisted_page_builder_screen.dart';
 import 'package:trypr/screens/unlisted_page_responses_screen.dart';
 import 'package:trypr/screens/verified_trip_builder_screen.dart';
-import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:intl/intl.dart';
 
 /// POWER ADMIN PANEL - Complete platform control center
@@ -471,6 +471,27 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
   String _sortBy = 'createdAt';
   bool _ascending = false;
 
+  String _tripDateLabel(dynamic raw) {
+    if (raw == null) return '';
+    if (raw is Timestamp) {
+      return DateFormat('MMM d, y').format(raw.toDate());
+    }
+    final text = raw.toString().trim();
+    if (text.isEmpty) return '';
+    final parsed = DateTime.tryParse(text);
+    if (parsed != null) return DateFormat('MMM d, y').format(parsed);
+    return text;
+  }
+
+  String _tripDateRangeSubtitle(Map<String, dynamic> data) {
+    final start = _tripDateLabel(data['startDate']);
+    final end = _tripDateLabel(data['endDate']);
+    if (start.isNotEmpty && end.isNotEmpty) return '$start - $end';
+    if (start.isNotEmpty) return start;
+    if (end.isNotEmpty) return end;
+    return 'No dates set';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -690,12 +711,22 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
     String userId,
     String userName,
   ) async {
-    final trips =
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .collection('trips')
-            .get();
+    QuerySnapshot<Map<String, dynamic>> trips;
+    try {
+      trips =
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(userId)
+              .collection('trips')
+              .get();
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Could not load trips: $e')),
+        );
+      }
+      return;
+    }
 
     if (!context.mounted) return;
 
@@ -715,41 +746,65 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
                         itemBuilder: (_, i) {
                           final data = trips.docs[i].data();
                           final tripId = trips.docs[i].id;
+                          final title =
+                              (data['name'] ??
+                                      data['tripName'] ??
+                                      'Untitled Trip')
+                                  .toString();
+                          final subtitle = _tripDateRangeSubtitle(data);
 
                           return ListTile(
                             leading: const Icon(Icons.map),
-                            title: Text(data['name'] ?? 'Untitled Trip'),
+                            title: Text(title),
                             subtitle: Text(
-                              data['startDate'] ?? '',
+                              subtitle,
                               style: TextStyle(color: Colors.grey[600]),
                             ),
                             trailing: const Icon(Icons.chevron_right),
                             onTap: () async {
                               Navigator.pop(ctx);
-                              // Fetch fresh data and strip any path references
-                              final tripDoc =
-                                  await FirebaseFirestore.instance
-                                      .collection('users')
-                                      .doc(userId)
-                                      .collection('trips')
-                                      .doc(tripId)
-                                      .get();
+                              final tripPath = 'users/$userId/trips/$tripId';
 
-                              if (context.mounted && tripDoc.exists) {
-                                final cleanData = Map<String, dynamic>.from(
+                              try {
+                                final tripDoc =
+                                    await FirebaseFirestore.instance
+                                        .doc(tripPath)
+                                        .get();
+
+                                if (!context.mounted) return;
+                                if (!tripDoc.exists) {
+                                  ScaffoldMessenger.of(
+                                    context,
+                                  ).showTryprSnackBar(
+                                    const SnackBar(
+                                      content: Text('Trip no longer exists'),
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                final tripData = Map<String, dynamic>.from(
                                   tripDoc.data() ?? {},
                                 );
-                                // Remove tripRef to prevent double subscriptions
-                                cleanData.remove('tripRef');
-                                cleanData.remove('sharedFrom');
+                                // Admin views should open against the real trip path.
+                                tripData['tripRef'] = tripPath;
+                                tripData.remove('sharedFrom');
 
-                                Navigator.of(context).push(
+                                await Navigator.of(context).push(
                                   MaterialPageRoute(
                                     builder:
                                         (_) => TripDetailScreen(
-                                          docId: 'users/$userId/trips/$tripId',
-                                          data: cleanData,
+                                          docId: tripId,
+                                          data: tripData,
+                                          readOnly: true,
                                         ),
+                                  ),
+                                );
+                              } catch (e) {
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showTryprSnackBar(
+                                  SnackBar(
+                                    content: Text('Could not open trip: $e'),
                                   ),
                                 );
                               }
@@ -801,15 +856,15 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
           'createdAt': FieldValue.serverTimestamp(),
         });
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$userName is now an admin')));
+          ScaffoldMessenger.of(context).showTryprSnackBar(
+            SnackBar(content: Text('$userName is now an admin')),
+          );
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -846,16 +901,16 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
               .update(updates);
 
           if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
+            ScaffoldMessenger.of(context).showTryprSnackBar(
               const SnackBar(content: Text('User details updated')),
             );
           }
         }
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error updating user: $e')));
+          ScaffoldMessenger.of(context).showTryprSnackBar(
+            SnackBar(content: Text('Error updating user: $e')),
+          );
         }
       }
     }
@@ -899,13 +954,13 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Deleted $userName')));
+          ).showTryprSnackBar(SnackBar(content: Text('Deleted $userName')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -1031,13 +1086,13 @@ class _TripsManagementTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Trip deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Trip deleted')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -1206,7 +1261,7 @@ class _VerifiedTripsManagementTab extends StatelessWidget {
             .doc(tripId)
             .delete();
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showTryprSnackBar(
             const SnackBar(content: Text('Verified trip deleted')),
           );
         }
@@ -1214,7 +1269,7 @@ class _VerifiedTripsManagementTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -1339,7 +1394,7 @@ class _UnlistedPagesTab extends StatelessWidget {
                       case 'copy_link':
                         final url = '${Uri.base.origin}/page/$pageId';
                         Clipboard.setData(ClipboardData(text: url));
-                        ScaffoldMessenger.of(context).showSnackBar(
+                        ScaffoldMessenger.of(context).showTryprSnackBar(
                           const SnackBar(content: Text('Link copied')),
                         );
                         break;
@@ -1455,13 +1510,13 @@ class _UnlistedPagesTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Page deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Page deleted')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error deleting: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error deleting: $e')));
         }
       }
     }
@@ -1562,6 +1617,222 @@ class _ResponsesSheet extends StatelessWidget {
     required this.scrollController,
   });
 
+  static const Set<String> _responseMetaKeys = {
+    'submittedAt',
+    'submittedByUid',
+    'submittedByEmail',
+    'submittedByName',
+    'responses',
+    'formattedResponses',
+  };
+
+  bool _looksLikeFieldId(String value) {
+    final v = value.trim().toLowerCase();
+    return v.startsWith('field_') || v.startsWith('fld_');
+  }
+
+  int _fieldOrder(String? fieldId, Map<String, Map<String, dynamic>> fieldMap) {
+    if (fieldId == null || fieldId.isEmpty) return 1 << 30;
+    final order = fieldMap[fieldId]?['order'];
+    if (order is int) return order;
+    if (order is num) return order.toInt();
+    return 1 << 30;
+  }
+
+  String _humanizeFieldId(String value) {
+    var out = value;
+    if (out.startsWith('field_')) out = out.substring('field_'.length);
+    out = out.replaceAll(RegExp(r'[_\-]+'), ' ').trim();
+    out = out.replaceAll(RegExp(r'\d+$'), '').trim();
+    if (out.isEmpty) return '';
+    return out
+        .split(' ')
+        .where((p) => p.isNotEmpty)
+        .map((p) => '${p[0].toUpperCase()}${p.substring(1)}')
+        .join(' ');
+  }
+
+  String _resolveLabel({
+    required String? fieldId,
+    required String? fallbackLabel,
+    required int fallbackIndex,
+    required Map<String, Map<String, dynamic>> fieldMap,
+  }) {
+    if (fieldId != null && fieldId.isNotEmpty) {
+      final mapped = fieldMap[fieldId]?['label']?.toString();
+      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+    }
+
+    final label = (fallbackLabel ?? '').trim();
+    if (label.isNotEmpty) {
+      if (fieldMap.containsKey(label)) {
+        final mapped = fieldMap[label]?['label']?.toString();
+        if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+      }
+      if (!_looksLikeFieldId(label)) return label;
+      final humanized = _humanizeFieldId(label);
+      if (humanized.isNotEmpty) return humanized;
+    }
+
+    if (fieldId != null && fieldId.isNotEmpty) {
+      final humanized = _humanizeFieldId(fieldId);
+      if (humanized.isNotEmpty) return humanized;
+    }
+
+    return 'Field ${fallbackIndex + 1}';
+  }
+
+  String _resolveType({
+    required String? fieldId,
+    required String? fallbackType,
+    required Map<String, Map<String, dynamic>> fieldMap,
+  }) {
+    if (fieldId != null && fieldId.isNotEmpty) {
+      final mapped = fieldMap[fieldId]?['type']?.toString();
+      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
+    }
+    final t = (fallbackType ?? '').trim();
+    return t.isEmpty ? 'text' : t;
+  }
+
+  List<Map<String, dynamic>> _buildOrderedResponses(
+    Map<String, dynamic> data,
+    Map<String, Map<String, dynamic>> fieldMap,
+  ) {
+    final rows = <Map<String, dynamic>>[];
+    final formatted = data['formattedResponses'];
+
+    if (formatted is List) {
+      for (var i = 0; i < formatted.length; i++) {
+        final item = formatted[i];
+        if (item is! Map) continue;
+        final row = Map<String, dynamic>.from(item.cast<dynamic, dynamic>());
+        var fieldId =
+            row['fieldId']?.toString() ??
+            row['id']?.toString() ??
+            row['key']?.toString();
+        final rawLabel = row['label']?.toString();
+
+        if ((fieldId == null || fieldId.isEmpty) &&
+            rawLabel != null &&
+            fieldMap.containsKey(rawLabel)) {
+          fieldId = rawLabel;
+        }
+
+        rows.add({
+          'label': _resolveLabel(
+            fieldId: fieldId,
+            fallbackLabel: rawLabel,
+            fallbackIndex: i,
+            fieldMap: fieldMap,
+          ),
+          'type': _resolveType(
+            fieldId: fieldId,
+            fallbackType: row['type']?.toString(),
+            fieldMap: fieldMap,
+          ),
+          'value': row['value'],
+          '_order': _fieldOrder(fieldId, fieldMap),
+          '_fallback': i,
+        });
+      }
+    }
+
+    if (rows.isEmpty) {
+      Map<String, dynamic> rawResponses = {};
+      if (data['responses'] is Map) {
+        rawResponses = Map<String, dynamic>.from(
+          (data['responses'] as Map).cast<dynamic, dynamic>(),
+        );
+      } else {
+        rawResponses = data;
+      }
+
+      final entries =
+          rawResponses.entries
+              .where((e) => !_responseMetaKeys.contains(e.key))
+              .toList();
+
+      for (var i = 0; i < entries.length; i++) {
+        final entry = entries[i];
+        final fieldId = entry.key;
+        rows.add({
+          'label': _resolveLabel(
+            fieldId: fieldId,
+            fallbackLabel: entry.key,
+            fallbackIndex: i,
+            fieldMap: fieldMap,
+          ),
+          'type': _resolveType(
+            fieldId: fieldId,
+            fallbackType: null,
+            fieldMap: fieldMap,
+          ),
+          'value': entry.value,
+          '_order': _fieldOrder(fieldId, fieldMap),
+          '_fallback': i,
+        });
+      }
+    }
+
+    rows.sort((a, b) {
+      final orderA = (a['_order'] as int?) ?? (1 << 30);
+      final orderB = (b['_order'] as int?) ?? (1 << 30);
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      final fallbackA = (a['_fallback'] as int?) ?? 0;
+      final fallbackB = (b['_fallback'] as int?) ?? 0;
+      return fallbackA.compareTo(fallbackB);
+    });
+
+    return rows
+        .map(
+          (r) => {'label': r['label'], 'type': r['type'], 'value': r['value']},
+        )
+        .toList();
+  }
+
+  String _formatResponseValue(dynamic value) {
+    if (value == null) return '(not answered)';
+    if (value is List) {
+      if (value.isEmpty) return '(none selected)';
+      return value.join(', ');
+    }
+    if (value is Map) {
+      final map = value;
+      final parts = <String>[];
+      if (map['street']?.toString().isNotEmpty == true) {
+        parts.add(map['street'].toString());
+      }
+      if (map['street2']?.toString().isNotEmpty == true) {
+        parts.add(map['street2'].toString());
+      }
+      final cityLine = <String>[];
+      if (map['city']?.toString().isNotEmpty == true) {
+        cityLine.add(map['city'].toString());
+      }
+      if (map['province']?.toString().isNotEmpty == true) {
+        cityLine.add(map['province'].toString());
+      }
+      if (map['postal']?.toString().isNotEmpty == true) {
+        cityLine.add(map['postal'].toString());
+      }
+      if (cityLine.isNotEmpty) parts.add(cityLine.join(', '));
+      if (parts.isNotEmpty) return parts.join('\n');
+
+      final generic = map.entries
+          .where((e) => e.value?.toString().trim().isNotEmpty == true)
+          .map((e) => '${e.key}: ${e.value}')
+          .join(', ');
+      return generic.isEmpty ? '(not answered)' : generic;
+    }
+    if (value is bool) return value ? 'Yes' : 'No';
+    if (value is Timestamp) {
+      return DateFormat('MMM d, yyyy • h:mm a').format(value.toDate());
+    }
+    final text = value.toString().trim();
+    return text.isEmpty ? '(not answered)' : text;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -1660,37 +1931,10 @@ class _ResponsesSheet extends StatelessWidget {
                     itemBuilder: (context, index) {
                       final doc = docs[index];
                       final data = doc.data();
-
-                      // Try formattedResponses first, fallback to responses
-                      List<Map<String, dynamic>> orderedResponses = [];
-
-                      if (data['formattedResponses'] != null) {
-                        orderedResponses =
-                            (data['formattedResponses'] as List)
-                                .cast<Map>()
-                                .map((e) => Map<String, dynamic>.from(e))
-                                .toList();
-                      } else if (data['responses'] != null) {
-                        final responses =
-                            data['responses'] as Map<String, dynamic>;
-                        // Order by field order
-                        final orderedEntries =
-                            responses.entries.toList()..sort((a, b) {
-                              final orderA = fieldMap[a.key]?['order'] ?? 999;
-                              final orderB = fieldMap[b.key]?['order'] ?? 999;
-                              return orderA.compareTo(orderB);
-                            });
-
-                        orderedResponses =
-                            orderedEntries.map((entry) {
-                              return {
-                                'label':
-                                    fieldMap[entry.key]?['label'] ?? entry.key,
-                                'value': entry.value,
-                                'type': fieldMap[entry.key]?['type'] ?? 'text',
-                              };
-                            }).toList();
-                      }
+                      final orderedResponses = _buildOrderedResponses(
+                        data,
+                        fieldMap,
+                      );
 
                       final submittedAt = data['submittedAt'] as Timestamp?;
                       final email = data['submittedByEmail']?.toString() ?? '';
@@ -1749,43 +1993,9 @@ class _ResponsesSheet extends StatelessWidget {
                                 final label =
                                     response['label']?.toString() ?? 'Field';
                                 final value = response['value'];
-                                String displayValue = '';
-
-                                if (value is List) {
-                                  displayValue = value.join(', ');
-                                } else if (value is Map) {
-                                  // Format address
-                                  final parts = <String>[];
-                                  if (value['street']?.toString().isNotEmpty ==
-                                      true) {
-                                    parts.add(value['street'].toString());
-                                  }
-                                  if (value['street2']?.toString().isNotEmpty ==
-                                      true) {
-                                    parts.add(value['street2'].toString());
-                                  }
-                                  final cityLine = <String>[];
-                                  if (value['city']?.toString().isNotEmpty ==
-                                      true)
-                                    cityLine.add(value['city'].toString());
-                                  if (value['province']
-                                          ?.toString()
-                                          .isNotEmpty ==
-                                      true)
-                                    cityLine.add(value['province'].toString());
-                                  if (value['postal']?.toString().isNotEmpty ==
-                                      true)
-                                    cityLine.add(value['postal'].toString());
-                                  if (cityLine.isNotEmpty)
-                                    parts.add(cityLine.join(', '));
-                                  displayValue =
-                                      parts.isNotEmpty
-                                          ? parts.join('\n')
-                                          : value.toString();
-                                } else {
-                                  displayValue =
-                                      value?.toString() ?? '(not answered)';
-                                }
+                                final displayValue = _formatResponseValue(
+                                  value,
+                                );
 
                                 return Container(
                                   margin: const EdgeInsets.only(bottom: 12),
@@ -2438,13 +2648,13 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Note saved')));
+        ).showTryprSnackBar(const SnackBar(content: Text('Note saved')));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
       }
     } finally {
       setState(() => _saving = false);
@@ -2463,7 +2673,7 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
   }
@@ -2505,13 +2715,13 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Note deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Note deleted')));
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -2541,7 +2751,7 @@ class _SettingsTab extends StatelessWidget {
                 subtitle: const Text('Export all data'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showTryprSnackBar(
                     const SnackBar(content: Text('Backup feature coming soon')),
                   );
                 },
@@ -2668,7 +2878,7 @@ class _EditUserDialogState extends State<_EditUserDialog> {
               ),
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
-                value: _selectedSex,
+                initialValue: _selectedSex,
                 decoration: const InputDecoration(
                   labelText: 'Sex',
                   border: OutlineInputBorder(),

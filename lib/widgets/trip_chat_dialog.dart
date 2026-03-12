@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/services/name_lookup.dart';
 
 class TripChatDialog {
@@ -343,7 +344,7 @@ class TripChatDialog {
                                               if (ctx.mounted) {
                                                 ScaffoldMessenger.of(
                                                   ctx,
-                                                ).showSnackBar(
+                                                ).showTryprSnackBar(
                                                   SnackBar(
                                                     content: Text(
                                                       'Send failed: $e',
@@ -922,7 +923,7 @@ class TripChatDialog {
                                               if (ctx.mounted) {
                                                 ScaffoldMessenger.of(
                                                   ctx,
-                                                ).showSnackBar(
+                                                ).showTryprSnackBar(
                                                   SnackBar(
                                                     content: Text(
                                                       'Send failed: $e',
@@ -1562,7 +1563,7 @@ class TripChatDialog {
                                                                         if (ctx.mounted) {
                                                                           ScaffoldMessenger.of(
                                                                             ctx,
-                                                                          ).showSnackBar(
+                                                                          ).showTryprSnackBar(
                                                                             SnackBar(
                                                                               content: Text(
                                                                                 'Send failed: $e',

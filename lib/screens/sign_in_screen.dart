@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
@@ -29,9 +30,9 @@ class _SignInScreenState extends State<SignInScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(e.message ?? 'Sign in failed')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text(e.message ?? 'Sign in failed')),
+      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -56,13 +57,13 @@ class _SignInScreenState extends State<SignInScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Google sign in failed')),
       );
     } catch (e) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Google sign in failed')));
+      ).showTryprSnackBar(SnackBar(content: Text('Google sign in failed')));
     } finally {
       if (mounted) setState(() => _googleLoading = false);
     }
@@ -96,11 +97,11 @@ class _SignInScreenState extends State<SignInScreen> {
       await FirebaseAuth.instance.sendPasswordResetEmail(
         email: emailCtrl.text.trim(),
       );
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(content: Text('Password reset email sent')),
       );
     } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Failed to send reset email')),
       );
     }

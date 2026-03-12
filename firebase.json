@@ -17,11 +17,48 @@
     ],
     "rewrites": [
       {
+        "source": "/api/route",
+        "function": "routeProxy"
+      },
+      {
+        "source": "/api/overpass",
+        "function": "overpassProxy"
+      },
+      {
+        "source": "/tournamentPlanner",
+        "destination": "/tournamentPlanner/index.html"
+      },
+      {
+        "source": "/tournamentPlanner/**",
+        "destination": "/tournamentPlanner/index.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
     ],
     "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "X-Frame-Options",
+            "value": "SAMEORIGIN"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          },
+          {
+            "key": "Permissions-Policy",
+            "value": "camera=(), microphone=(), geolocation=(self), payment=()"
+          }
+        ]
+      },
       {
         "source": "**/*.@(jpg|jpeg|gif|png|svg|webp|js|css|woff|woff2|ttf|eot)",
         "headers": [

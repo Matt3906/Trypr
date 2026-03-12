@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/services/name_lookup.dart';
 
 class TripExpensesDialog {
@@ -47,14 +48,14 @@ class TripExpensesDialog {
               final title = titleCtl.text.trim();
               final amountRaw = amountCtl.text.trim();
               if (title.isEmpty) {
-                ScaffoldMessenger.of(ctx2).showSnackBar(
+                ScaffoldMessenger.of(ctx2).showTryprSnackBar(
                   const SnackBar(content: Text('Title is required')),
                 );
                 return;
               }
               final parsed = double.tryParse(amountRaw);
               if (parsed == null || parsed <= 0) {
-                ScaffoldMessenger.of(ctx2).showSnackBar(
+                ScaffoldMessenger.of(ctx2).showTryprSnackBar(
                   const SnackBar(content: Text('Enter a valid amount > 0')),
                 );
                 return;
@@ -75,7 +76,7 @@ class TripExpensesDialog {
               } catch (e) {
                 ScaffoldMessenger.of(
                   ctx2,
-                ).showSnackBar(SnackBar(content: Text('Add failed: $e')));
+                ).showTryprSnackBar(SnackBar(content: Text('Add failed: $e')));
               } finally {
                 setState2(() => saving = false);
               }
@@ -106,13 +107,13 @@ class TripExpensesDialog {
                         final aRaw = editAmountCtl.text.trim();
                         final a = double.tryParse(aRaw);
                         if (t.isEmpty) {
-                          ScaffoldMessenger.of(c2).showSnackBar(
+                          ScaffoldMessenger.of(c2).showTryprSnackBar(
                             const SnackBar(content: Text('Title is required')),
                           );
                           return;
                         }
                         if (a == null || a <= 0) {
-                          ScaffoldMessenger.of(c2).showSnackBar(
+                          ScaffoldMessenger.of(c2).showTryprSnackBar(
                             const SnackBar(
                               content: Text('Enter a valid amount > 0'),
                             ),
@@ -137,7 +138,7 @@ class TripExpensesDialog {
                           if (c2.mounted) Navigator.of(c2).pop();
                         } catch (e) {
                           if (c2.mounted) {
-                            ScaffoldMessenger.of(c2).showSnackBar(
+                            ScaffoldMessenger.of(c2).showTryprSnackBar(
                               SnackBar(content: Text('Save failed: $e')),
                             );
                           }
@@ -659,7 +660,7 @@ class TripExpensesDialog {
                                                   } catch (e) {
                                                     ScaffoldMessenger.of(
                                                       ctx4,
-                                                    ).showSnackBar(
+                                                    ).showTryprSnackBar(
                                                       SnackBar(
                                                         content: Text(
                                                           'Delete failed: $e',
@@ -945,7 +946,7 @@ class TripExpensesDialog {
                                                 } catch (e) {
                                                   ScaffoldMessenger.of(
                                                     ctx4,
-                                                  ).showSnackBar(
+                                                  ).showTryprSnackBar(
                                                     SnackBar(
                                                       content: Text(
                                                         'Delete failed: $e',

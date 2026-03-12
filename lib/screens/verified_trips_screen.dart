@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
+import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/screens/verified_trip_builder_screen.dart';
 import 'package:trypr/screens/verified_trip_detail_screen.dart';
 import 'package:trypr/widgets/map_embed.dart';
@@ -75,7 +77,6 @@ class _HoverableState extends State<_Hoverable> {
 class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _adminDoc;
   StreamSubscription<User?>? _authSub;
-  bool _isAdmin = false;
 
   String _dateRange(Map<String, dynamic> data) {
     final subtitle = (data['subtitle'] ?? '').toString().trim();
@@ -160,7 +161,7 @@ class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
             .doc(tripId)
             .delete();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showTryprSnackBar(
             SnackBar(
               content: Text('Deleted "$tripTitle"'),
               backgroundColor: Colors.green,
@@ -169,7 +170,7 @@ class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showTryprSnackBar(
             SnackBar(
               content: Text('Failed to delete: $e'),
               backgroundColor: Colors.red,
@@ -229,6 +230,60 @@ class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
     await Navigator.of(context).push(VerifiedTripBuilderScreen.route());
   }
 
+  Widget _statTile({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color accent,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(TryprSpacing.md),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(TryprRadius.lg),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+        boxShadow: TryprColors.softShadow,
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 18, color: accent),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: TryprColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: TryprColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final trips =
@@ -239,12 +294,14 @@ class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
 
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
+      backgroundColor: TryprColors.background,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1280),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             child: SingleChildScrollView(
+              padding: const EdgeInsets.only(top: 12),
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: trips,
                 builder: (ctx, snap) {
@@ -255,327 +312,600 @@ class _VerifiedTripsScreenState extends State<VerifiedTripsScreen> {
                     );
                   }
                   if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const Center(
+                      child: CircularProgressIndicator(
+                        color: TryprColors.primary,
+                      ),
+                    );
                   }
                   final docs = snap.data!.docs;
-                  if (docs.isEmpty) {
-                    return const Center(child: Text('No verified trips yet'));
-                  }
+                  final totalStops = docs.fold<int>(0, (total, doc) {
+                    final data = doc.data();
+                    final fromField = data['totalStops'];
+                    if (fromField is num) return total + fromField.round();
+                    final waypoints = data['waypoints'] as List?;
+                    return total + (waypoints?.length ?? 0);
+                  });
+                  final totalDays = docs.fold<int>(0, (total, doc) {
+                    final data = doc.data();
+                    final raw = data['recommendedDays'] ?? data['days'];
+                    if (raw is num) return total + raw.round();
+                    return total + (int.tryParse(raw?.toString() ?? '') ?? 0);
+                  });
+                  final avgDays =
+                      docs.isEmpty ? 0 : (totalDays / docs.length).round();
 
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
+                  return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    stream: _adminDoc,
+                    builder: (adminCtx, adminSnap) {
+                      final isAdmin = adminSnap.data?.exists ?? false;
+                      final isCompact = MediaQuery.sizeOf(context).width < 760;
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Expanded(
-                            child: Text(
-                              'Verified Trips',
-                              style: Theme.of(context).textTheme.titleLarge
-                                  ?.copyWith(fontWeight: FontWeight.w700),
+                          Container(
+                            padding: const EdgeInsets.all(TryprSpacing.xl),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [
+                                  Color(0xFF0F8578),
+                                  Color(0xFF17A194),
+                                  Color(0xFF23B7A9),
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(
+                                TryprRadius.xl,
+                              ),
+                              boxShadow: TryprColors.elevatedShadow,
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                            stream: _adminDoc,
-                            builder: (ctx3, adminSnap) {
-                              if (adminSnap.hasError) {
-                                return const SizedBox.shrink();
-                              }
-                              final isAdmin = (adminSnap.data?.exists ?? false);
-                              if (!isAdmin) return const SizedBox.shrink();
-                              return ElevatedButton.icon(
-                                onPressed: _openCreateBuilder,
-                                icon: const Icon(Icons.add),
-                                label: const Text('Create Trip'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF00B894),
-                                  foregroundColor: Colors.white,
-                                  shape: const StadiumBorder(),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 18,
-                                    vertical: 14,
-                                  ),
-                                  elevation: 2,
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                        stream: _adminDoc,
-                        builder: (adminCtx, adminSnap) {
-                          final isAdmin = adminSnap.data?.exists ?? false;
-                          return GridView.builder(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            gridDelegate:
-                                SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount:
-                                      MediaQuery.sizeOf(context).width >= 1100
-                                          ? 3
-                                          : MediaQuery.sizeOf(context).width >=
-                                              720
-                                          ? 2
-                                          : 1,
-                                  mainAxisSpacing: 16,
-                                  crossAxisSpacing: 16,
-                                  childAspectRatio: 4 / 3,
-                                ),
-                            itemCount: docs.length,
-                            itemBuilder: (ctx2, i) {
-                              final tripId = docs[i].id;
-                              final data = docs[i].data();
-                              final title = (data['title'] ?? '').toString();
-                              final subtitle =
-                                  (data['subtitle'] ?? '').toString();
-                              final coverImage =
-                                  (data['coverImage'] ?? '').toString();
-                              final recommendedDays =
-                                  data['recommendedDays'] ?? data['days'] ?? 0;
-                              final totalStops = data['totalStops'] ?? 0;
-                              final waypoints =
-                                  (data['waypoints'] as List<dynamic>?) ?? [];
-
-                              return _Hoverable(
-                                onTap: () {
-                                  Navigator.of(context).push(
-                                    VerifiedTripDetailScreen.route(
-                                      tripId: tripId,
-                                      tripData: data,
-                                    ),
-                                  );
-                                },
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(18),
-                                  child: Stack(
-                                    children: [
-                                      // Cover image or map fallback
-                                      Positioned.fill(
-                                        child:
-                                            coverImage.isNotEmpty
-                                                ? Image.network(
-                                                  coverImage,
-                                                  fit: BoxFit.cover,
-                                                  loadingBuilder: (
-                                                    context,
-                                                    child,
-                                                    loadingProgress,
-                                                  ) {
-                                                    if (loadingProgress == null)
-                                                      return child;
-                                                    return Container(
-                                                      color: Colors.grey[200],
-                                                      child: const Center(
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                              strokeWidth: 2,
-                                                            ),
-                                                      ),
-                                                    );
-                                                  },
-                                                  errorBuilder: (
-                                                    _,
-                                                    error,
-                                                    ___,
-                                                  ) {
-                                                    debugPrint(
-                                                      'Image load error: $error',
-                                                    );
-                                                    return IgnorePointer(
-                                                      ignoring: true,
-                                                      child: MapEmbed(
-                                                        points: _mapPoints(
-                                                          waypoints,
-                                                        ),
-                                                        disableDefaultUi: true,
-                                                        disableGestures: true,
-                                                        zoomControlsEnabled:
-                                                            false,
-                                                      ),
-                                                    );
-                                                  },
-                                                )
-                                                : IgnorePointer(
-                                                  ignoring: true,
-                                                  child: MapEmbed(
-                                                    points: _mapPoints(
-                                                      waypoints,
-                                                    ),
-                                                    disableDefaultUi: true,
-                                                    disableGestures: true,
-                                                    zoomControlsEnabled: false,
-                                                  ),
-                                                ),
-                                      ),
-                                      Positioned.fill(
-                                        child: DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            gradient: LinearGradient(
-                                              begin: Alignment.bottomCenter,
-                                              end: Alignment.topCenter,
-                                              colors: [
-                                                Colors.black.withValues(
-                                                  alpha: 0.65,
-                                                ),
-                                                Colors.transparent,
-                                              ],
-                                            ),
+                            child:
+                                isCompact
+                                    ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Verified Trips',
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.displaySmall?.copyWith(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w700,
                                           ),
                                         ),
-                                      ),
-                                      // Admin edit/delete buttons
-                                      if (isAdmin)
-                                        Positioned(
-                                          top: 12,
-                                          left: 12,
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              _AdminActionButton(
-                                                icon: Icons.edit,
-                                                tooltip: 'Edit Trip',
-                                                onPressed:
-                                                    () =>
-                                                        _editTrip(tripId, data),
+                                        const SizedBox(height: 6),
+                                        const Text(
+                                          'Curated itineraries tested and reviewed by trusted travelers.',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        if (isAdmin) ...[
+                                          const SizedBox(
+                                            height: TryprSpacing.md,
+                                          ),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: ElevatedButton.icon(
+                                              onPressed: _openCreateBuilder,
+                                              icon: const Icon(Icons.add),
+                                              label: const Text('Create Trip'),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: Colors.white,
+                                                foregroundColor: const Color(
+                                                  0xFF0E7C72,
+                                                ),
                                               ),
-                                              const SizedBox(width: 8),
-                                              _AdminActionButton(
-                                                icon: Icons.delete,
-                                                tooltip: 'Delete Trip',
-                                                color: Colors.red,
-                                                onPressed:
-                                                    () => _deleteTrip(
-                                                      tripId,
-                                                      title,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    )
+                                    : Row(
+                                      children: [
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'Verified Trips',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .displaySmall
+                                                    ?.copyWith(
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.w700,
                                                     ),
+                                              ),
+                                              const SizedBox(height: 6),
+                                              const Text(
+                                                'Curated itineraries tested and reviewed by trusted travelers.',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 14,
+                                                ),
                                               ),
                                             ],
                                           ),
                                         ),
-                                      Positioned(
-                                        left: 16,
-                                        right: 16,
-                                        bottom: 14,
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          mainAxisSize: MainAxisSize.min,
+                                        if (isAdmin)
+                                          ElevatedButton.icon(
+                                            onPressed: _openCreateBuilder,
+                                            icon: const Icon(Icons.add),
+                                            label: const Text('Create Trip'),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: Colors.white,
+                                              foregroundColor: const Color(
+                                                0xFF0E7C72,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                          ),
+                          const SizedBox(height: TryprSpacing.lg),
+                          LayoutBuilder(
+                            builder: (ctx2, box) {
+                              final tiles = <Widget>[
+                                _statTile(
+                                  icon: Icons.verified_outlined,
+                                  label: 'Itineraries',
+                                  value: '${docs.length}',
+                                  accent: TryprColors.secondary,
+                                ),
+                                _statTile(
+                                  icon: Icons.place_outlined,
+                                  label: 'Total Stops',
+                                  value: '$totalStops',
+                                  accent: TryprColors.primary,
+                                ),
+                                _statTile(
+                                  icon: Icons.calendar_today_outlined,
+                                  label: 'Avg Recommended Days',
+                                  value: '$avgDays',
+                                  accent: TryprColors.peach,
+                                ),
+                                _statTile(
+                                  icon: Icons.shield_outlined,
+                                  label: 'Curation Level',
+                                  value: 'Verified',
+                                  accent: TryprColors.mint,
+                                ),
+                              ];
+
+                              if (box.maxWidth < 760) {
+                                return Column(
+                                  children: [
+                                    for (var i = 0; i < tiles.length; i++) ...[
+                                      tiles[i],
+                                      if (i < tiles.length - 1)
+                                        const SizedBox(height: TryprSpacing.sm),
+                                    ],
+                                  ],
+                                );
+                              }
+
+                              return Row(
+                                children: [
+                                  for (var i = 0; i < tiles.length; i++) ...[
+                                    Expanded(child: tiles[i]),
+                                    if (i < tiles.length - 1)
+                                      const SizedBox(width: TryprSpacing.sm),
+                                  ],
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: TryprSpacing.lg),
+                          if (docs.isEmpty)
+                            SoftCard(
+                              elevated: true,
+                              padding: const EdgeInsets.all(TryprSpacing.xl),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                      color: TryprColors.surfaceVariant,
+                                      borderRadius: BorderRadius.circular(
+                                        TryprRadius.lg,
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.verified_outlined,
+                                      color: TryprColors.textSecondary,
+                                      size: 28,
+                                    ),
+                                  ),
+                                  const SizedBox(height: TryprSpacing.md),
+                                  Text(
+                                    'No verified trips yet',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleLarge
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                  if (isAdmin) ...[
+                                    const SizedBox(height: TryprSpacing.md),
+                                    ElevatedButton.icon(
+                                      onPressed: _openCreateBuilder,
+                                      icon: const Icon(Icons.add),
+                                      label: const Text('Create first trip'),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            )
+                          else
+                            LayoutBuilder(
+                              builder: (gridCtx, gridBox) {
+                                final width = gridBox.maxWidth;
+                                final crossAxisCount =
+                                    width >= 1100
+                                        ? 3
+                                        : width >= 720
+                                        ? 2
+                                        : 1;
+                                final aspectRatio =
+                                    crossAxisCount == 1
+                                        ? 1.9
+                                        : crossAxisCount == 2
+                                        ? 1.35
+                                        : 1.1;
+
+                                return GridView.builder(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 8,
+                                  ),
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: crossAxisCount,
+                                        mainAxisSpacing: 16,
+                                        crossAxisSpacing: 16,
+                                        childAspectRatio: aspectRatio,
+                                      ),
+                                  itemCount: docs.length,
+                                  itemBuilder: (ctx3, i) {
+                                    final tripId = docs[i].id;
+                                    final data = docs[i].data();
+                                    final title =
+                                        (data['title'] ?? '').toString();
+                                    final subtitle =
+                                        (data['subtitle'] ?? '').toString();
+                                    final coverImage =
+                                        (data['coverImage'] ?? '').toString();
+                                    final daysRaw =
+                                        data['recommendedDays'] ?? data['days'];
+                                    final recommendedDays =
+                                        daysRaw is num
+                                            ? daysRaw.round()
+                                            : int.tryParse(
+                                                  daysRaw?.toString() ?? '',
+                                                ) ??
+                                                0;
+                                    final totalStopsRaw = data['totalStops'];
+                                    final waypoints =
+                                        (data['waypoints'] as List<dynamic>?) ??
+                                        [];
+                                    final totalStopsForCard =
+                                        totalStopsRaw is num
+                                            ? totalStopsRaw.round()
+                                            : waypoints.length;
+
+                                    return _Hoverable(
+                                      onTap: () {
+                                        Navigator.of(context).push(
+                                          VerifiedTripDetailScreen.route(
+                                            tripId: tripId,
+                                            tripData: data,
+                                          ),
+                                        );
+                                      },
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(
+                                          TryprRadius.xl,
+                                        ),
+                                        child: Stack(
                                           children: [
-                                            // Subtitle tag
-                                            if (subtitle.isNotEmpty)
-                                              Container(
-                                                margin: const EdgeInsets.only(
-                                                  bottom: 8,
+                                            Positioned.fill(
+                                              child:
+                                                  coverImage.isNotEmpty
+                                                      ? Image.network(
+                                                        coverImage,
+                                                        fit: BoxFit.cover,
+                                                        loadingBuilder: (
+                                                          context,
+                                                          child,
+                                                          loadingProgress,
+                                                        ) {
+                                                          if (loadingProgress ==
+                                                              null) {
+                                                            return child;
+                                                          }
+                                                          return Container(
+                                                            color:
+                                                                Colors
+                                                                    .grey[200],
+                                                            child: const Center(
+                                                              child:
+                                                                  CircularProgressIndicator(
+                                                                    strokeWidth:
+                                                                        2,
+                                                                  ),
+                                                            ),
+                                                          );
+                                                        },
+                                                        errorBuilder: (
+                                                          _,
+                                                          error,
+                                                          ___,
+                                                        ) {
+                                                          debugPrint(
+                                                            'Image load error: $error',
+                                                          );
+                                                          return IgnorePointer(
+                                                            ignoring: true,
+                                                            child: MapEmbed(
+                                                              points:
+                                                                  _mapPoints(
+                                                                    waypoints,
+                                                                  ),
+                                                              disableDefaultUi:
+                                                                  true,
+                                                              disableGestures:
+                                                                  true,
+                                                              zoomControlsEnabled:
+                                                                  false,
+                                                            ),
+                                                          );
+                                                        },
+                                                      )
+                                                      : IgnorePointer(
+                                                        ignoring: true,
+                                                        child: MapEmbed(
+                                                          points: _mapPoints(
+                                                            waypoints,
+                                                          ),
+                                                          disableDefaultUi:
+                                                              true,
+                                                          disableGestures: true,
+                                                          zoomControlsEnabled:
+                                                              false,
+                                                        ),
+                                                      ),
+                                            ),
+                                            Positioned.fill(
+                                              child: DecoratedBox(
+                                                decoration: BoxDecoration(
+                                                  gradient: LinearGradient(
+                                                    begin:
+                                                        Alignment.bottomCenter,
+                                                    end: Alignment.topCenter,
+                                                    colors: [
+                                                      Colors.black.withValues(
+                                                        alpha: 0.74,
+                                                      ),
+                                                      Colors.black.withValues(
+                                                        alpha: 0.3,
+                                                      ),
+                                                      Colors.transparent,
+                                                    ],
+                                                  ),
                                                 ),
+                                              ),
+                                            ),
+                                            if (isAdmin)
+                                              Positioned(
+                                                top: 12,
+                                                left: 12,
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    _AdminActionButton(
+                                                      icon: Icons.edit,
+                                                      tooltip: 'Edit Trip',
+                                                      onPressed:
+                                                          () => _editTrip(
+                                                            tripId,
+                                                            data,
+                                                          ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    _AdminActionButton(
+                                                      icon: Icons.delete,
+                                                      tooltip: 'Delete Trip',
+                                                      color: Colors.red,
+                                                      onPressed:
+                                                          () => _deleteTrip(
+                                                            tripId,
+                                                            title,
+                                                          ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            Positioned(
+                                              top: 12,
+                                              right: 12,
+                                              child: Container(
                                                 padding:
                                                     const EdgeInsets.symmetric(
                                                       horizontal: 10,
-                                                      vertical: 4,
+                                                      vertical: 6,
                                                     ),
                                                 decoration: BoxDecoration(
-                                                  color: const Color(
-                                                    0xFF00B894,
-                                                  ),
+                                                  color: Colors.black
+                                                      .withValues(alpha: 0.55),
                                                   borderRadius:
-                                                      BorderRadius.circular(12),
+                                                      BorderRadius.circular(
+                                                        TryprRadius.full,
+                                                      ),
                                                 ),
-                                                child: Text(
-                                                  subtitle,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 11,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: const [
+                                                    Icon(
+                                                      Icons.verified,
+                                                      size: 14,
+                                                      color: Colors.white,
+                                                    ),
+                                                    SizedBox(width: 6),
+                                                    Text(
+                                                      'Verified',
+                                                      style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 12,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ],
                                                 ),
-                                              ),
-                                            // Title
-                                            Text(
-                                              title.isNotEmpty
-                                                  ? title
-                                                  : 'Verified Trip',
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontSize: 20,
-                                                fontWeight: FontWeight.w700,
-                                                color: Colors.white,
-                                                shadows: [
-                                                  Shadow(
-                                                    blurRadius: 8,
-                                                    color: Colors.black54,
-                                                  ),
-                                                ],
                                               ),
                                             ),
-                                            const SizedBox(height: 8),
-                                            // Stats row
-                                            Row(
-                                              children: [
-                                                _TripStatChip(
-                                                  icon: Icons.calendar_today,
-                                                  label:
-                                                      '$recommendedDays days',
+                                            Positioned(
+                                              left: 14,
+                                              right: 14,
+                                              bottom: 14,
+                                              child: Container(
+                                                padding: const EdgeInsets.all(
+                                                  TryprSpacing.md,
                                                 ),
-                                                const SizedBox(width: 8),
-                                                _TripStatChip(
-                                                  icon: Icons.place,
-                                                  label: '$totalStops stops',
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black
+                                                      .withValues(alpha: 0.38),
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                        TryprRadius.lg,
+                                                      ),
                                                 ),
-                                              ],
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    if (subtitle.isNotEmpty)
+                                                      Container(
+                                                        margin:
+                                                            const EdgeInsets.only(
+                                                              bottom: 8,
+                                                            ),
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              horizontal: 10,
+                                                              vertical: 4,
+                                                            ),
+                                                        decoration: BoxDecoration(
+                                                          color: const Color(
+                                                            0xFF00B894,
+                                                          ),
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                        ),
+                                                        child: Text(
+                                                          subtitle,
+                                                          style:
+                                                              const TextStyle(
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                              ),
+                                                        ),
+                                                      ),
+                                                    Row(
+                                                      children: [
+                                                        Text(
+                                                          _tripEmoji(data),
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 20,
+                                                              ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        Expanded(
+                                                          child: Text(
+                                                            title.isNotEmpty
+                                                                ? title
+                                                                : 'Verified Trip',
+                                                            maxLines: 2,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontSize: 20,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w700,
+                                                                  color:
+                                                                      Colors
+                                                                          .white,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    const SizedBox(height: 8),
+                                                    Wrap(
+                                                      spacing: 8,
+                                                      runSpacing: 8,
+                                                      children: [
+                                                        _TripStatChip(
+                                                          icon:
+                                                              Icons
+                                                                  .calendar_today,
+                                                          label:
+                                                              '$recommendedDays days',
+                                                        ),
+                                                        _TripStatChip(
+                                                          icon: Icons.place,
+                                                          label:
+                                                              '$totalStopsForCard stops',
+                                                        ),
+                                                        _TripStatChip(
+                                                          icon: Icons.info,
+                                                          label: _dateRange(
+                                                            data,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
                                             ),
                                           ],
                                         ),
                                       ),
-                                      Positioned(
-                                        top: 12,
-                                        right: 12,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 6,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black.withValues(
-                                              alpha: 0.6,
-                                            ),
-                                            borderRadius: BorderRadius.circular(
-                                              999,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: const [
-                                              Icon(
-                                                Icons.verified,
-                                                size: 14,
-                                                color: Colors.white,
-                                              ),
-                                              SizedBox(width: 6),
-                                              Text(
-                                                'Verified',
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ],
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                        ],
+                      );
+                    },
                   );
                 },
               ),
@@ -633,7 +963,7 @@ class _TripStatChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.5),
+        color: Colors.black.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(

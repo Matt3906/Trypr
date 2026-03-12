@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
@@ -67,7 +68,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                           .get();
                   if (q.docs.isEmpty) {
                     if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    ScaffoldMessenger.of(context).showTryprSnackBar(
                       const SnackBar(content: Text('No user found')),
                     );
                     return;
@@ -91,12 +92,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       });
                   if (!mounted) return;
                   Navigator.of(ctx).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showTryprSnackBar(
                     const SnackBar(content: Text('Friend request sent')),
                   );
                 } catch (err) {
                   if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showTryprSnackBar(
                     SnackBar(content: Text('Failed to send request: $err')),
                   );
                 }
@@ -128,7 +129,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
         });
         await meRef.collection('friendRequests').doc(reqId).delete();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           const SnackBar(content: Text('Friend request accepted')),
         );
         return;
@@ -180,14 +181,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Friend request accepted')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Friend request accepted')),
+      );
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to accept request: $err')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Failed to accept request: $err')),
+      );
     }
   }
 
@@ -202,12 +203,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
           .doc(reqId)
           .delete();
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Friend request declined')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Friend request declined')),
+      );
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text('Failed to decline request: $err')),
       );
     }
@@ -515,12 +516,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Friend removed')));
+      ).showTryprSnackBar(const SnackBar(content: Text('Friend removed')));
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to remove friend: $err')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Failed to remove friend: $err')),
+      );
     }
   }
 }

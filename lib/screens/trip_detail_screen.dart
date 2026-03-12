@@ -1,26 +1,56 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:trypr/theme/app_theme.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/widgets/globe_3d_embed.dart';
 import 'package:trypr/screens/destination_detail_screen.dart';
 import 'package:trypr/screens/trip_planning_screen.dart';
-import 'package:http/http.dart' as http;
+import 'package:trypr/services/geocode.dart';
 import 'package:flutter/foundation.dart';
 import 'package:trypr/widgets/web_interceptor.dart';
 import 'package:trypr/widgets/trip_chat_dialog_clean.dart';
 import 'package:trypr/widgets/trip_expenses_dialog.dart';
+import 'package:trypr/widgets/share_trip_dialog.dart';
 import 'package:trypr/services/name_lookup.dart';
+import 'package:trypr/utils/route_cache.dart';
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui' show ImageFilter;
+
+enum _TripDetailMapMode { map2d, globe3d }
+
+class _TransportOption {
+  final String mode;
+  final String label;
+  final String emoji;
+
+  const _TransportOption(this.mode, this.label, this.emoji);
+}
+
+const List<_TransportOption> _transportOptions = [
+  _TransportOption('driving', 'Car', '🚗'),
+  _TransportOption('flying', 'Flight', '✈️'),
+  _TransportOption('transit', 'Train', '🚆'),
+  _TransportOption('walking', 'Walk', '🚶'),
+  _TransportOption('biking', 'Bike', '🚲'),
+  _TransportOption('portaging', 'Portaging', '🛶'),
+  _TransportOption('hiking', 'Hiking', '🥾'),
+];
 
 class TripDetailScreen extends StatefulWidget {
   final String docId;
   final Map<String, dynamic> data;
-  const TripDetailScreen({super.key, required this.docId, required this.data});
+
+  /// When true the screen is purely read-only (e.g. unauthenticated share-link
+  /// viewer). All edit controls, chat, packing, expenses and share buttons are
+  /// hidden and a sign-in banner is shown instead.
+  final bool readOnly;
+  const TripDetailScreen({
+    super.key,
+    required this.docId,
+    required this.data,
+    this.readOnly = false,
+  });
 
   @override
   State<TripDetailScreen> createState() => _TripDetailScreenState();
@@ -34,6 +64,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   final TextEditingController _searchController = TextEditingController();
   List<Map<String, dynamic>> _placeSuggestions = [];
   Timer? _debounce;
+  Timer? _routeCachePersistDebounce;
   bool _searchingPlaces = false;
   Map<String, dynamic> _liveData = {};
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
@@ -43,11 +74,15 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   String _transportMode = 'driving';
   List<Map<String, dynamic>> _routeVia = const [];
   List<String> _routeInstructions = const [];
+  List<Map<String, dynamic>> _routeGeometry3d = const [];
+  Map<String, dynamic>? _selectedMapPoint;
 
   List<String> _segmentRoutingTypes = const [];
+  List<String> _segmentTransportModes = const [];
   Map<String, dynamic>? _transitArrivalStop;
 
   bool _suspendMapTap = false;
+  _TripDetailMapMode _mapMode = _TripDetailMapMode.map2d;
 
   User? get _user => FirebaseAuth.instance.currentUser;
 
@@ -63,7 +98,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   bool _isAdventureMode(String mode) {
     final m = mode.trim().toLowerCase();
-    return m == 'bikepacking' || m == 'backpacking';
+    return m == 'hiking' ||
+        m == 'portaging' ||
+        m == 'backpacking' ||
+        m == 'bikepacking';
   }
 
   String _emojiForPackingItem(String raw) {
@@ -76,12 +114,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (name.contains('hat') || name.contains('cap')) return '🧢';
     if (name.contains('shirt') ||
         name.contains('tee') ||
-        name.contains('t-shirt'))
+        name.contains('t-shirt')) {
       return '👕';
+    }
     if (name.contains('pants') ||
         name.contains('jeans') ||
-        name.contains('short'))
+        name.contains('short')) {
       return '👖';
+    }
     if (name.contains('dress')) return '👗';
     if (name.contains('swim') || name.contains('bikini')) return '👙';
     if (name.contains('tooth')) return '🪥';
@@ -89,8 +129,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (name.contains('sunscreen') || name.contains('sun screen')) return '🧴';
     if (name.contains('phone') ||
         name.contains('charger') ||
-        name.contains('cable'))
+        name.contains('cable')) {
       return '🔌';
+    }
     if (name.contains('camera')) return '📷';
     if (name.contains('passport')) return '🛂';
     if (name.contains('ticket') || name.contains('boarding')) return '🎫';
@@ -98,8 +139,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (name.contains('snack') || name.contains('food')) return '🥪';
     if (name.contains('med') ||
         name.contains('pill') ||
-        name.contains('first aid'))
+        name.contains('first aid')) {
       return '💊';
+    }
     if (name.contains('laptop') || name.contains('tablet')) return '💻';
     if (name.contains('map')) return '🗺️';
     if (name.contains('tent')) return '⛺';
@@ -107,11 +149,188 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return '🎒';
   }
 
-  List<String> _coerceSegmentRoutingTypes(List<dynamic> raw) {
-    return raw
-        .map((e) => e.toString().trim().toLowerCase())
-        .map((v) => v == 'direct' ? 'direct' : 'calculated')
-        .toList();
+  String _normalizeTransportMode(String raw) {
+    var m = raw.trim().toLowerCase();
+    if (m == 'car' || m == 'driving') m = 'driving';
+    if (m == 'plane' || m == 'flight' || m == 'flying') m = 'flying';
+    if (m == 'train' ||
+        m == 'rail' ||
+        m == 'public_transit' ||
+        m == 'public transit') {
+      m = 'transit';
+    }
+    if (m == 'walk') m = 'walking';
+    if (m == 'bike' ||
+        m == 'bicycling' ||
+        m == 'cycling' ||
+        m == 'bikepacking') {
+      m = 'biking';
+    }
+    if (m == 'hiking' || m == 'backpacking') m = 'hiking';
+    if (m == 'portage' || m == 'portaging' || m == 'canoe' || m == 'canoeing') {
+      m = 'portaging';
+    }
+    if (m == 'gas_stops' || m == 'gas' || m == 'gas/stops') m = 'driving';
+    for (final opt in _transportOptions) {
+      if (opt.mode == m) return m;
+    }
+    return 'driving';
+  }
+
+  List<String> _coerceSegmentRoutingTypes(
+    List<dynamic> raw, {
+    int? segmentCount,
+  }) {
+    final out =
+        raw
+            .map((e) => e.toString().trim().toLowerCase())
+            .map((v) => v == 'direct' ? 'direct' : 'calculated')
+            .toList();
+    if (segmentCount == null) return out;
+    if (out.length > segmentCount) return out.take(segmentCount).toList();
+    if (out.length < segmentCount) {
+      return [...out, ...List.filled(segmentCount - out.length, 'calculated')];
+    }
+    return out;
+  }
+
+  List<String> _coerceSegmentTransportModes(
+    List<dynamic> raw, {
+    required int segmentCount,
+    String? fallbackMode,
+  }) {
+    final fallback = _normalizeTransportMode(fallbackMode ?? _transportMode);
+    final out = raw.map((e) => _normalizeTransportMode(e.toString())).toList();
+    if (out.length > segmentCount) return out.take(segmentCount).toList();
+    if (out.length < segmentCount) {
+      return [...out, ...List.filled(segmentCount - out.length, fallback)];
+    }
+    return out;
+  }
+
+  String _segmentTransportModeAt(int segmentIndex) {
+    if (segmentIndex < 0) return _normalizeTransportMode(_transportMode);
+    if (segmentIndex >= _segmentTransportModes.length) {
+      return _normalizeTransportMode(_transportMode);
+    }
+    return _normalizeTransportMode(_segmentTransportModes[segmentIndex]);
+  }
+
+  bool get _hasTransitModeInRoute {
+    final segments = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+    if (segments == 0) {
+      return _normalizeTransportMode(_transportMode) == 'transit';
+    }
+    for (var i = 0; i < segments; i++) {
+      if (_segmentTransportModeAt(i) == 'transit') return true;
+    }
+    return false;
+  }
+
+  bool _requiresGearListForModes(List<String> segmentModes, String fallback) {
+    for (final mode in segmentModes) {
+      if (_isAdventureMode(mode)) return true;
+    }
+    return _isAdventureMode(fallback);
+  }
+
+  void _syncSegmentDataWithWaypoints() {
+    final segmentCount = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+    _segmentRoutingTypes = _coerceSegmentRoutingTypes(
+      _segmentRoutingTypes,
+      segmentCount: segmentCount,
+    );
+    _segmentTransportModes = _coerceSegmentTransportModes(
+      _segmentTransportModes,
+      segmentCount: segmentCount,
+      fallbackMode: _transportMode,
+    );
+    _routeVia =
+        _routeVia
+            .where((v) {
+              final after = (v['afterIndex'] as num?)?.toInt();
+              return after != null && after >= 0 && after < segmentCount;
+            })
+            .map((v) => Map<String, dynamic>.from(v))
+            .toList();
+  }
+
+  void _applyCachedRouteStateFromLiveData() {
+    _routeGeometry3d = readRouteGeometry(_liveData['routeGeometry3d']);
+    _routeInstructions = readRouteInstructions(_liveData['routeInstructions']);
+  }
+
+  bool _sameRouteInstructions(List<String> next) {
+    if (_routeInstructions.length != next.length) return false;
+    for (var i = 0; i < next.length; i++) {
+      if (_routeInstructions[i] != next[i]) return false;
+    }
+    return true;
+  }
+
+  bool _sameRouteGeometry(List<Map<String, dynamic>> next) {
+    if (_routeGeometry3d.length != next.length) return false;
+    for (var i = 0; i < next.length; i++) {
+      final a = _routeGeometry3d[i];
+      final b = next[i];
+      final aLat = (a['lat'] as num?)?.toDouble() ?? 0.0;
+      final aLon = ((a['lon'] ?? a['lng']) as num?)?.toDouble() ?? 0.0;
+      final bLat = (b['lat'] as num?)?.toDouble() ?? 0.0;
+      final bLon = ((b['lon'] ?? b['lng']) as num?)?.toDouble() ?? 0.0;
+      if ((aLat - bLat).abs() > 1e-7 || (aLon - bLon).abs() > 1e-7) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  String _currentRouteCacheKey() {
+    return buildRouteCacheKey(
+      waypoints: _waypoints,
+      transportMode: _transportMode,
+      segmentTransportModes: _segmentTransportModes,
+      segmentRoutingTypes: _segmentRoutingTypes,
+      routeVia: _routeVia,
+    );
+  }
+
+  bool get _canUseCachedRoute {
+    final stored = (_liveData['routeCacheKey'] ?? '').toString().trim();
+    return stored.isNotEmpty &&
+        stored == _currentRouteCacheKey() &&
+        _routeGeometry3d.length >= 2;
+  }
+
+  Map<String, dynamic> _routeCachePayload() {
+    return {
+      'routeCacheKey': _currentRouteCacheKey(),
+      'routeGeometry3d': simplifyRouteGeometry(_routeGeometry3d),
+      'routeInstructions': _routeInstructions.take(8).toList(growable: false),
+    };
+  }
+
+  void _scheduleRouteCachePersist() {
+    _routeCachePersistDebounce?.cancel();
+    _routeCachePersistDebounce = Timer(const Duration(milliseconds: 600), () {
+      unawaited(_persistRouteCacheIfPossible());
+    });
+  }
+
+  Future<void> _persistRouteCacheIfPossible() async {
+    final me = _user;
+    if (me == null) return;
+    final tripRef = _resolveTripRefForView(me);
+    final ownerUid = _ownerUidFromTripRefPath(tripRef.path);
+    if (ownerUid != me.uid) return;
+
+    final payload = _routeCachePayload();
+    try {
+      await tripRef.set(payload, SetOptions(merge: true));
+      if (!mounted) return;
+      setState(() => _liveData.addAll(payload));
+    } catch (_) {
+      // Route cache persistence is non-fatal.
+    }
   }
 
   @override
@@ -135,11 +354,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           return <String, dynamic>{};
         }).toList();
 
-    _transportMode =
-        ((_liveData['transportMode'] ?? 'driving') as Object?)
-            .toString()
-            .trim()
-            .toLowerCase();
+    _transportMode = _normalizeTransportMode(
+      ((_liveData['transportMode'] ?? 'driving') as Object?).toString(),
+    );
     final viaAny = _liveData['routeVia'];
     final viaRaw = (viaAny is List) ? viaAny : const <dynamic>[];
     _routeVia =
@@ -148,15 +365,28 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
             .toList();
 
+    final segments = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
     final segAny = _liveData['segmentRoutingTypes'];
     final segRaw = (segAny is List) ? segAny : const <dynamic>[];
-    _segmentRoutingTypes = _coerceSegmentRoutingTypes(segRaw);
+    _segmentRoutingTypes = _coerceSegmentRoutingTypes(
+      segRaw,
+      segmentCount: segments,
+    );
+    final segModeAny = _liveData['segmentTransportModes'];
+    final segModeRaw = (segModeAny is List) ? segModeAny : const <dynamic>[];
+    _segmentTransportModes = _coerceSegmentTransportModes(
+      segModeRaw,
+      segmentCount: segments,
+      fallbackMode: _transportMode,
+    );
     final arrivalRaw = _liveData['transitArrivalStop'];
     if (arrivalRaw is Map) {
       _transitArrivalStop = Map<String, dynamic>.from(
         arrivalRaw.cast<String, dynamic>(),
       );
     }
+    _syncSegmentDataWithWaypoints();
+    _applyCachedRouteStateFromLiveData();
 
     // If we have a remote tripRef, listen for live updates and merge them
     // into `_liveData` so the UI updates when the owner edits the trip.
@@ -177,67 +407,92 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           print('TripDetail: initial owner subscription -> $tripRefPath');
         }
         _currentSubscribedPath = tripRefPath;
-        _docSub = docRef.snapshots().listen((snapshot) {
-          if (!snapshot.exists) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('This trip was removed by the owner'),
-                ),
-              );
+        _docSub = docRef.snapshots().listen(
+          (snapshot) {
+            if (!snapshot.exists) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showTryprSnackBar(
+                  const SnackBar(
+                    content: Text('This trip was removed by the owner'),
+                  ),
+                );
+              }
+              return;
             }
-            return;
-          }
-          final remote = snapshot.data() ?? {};
-          // Merge remote fields into _liveData but keep local metadata such as `tripRef` and `sharedFrom`.
-          setState(() {
-            _liveData.addAll(remote);
-            // ensure tripRef remains
-            _liveData['tripRef'] = tripRefPath;
-            // update waypoints list for map and editing UI
-            final rwAny = _liveData['waypoints'];
-            final rw = (rwAny is List) ? rwAny : const <dynamic>[];
-            _waypoints =
-                rw.map<Map<String, dynamic>>((e) {
-                  if (e is Map<String, dynamic>) {
-                    return Map<String, dynamic>.from(e);
-                  }
-                  if (e is Map) {
-                    return Map<String, dynamic>.from(e.cast<String, dynamic>());
-                  }
-                  return <String, dynamic>{};
-                }).toList();
-            // update days if present
-            final td = _liveData['totalDays'];
-            if (td is num) _days = td.toInt();
+            final remote = snapshot.data() ?? {};
+            // Merge remote fields into _liveData but keep local metadata such as `tripRef` and `sharedFrom`.
+            setState(() {
+              _liveData.addAll(remote);
+              // ensure tripRef remains
+              _liveData['tripRef'] = tripRefPath;
+              // update waypoints list for map and editing UI
+              final rwAny = _liveData['waypoints'];
+              final rw = (rwAny is List) ? rwAny : const <dynamic>[];
+              _waypoints =
+                  rw.map<Map<String, dynamic>>((e) {
+                    if (e is Map<String, dynamic>) {
+                      return Map<String, dynamic>.from(e);
+                    }
+                    if (e is Map) {
+                      return Map<String, dynamic>.from(
+                        e.cast<String, dynamic>(),
+                      );
+                    }
+                    return <String, dynamic>{};
+                  }).toList();
+              // update days if present
+              final td = _liveData['totalDays'];
+              if (td is num) _days = td.toInt();
 
-            _transportMode =
+              _transportMode = _normalizeTransportMode(
                 ((_liveData['transportMode'] ?? 'driving') as Object?)
-                    .toString()
-                    .trim()
-                    .toLowerCase();
-            final viaAny = _liveData['routeVia'];
-            final viaRaw = (viaAny is List) ? viaAny : const <dynamic>[];
-            _routeVia =
-                viaRaw
-                    .whereType<Map>()
-                    .map(
-                      (e) =>
-                          Map<String, dynamic>.from(e.cast<String, dynamic>()),
-                    )
-                    .toList();
-
-            final segAny = _liveData['segmentRoutingTypes'];
-            final segRaw = (segAny is List) ? segAny : const <dynamic>[];
-            _segmentRoutingTypes = _coerceSegmentRoutingTypes(segRaw);
-            final arrivalRaw = _liveData['transitArrivalStop'];
-            if (arrivalRaw is Map) {
-              _transitArrivalStop = Map<String, dynamic>.from(
-                arrivalRaw.cast<String, dynamic>(),
+                    .toString(),
               );
-            }
-          });
-        });
+              final viaAny = _liveData['routeVia'];
+              final viaRaw = (viaAny is List) ? viaAny : const <dynamic>[];
+              _routeVia =
+                  viaRaw
+                      .whereType<Map>()
+                      .map(
+                        (e) => Map<String, dynamic>.from(
+                          e.cast<String, dynamic>(),
+                        ),
+                      )
+                      .toList();
+
+              final segments =
+                  _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+              final segAny = _liveData['segmentRoutingTypes'];
+              final segRaw = (segAny is List) ? segAny : const <dynamic>[];
+              _segmentRoutingTypes = _coerceSegmentRoutingTypes(
+                segRaw,
+                segmentCount: segments,
+              );
+              final segModeAny = _liveData['segmentTransportModes'];
+              final segModeRaw =
+                  (segModeAny is List) ? segModeAny : const <dynamic>[];
+              _segmentTransportModes = _coerceSegmentTransportModes(
+                segModeRaw,
+                segmentCount: segments,
+                fallbackMode: _transportMode,
+              );
+              final arrivalRaw = _liveData['transitArrivalStop'];
+              if (arrivalRaw is Map) {
+                _transitArrivalStop = Map<String, dynamic>.from(
+                  arrivalRaw.cast<String, dynamic>(),
+                );
+              }
+              _syncSegmentDataWithWaypoints();
+              _applyCachedRouteStateFromLiveData();
+            });
+          },
+          onError: (e) {
+            // Swallow permission-denied or network errors on the realtime
+            // listener so they don't crash the app with an unhandled exception.
+            // ignore: avoid_print
+            print('TripDetail: owner snapshot error: $e');
+          },
+        );
       }
     } catch (_) {}
 
@@ -254,95 +509,123 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         if (kDebugMode) {
           print('TripDetail: subscribing to local trip doc ${localRef.path}');
         }
-        _localDocSub = localRef.snapshots().listen((snap) {
-          if (!snap.exists) return;
-          final data = snap.data() ?? {};
-          // If local doc now contains a tripRef and we are not yet subscribed to it, (re)subscribe.
-          final newRefAny = data['tripRef'];
-          final newRef =
-              (newRefAny is String)
-                  ? newRefAny
-                  : (newRefAny is DocumentReference)
-                  ? newRefAny.path
-                  : (newRefAny as Object?)?.toString() ?? '';
-          if (newRef.isNotEmpty && newRef != _currentSubscribedPath) {
-            try {
-              _docSub?.cancel();
-              final ownerRef = FirebaseFirestore.instance.doc(newRef);
-              if (kDebugMode) {
-                print('TripDetail: switching owner subscription -> $newRef');
-              }
-              _currentSubscribedPath = newRef;
-              _docSub = ownerRef.snapshots().listen((snapshot) {
-                if (!snapshot.exists) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('This trip was removed by the owner'),
-                      ),
-                    );
-                  }
-                  return;
+        _localDocSub = localRef.snapshots().listen(
+          (snap) {
+            if (!snap.exists) return;
+            final data = snap.data() ?? {};
+            // If local doc now contains a tripRef and we are not yet subscribed to it, (re)subscribe.
+            final newRefAny = data['tripRef'];
+            final newRef =
+                (newRefAny is String)
+                    ? newRefAny
+                    : (newRefAny is DocumentReference)
+                    ? newRefAny.path
+                    : (newRefAny as Object?)?.toString() ?? '';
+            if (newRef.isNotEmpty && newRef != _currentSubscribedPath) {
+              try {
+                _docSub?.cancel();
+                final ownerRef = FirebaseFirestore.instance.doc(newRef);
+                if (kDebugMode) {
+                  print('TripDetail: switching owner subscription -> $newRef');
                 }
-                final remote = snapshot.data() ?? {};
-                if (mounted) {
-                  setState(() {
-                    _liveData.addAll(remote);
-                    _liveData['tripRef'] = newRef;
-                    final rwAny = _liveData['waypoints'];
-                    final rw = (rwAny is List) ? rwAny : const <dynamic>[];
-                    _waypoints =
-                        rw.map<Map<String, dynamic>>((e) {
-                          if (e is Map<String, dynamic>) {
-                            return Map<String, dynamic>.from(e);
-                          }
-                          if (e is Map) {
-                            return Map<String, dynamic>.from(
-                              e.cast<String, dynamic>(),
-                            );
-                          }
-                          return <String, dynamic>{};
-                        }).toList();
-                    final td = _liveData['totalDays'];
-                    if (td is num) _days = td.toInt();
-
-                    _transportMode =
-                        ((_liveData['transportMode'] ?? 'driving') as Object?)
-                            .toString()
-                            .trim()
-                            .toLowerCase();
-                    final viaAny = _liveData['routeVia'];
-                    final viaRaw =
-                        (viaAny is List) ? viaAny : const <dynamic>[];
-                    _routeVia =
-                        viaRaw
-                            .whereType<Map>()
-                            .map(
-                              (e) => Map<String, dynamic>.from(
-                                e.cast<String, dynamic>(),
-                              ),
-                            )
-                            .toList();
-
-                    final segAny = _liveData['segmentRoutingTypes'];
-                    final segRaw =
-                        (segAny is List) ? segAny : const <dynamic>[];
-                    _segmentRoutingTypes = _coerceSegmentRoutingTypes(segRaw);
-                    final arrivalRaw = _liveData['transitArrivalStop'];
-                    if (arrivalRaw is Map) {
-                      _transitArrivalStop = Map<String, dynamic>.from(
-                        arrivalRaw.cast<String, dynamic>(),
-                      );
+                _currentSubscribedPath = newRef;
+                _docSub = ownerRef.snapshots().listen(
+                  (snapshot) {
+                    if (!snapshot.exists) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showTryprSnackBar(
+                          const SnackBar(
+                            content: Text('This trip was removed by the owner'),
+                          ),
+                        );
+                      }
+                      return;
                     }
-                  });
-                }
-              });
-            } catch (_) {}
-          } else {
-            // Merge local data to reflect user's own metadata quickly
-            if (mounted) setState(() => _liveData.addAll(data));
-          }
-        });
+                    final remote = snapshot.data() ?? {};
+                    if (mounted) {
+                      setState(() {
+                        _liveData.addAll(remote);
+                        _liveData['tripRef'] = newRef;
+                        final rwAny = _liveData['waypoints'];
+                        final rw = (rwAny is List) ? rwAny : const <dynamic>[];
+                        _waypoints =
+                            rw.map<Map<String, dynamic>>((e) {
+                              if (e is Map<String, dynamic>) {
+                                return Map<String, dynamic>.from(e);
+                              }
+                              if (e is Map) {
+                                return Map<String, dynamic>.from(
+                                  e.cast<String, dynamic>(),
+                                );
+                              }
+                              return <String, dynamic>{};
+                            }).toList();
+                        final td = _liveData['totalDays'];
+                        if (td is num) _days = td.toInt();
+
+                        _transportMode = _normalizeTransportMode(
+                          ((_liveData['transportMode'] ?? 'driving') as Object?)
+                              .toString(),
+                        );
+                        final viaAny = _liveData['routeVia'];
+                        final viaRaw =
+                            (viaAny is List) ? viaAny : const <dynamic>[];
+                        _routeVia =
+                            viaRaw
+                                .whereType<Map>()
+                                .map(
+                                  (e) => Map<String, dynamic>.from(
+                                    e.cast<String, dynamic>(),
+                                  ),
+                                )
+                                .toList();
+
+                        final segments =
+                            _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+                        final segAny = _liveData['segmentRoutingTypes'];
+                        final segRaw =
+                            (segAny is List) ? segAny : const <dynamic>[];
+                        _segmentRoutingTypes = _coerceSegmentRoutingTypes(
+                          segRaw,
+                          segmentCount: segments,
+                        );
+                        final segModeAny = _liveData['segmentTransportModes'];
+                        final segModeRaw =
+                            (segModeAny is List)
+                                ? segModeAny
+                                : const <dynamic>[];
+                        _segmentTransportModes = _coerceSegmentTransportModes(
+                          segModeRaw,
+                          segmentCount: segments,
+                          fallbackMode: _transportMode,
+                        );
+                        final arrivalRaw = _liveData['transitArrivalStop'];
+                        if (arrivalRaw is Map) {
+                          _transitArrivalStop = Map<String, dynamic>.from(
+                            arrivalRaw.cast<String, dynamic>(),
+                          );
+                        }
+                        _syncSegmentDataWithWaypoints();
+                        _applyCachedRouteStateFromLiveData();
+                      });
+                    }
+                  },
+                  onError: (e) {
+                    // ignore: avoid_print
+                    print('TripDetail: switched owner snapshot error: $e');
+                  },
+                );
+              } catch (_) {}
+            } else {
+              // Merge local data to reflect user's own metadata quickly
+              if (mounted) setState(() => _liveData.addAll(data));
+            }
+          },
+          onError: (e) {
+            // ignore: avoid_print
+            print('TripDetail: local doc snapshot error: $e');
+          },
+        );
       }
     } catch (_) {}
 
@@ -380,8 +663,28 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return (destination['itinerary'] as List?)?.length ?? 0;
   }
 
+  String? _tripRefPathFromAny(dynamic raw) {
+    if (raw is String) {
+      final value = raw.trim();
+      return value.isEmpty ? null : value;
+    }
+    if (raw is DocumentReference) return raw.path;
+    final value = raw?.toString().trim();
+    if (value == null || value.isEmpty) return null;
+    return value;
+  }
+
+  String? _currentTripRefPath() {
+    return _tripRefPathFromAny(_liveData['tripRef'] ?? widget.data['tripRef']);
+  }
+
+  List<dynamic> _sharedWithList() {
+    final raw = _liveData['sharedWith'] ?? widget.data['sharedWith'];
+    return raw is List ? raw : const <dynamic>[];
+  }
+
   DocumentReference<Map<String, dynamic>> _resolveTripRefForView(User me) {
-    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    final refPath = _currentTripRefPath();
     if (refPath != null && refPath.isNotEmpty) {
       return FirebaseFirestore.instance.doc(refPath);
     }
@@ -400,40 +703,24 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return '';
   }
 
-  Future<void> _copyJoinLinkForTrip(
-    DocumentReference<Map<String, dynamic>> tripRef,
-  ) async {
-    final origin = kIsWeb ? Uri.base.origin : '';
-    final join = Uri(
-      scheme: origin.isNotEmpty ? Uri.parse(origin).scheme : 'https',
-      host: origin.isNotEmpty ? Uri.parse(origin).host : '',
-      port:
-          origin.isNotEmpty
-              ? Uri.parse(origin).hasPort
-                  ? Uri.parse(origin).port
-                  : null
-              : null,
-      path: '/',
-      queryParameters: {'joinTrip': tripRef.path},
-    );
-
-    final link =
-        origin.isNotEmpty ? join.toString() : 'joinTrip=${tripRef.path}';
-    await Clipboard.setData(ClipboardData(text: link));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Join link copied to clipboard')),
-      );
-    }
-  }
-
   Future<void> _setTransportMode(String mode) async {
     final me = _user;
     if (me == null) return;
+    final normalized = _normalizeTransportMode(mode);
+    final segments = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+    final updatedModes = List<String>.filled(segments, normalized);
+    final updatedRouteVia =
+        normalized == 'transit' ? <Map<String, dynamic>>[] : _routeVia;
 
     setState(() {
-      _transportMode = mode;
+      _transportMode = normalized;
+      _segmentTransportModes = updatedModes;
+      _routeVia = updatedRouteVia;
       _routeInstructions = const [];
+      _routeGeometry3d = const [];
+      if (!_hasTransitModeInRoute) {
+        _transitArrivalStop = null;
+      }
     });
 
     final tripRef = _resolveTripRefForView(me);
@@ -442,14 +729,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
     try {
       await tripRef.update({
-        'transportMode': mode,
-        'requires_gear_list': _isAdventureMode(mode),
+        'transportMode': normalized,
+        'segmentTransportModes': updatedModes,
+        'routeVia': updatedRouteVia,
+        'requires_gear_list': _requiresGearListForModes(
+          updatedModes,
+          normalized,
+        ),
       });
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to update mode: $e')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to update mode: $e')),
+        );
       }
     }
   }
@@ -498,9 +790,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       await tripRef.update({'routeVia': updated});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to update route: $e')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to update route: $e')),
+        );
       }
     }
   }
@@ -534,8 +826,61 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       await tripRef.update({'segmentRoutingTypes': updated});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           SnackBar(content: Text('Failed to update routing type: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _setSegmentTransportMode(int segmentIndex, String mode) async {
+    final me = _user;
+    if (me == null) return;
+
+    final tripRef = _resolveTripRefForView(me);
+    final ownerUid = _ownerUidFromTripRefPath(tripRef.path);
+    if (ownerUid != me.uid) return;
+
+    final normalized = _normalizeTransportMode(mode);
+    final segments = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+    final updated = _coerceSegmentTransportModes(
+      _segmentTransportModes,
+      segmentCount: segments,
+      fallbackMode: _transportMode,
+    );
+    if (segmentIndex < 0 || segmentIndex >= updated.length) return;
+    updated[segmentIndex] = normalized;
+    final nextRouteVia =
+        normalized == 'transit'
+            ? _routeVia.where((v) {
+              final after = (v['afterIndex'] as num?)?.toInt();
+              return after != segmentIndex;
+            }).toList()
+            : _routeVia;
+
+    setState(() {
+      _segmentTransportModes = updated;
+      _routeVia = nextRouteVia;
+      _routeInstructions = const [];
+      _routeGeometry3d = const [];
+      if (!_hasTransitModeInRoute) {
+        _transitArrivalStop = null;
+      }
+    });
+
+    try {
+      await tripRef.update({
+        'segmentTransportModes': updated,
+        'routeVia': nextRouteVia,
+        'requires_gear_list': _requiresGearListForModes(
+          updated,
+          _transportMode,
+        ),
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to update segment mode: $e')),
         );
       }
     }
@@ -581,9 +926,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       await tripRef.update({'routeVia': updated});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to update route: $e')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to update route: $e')),
+        );
       }
     }
   }
@@ -605,419 +950,35 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       await tripRef.update({'routeVia': updated});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to update route: $e')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to update route: $e')),
+        );
       }
     }
-  }
-
-  Future<void> _approveJoinRequest({
-    required DocumentReference<Map<String, dynamic>> tripRef,
-    required String requesterUid,
-    required String requesterName,
-  }) async {
-    final me = _user;
-    if (me == null) return;
-    final ownerUid = _ownerUidFromTripRefPath(tripRef.path);
-    if (ownerUid != me.uid) return;
-
-    final tripId = tripRef.id;
-    final tripName =
-        (_liveData['name'] ?? widget.data['name'] ?? '').toString();
-
-    await tripRef.update({
-      'sharedWith': FieldValue.arrayUnion([requesterUid]),
-    });
-
-    final dest = FirebaseFirestore.instance
-        .collection('users')
-        .doc(requesterUid)
-        .collection('sharedTrips')
-        .doc(tripId);
-    await dest.set({
-      'ownerUid': ownerUid,
-      'ownerName': me.displayName ?? me.email ?? me.uid,
-      'tripRef': tripRef.path,
-      'tripName': tripName,
-      'createdAt': FieldValue.serverTimestamp(),
-      'sharedFrom': me.displayName ?? me.email ?? me.uid,
-    }, SetOptions(merge: true));
-  }
-
-  Future<void> _setJoinRequestStatus({
-    required String requestId,
-    required String status,
-  }) async {
-    final me = _user;
-    if (me == null) return;
-    await FirebaseFirestore.instance
-        .collection('tripJoinRequests')
-        .doc(requestId)
-        .update({
-          'status': status,
-          'processedAt': FieldValue.serverTimestamp(),
-        });
   }
 
   Future<void> _shareTrip() async {
     final me = _user;
     if (me == null) return;
 
-    // Determine tripRef: if this screen was opened from a shared invite, use that path
-    DocumentReference<Map<String, dynamic>> tripRef;
-    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    // Determine tripRef path
+    final refPath = _currentTripRefPath();
+    final String tripRefPath;
     if (refPath != null && refPath.isNotEmpty) {
-      tripRef = FirebaseFirestore.instance.doc(refPath);
+      tripRefPath = refPath;
     } else {
-      tripRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(me.uid)
-          .collection('trips')
-          .doc(widget.docId);
+      tripRefPath = 'users/${me.uid}/trips/${widget.docId}';
     }
 
-    // Load friends from my user doc
-    final meDoc =
-        await FirebaseFirestore.instance.collection('users').doc(me.uid).get();
-    final friendsRaw = meDoc.data()?['friends'] as List<dynamic>? ?? [];
-    final friends =
-        friendsRaw.map<Map<String, dynamic>>((f) {
-          if (f is Map) return Map<String, dynamic>.from(f);
-          return {'id': f.toString()};
-        }).toList();
-
-    final selected = <String>{};
+    final tripName =
+        (_liveData['name'] ?? widget.data['name'] ?? '').toString();
 
     await _withMapTapSuspended(
-      () => showDialog<void>(
-        context: context,
-        builder: (ctx) {
-          return AlertDialog(
-            title: const Text('Share trip with friends'),
-            content: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: SizedBox(
-                width: double.maxFinite,
-                child: StatefulBuilder(
-                  builder: (ctx2, setState2) {
-                    return Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (friends.isEmpty)
-                          const Text('No friends to share with'),
-                        if (friends.isNotEmpty)
-                          SizedBox(
-                            height: 280,
-                            child: ListView.builder(
-                              itemCount: friends.length,
-                              itemBuilder: (ctx3, i) {
-                                final f = friends[i];
-                                final uid = (f['uid'] ?? f['id'])?.toString();
-                                final label =
-                                    (f['displayName'] ??
-                                            f['name'] ??
-                                            f['email'] ??
-                                            uid ??
-                                            'Friend')
-                                        .toString();
-                                return CheckboxListTile(
-                                  value: uid != null && selected.contains(uid),
-                                  onChanged: (v) {
-                                    if (uid == null) return;
-                                    setState2(() {
-                                      if (v == true) {
-                                        selected.add(uid);
-                                      } else {
-                                        selected.remove(uid);
-                                      }
-                                    });
-                                  },
-                                  title: Text(label),
-                                  subtitle: Text((f['email'] ?? '').toString()),
-                                );
-                              },
-                            ),
-                          ),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          const SizedBox(height: 12),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          const Divider(height: 1),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          const SizedBox(height: 12),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          const Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              'Link requests',
-                              style: TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          const SizedBox(height: 8),
-                        if (_ownerUidFromTripRefPath(tripRef.path) == me.uid)
-                          SizedBox(
-                            height: 160,
-                            child: StreamBuilder<
-                              QuerySnapshot<Map<String, dynamic>>
-                            >(
-                              stream:
-                                  FirebaseFirestore.instance
-                                      .collection('tripJoinRequests')
-                                      .where('tripRef', isEqualTo: tripRef.path)
-                                      .snapshots(),
-                              builder: (ctxReq, snapReq) {
-                                if (snapReq.connectionState ==
-                                    ConnectionState.waiting) {
-                                  return const Center(
-                                    child: Text('Loading requests…'),
-                                  );
-                                }
-                                final docs = snapReq.data?.docs ?? const [];
-                                final pending =
-                                    docs
-                                        .where(
-                                          (d) =>
-                                              (d.data()['status'] ??
-                                                  'pending') ==
-                                              'pending',
-                                        )
-                                        .toList();
-                                if (pending.isEmpty) {
-                                  return const Center(
-                                    child: Text('No pending requests'),
-                                  );
-                                }
-                                return ListView.separated(
-                                  itemCount: pending.length,
-                                  separatorBuilder:
-                                      (_, __) => const Divider(height: 1),
-                                  itemBuilder: (ctxRow, idx) {
-                                    final doc = pending[idx];
-                                    final data = doc.data();
-                                    final requesterUid =
-                                        (data['requesterUid'] ?? '').toString();
-                                    final requesterName =
-                                        (data['requesterName'] ??
-                                                data['requesterEmail'] ??
-                                                requesterUid)
-                                            .toString();
-                                    return ListTile(
-                                      dense: true,
-                                      title: Text(requesterName),
-                                      subtitle: Text(requesterUid),
-                                      trailing: Wrap(
-                                        spacing: 8,
-                                        children: [
-                                          TextButton(
-                                            onPressed: () async {
-                                              try {
-                                                await _approveJoinRequest(
-                                                  tripRef: tripRef,
-                                                  requesterUid: requesterUid,
-                                                  requesterName: requesterName,
-                                                );
-                                                await _setJoinRequestStatus(
-                                                  requestId: doc.id,
-                                                  status: 'approved',
-                                                );
-                                                if (mounted) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    const SnackBar(
-                                                      content: Text(
-                                                        'Request approved',
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              } catch (e) {
-                                                if (mounted) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    SnackBar(
-                                                      content: Text(
-                                                        'Approve failed: $e',
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              }
-                                            },
-                                            child: const Text('Approve'),
-                                          ),
-                                          TextButton(
-                                            onPressed: () async {
-                                              try {
-                                                await _setJoinRequestStatus(
-                                                  requestId: doc.id,
-                                                  status: 'denied',
-                                                );
-                                              } catch (e) {
-                                                if (mounted) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    SnackBar(
-                                                      content: Text(
-                                                        'Deny failed: $e',
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                              }
-                                            },
-                                            child: const Text('Deny'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                          ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () async {
-                  Navigator.of(ctx).pop();
-                  await _copyJoinLinkForTrip(tripRef);
-                },
-                child: const Text('Copy link'),
-              ),
-              TextButton(
-                onPressed: () async {
-                  Navigator.of(ctx).pop();
-                  if (selected.isEmpty) return;
-                  try {
-                    // If we are the owner, update sharedWith on the trip doc
-                    String ownerUid = '';
-                    try {
-                      final p = tripRef.path.split('/');
-                      if (p.length >= 2 && p[0] == 'users') ownerUid = p[1];
-                    } catch (_) {}
-
-                    if (ownerUid == me.uid) {
-                      await tripRef.update({
-                        'sharedWith': FieldValue.arrayUnion(selected.toList()),
-                      });
-                    }
-
-                    final List<String> failed = [];
-                    for (final uid in selected) {
-                      try {
-                        final dest = FirebaseFirestore.instance
-                            .collection('users')
-                            .doc(uid)
-                            .collection('sharedTrips')
-                            .doc(widget.docId);
-                        await dest.set({
-                          'ownerUid': ownerUid.isNotEmpty ? ownerUid : me.uid,
-                          'ownerName': me.displayName ?? '',
-                          'tripRef': tripRef.path,
-                          'tripName':
-                              _liveData['name'] ?? widget.data['name'] ?? '',
-                          'createdAt': FieldValue.serverTimestamp(),
-                        });
-                      } catch (e, st) {
-                        // invite write failed — attempt to copy trip into recipient's trips as fallback
-                        if (kDebugMode) {
-                          // ignore: avoid_print
-                          print(
-                            'Invite write to $uid failed, attempting copy: $e\n$st',
-                          );
-                        }
-                        try {
-                          await FirebaseFirestore.instance
-                              .collection('users')
-                              .doc(uid)
-                              .collection('trips')
-                              .add({
-                                ...widget.data,
-                                'sharedFrom': me.displayName ?? me.uid,
-                                'createdAt': FieldValue.serverTimestamp(),
-                              });
-                          // best-effort: try to still create sharedTrips doc
-                          try {
-                            final dest = FirebaseFirestore.instance
-                                .collection('users')
-                                .doc(uid)
-                                .collection('sharedTrips')
-                                .doc(widget.docId);
-                            await dest.set({
-                              'ownerUid':
-                                  ownerUid.isNotEmpty ? ownerUid : me.uid,
-                              'ownerName': me.displayName ?? '',
-                              'tripRef': tripRef.path,
-                              'tripName':
-                                  _liveData['name'] ??
-                                  widget.data['name'] ??
-                                  '',
-                              'createdAt': FieldValue.serverTimestamp(),
-                            });
-                          } catch (_) {}
-                        } catch (e2, st2) {
-                          failed.add(uid);
-                          if (kDebugMode) {
-                            // ignore: avoid_print
-                            print('Copy to $uid failed: $e2\n$st2');
-                          }
-                        }
-                      }
-                    }
-
-                    if (failed.isEmpty) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Trip shared')),
-                        );
-                      }
-                    } else {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'Share completed with failures: ${failed.join(', ')}',
-                            ),
-                          ),
-                        );
-                      }
-                      if (kDebugMode) {
-                        // ignore: avoid_print
-                        print(
-                          'Share completed with failures for uids: ${failed.join(', ')}',
-                        );
-                      }
-                    }
-                  } catch (e, st) {
-                    if (kDebugMode) {
-                      // ignore: avoid_print
-                      print('Share failed: $e\n$st');
-                    }
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Share failed: $e')),
-                      );
-                    }
-                  }
-                },
-                child: const Text('Share'),
-              ),
-            ],
-          );
-        },
+      () => ShareTripDialog.show(
+        context,
+        tripRefPath: tripRefPath,
+        tripId: widget.docId,
+        tripName: tripName,
       ),
     );
   }
@@ -1026,44 +987,32 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   void dispose() {
     _searchController.dispose();
     _debounce?.cancel();
+    _routeCachePersistDebounce?.cancel();
     _docSub?.cancel();
     _localDocSub?.cancel();
     super.dispose();
   }
 
   Future<void> _searchPlaces(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _placeSuggestions = [];
+          _searchingPlaces = false;
+        });
+      }
+      return;
+    }
+
     setState(() {
       _searchingPlaces = true;
     });
     try {
-      final url = Uri.parse(
-        'https://nominatim.openstreetmap.org/search',
-      ).replace(
-        queryParameters: {
-          'q': query,
-          'format': 'json',
-          'limit': '6',
-          'addressdetails': '1',
-        },
-      );
-      final resp = await http.get(
-        url,
-        headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'},
-      );
-      if (resp.statusCode == 200) {
-        final List<dynamic> list = jsonDecode(resp.body) as List<dynamic>;
-        setState(() {
-          _placeSuggestions =
-              list
-                  .map<Map<String, dynamic>>(
-                    (e) => Map<String, dynamic>.from(e as Map),
-                  )
-                  .toList();
-        });
-      } else {
-        setState(() => _placeSuggestions = []);
-      }
-    } catch (e) {
+      final list = await searchNominatim(q);
+      if (!mounted) return;
+      setState(() => _placeSuggestions = list.take(6).toList());
+    } catch (_) {
       setState(() => _placeSuggestions = []);
     } finally {
       if (mounted) setState(() => _searchingPlaces = false);
@@ -1077,8 +1026,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     try {
       // If this trip was opened from a shared tripRef, write back to that ref so edits sync to owner
       DocumentReference<Map<String, dynamic>> targetRef;
-      final targetPath =
-          (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+      final targetPath = _currentTripRefPath();
       if (targetPath != null && targetPath.isNotEmpty) {
         targetRef = FirebaseFirestore.instance.doc(targetPath);
       } else {
@@ -1089,14 +1037,48 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             .doc(widget.docId);
       }
 
-      await targetRef.update({'totalDays': _days, 'waypoints': _waypoints});
+      final segmentCount = _waypoints.length > 1 ? _waypoints.length - 1 : 0;
+      final nextSegmentRouting = _coerceSegmentRoutingTypes(
+        _segmentRoutingTypes,
+        segmentCount: segmentCount,
+      );
+      final nextSegmentModes = _coerceSegmentTransportModes(
+        _segmentTransportModes,
+        segmentCount: segmentCount,
+        fallbackMode: _transportMode,
+      );
+      final nextRouteVia =
+          _routeVia
+              .where((v) {
+                final after = (v['afterIndex'] as num?)?.toInt();
+                return after != null && after >= 0 && after < segmentCount;
+              })
+              .map((v) => Map<String, dynamic>.from(v))
+              .toList();
+      setState(() {
+        _segmentRoutingTypes = nextSegmentRouting;
+        _segmentTransportModes = nextSegmentModes;
+        _routeVia = nextRouteVia;
+      });
+
+      await targetRef.update({
+        'totalDays': _days,
+        'waypoints': _waypoints,
+        'segmentRoutingTypes': nextSegmentRouting,
+        'segmentTransportModes': nextSegmentModes,
+        'routeVia': nextRouteVia,
+        'requires_gear_list': _requiresGearListForModes(
+          nextSegmentModes,
+          _transportMode,
+        ),
+      });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Saved')));
+      ).showTryprSnackBar(const SnackBar(content: Text('Saved')));
     } catch (e) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      ).showTryprSnackBar(SnackBar(content: Text('Save failed: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -1112,9 +1094,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final me = _user;
     if (me == null) return;
     DocumentReference<Map<String, dynamic>> tripRef;
-    if ((_liveData['tripRef'] ?? widget.data['tripRef']) is String) {
-      final refPath =
-          (_liveData['tripRef'] ?? widget.data['tripRef']) as String;
+    final refPath = _currentTripRefPath();
+    if (refPath != null && refPath.isNotEmpty) {
       tripRef = FirebaseFirestore.instance.doc(refPath);
     } else {
       tripRef = FirebaseFirestore.instance
@@ -1133,10 +1114,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           parts.add(p[1]);
         }
       } catch (_) {}
-      final shared =
-          (_liveData['sharedWith'] as List<dynamic>?) ??
-          (widget.data['sharedWith'] as List<dynamic>?) ??
-          [];
+      final shared = _sharedWithList();
       for (final s in shared) {
         try {
           parts.add(s.toString());
@@ -1257,8 +1235,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   final checked = checkedBy.contains(me.uid);
                                   final assignee =
                                       (data['assigneeUid'] ?? '').toString();
-                                  final privateTo =
-                                      data['privateTo'] as String?;
+                                  final privateToRaw = data['privateTo'];
+                                  final privateTo = privateToRaw?.toString();
                                   final canEdit =
                                       (scopeView == 'group') ||
                                       (privateTo == me.uid);
@@ -1548,7 +1526,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final me = _user;
     if (me == null) return;
     DocumentReference<Map<String, dynamic>> tripRef;
-    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    final refPath = _currentTripRefPath();
     if (refPath != null && refPath.isNotEmpty) {
       tripRef = FirebaseFirestore.instance.doc(refPath);
     } else {
@@ -1568,7 +1546,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (me == null) return;
 
     DocumentReference<Map<String, dynamic>> tripRef;
-    final refPath = (_liveData['tripRef'] ?? widget.data['tripRef']) as String?;
+    final refPath = _currentTripRefPath();
     if (refPath != null && refPath.isNotEmpty) {
       tripRef = FirebaseFirestore.instance.doc(refPath);
     } else {
@@ -1588,10 +1566,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         }
       } catch (_) {}
 
-      final shared =
-          (_liveData['sharedWith'] as List<dynamic>?) ??
-          (widget.data['sharedWith'] as List<dynamic>?) ??
-          [];
+      final shared = _sharedWithList();
       for (final s in shared) {
         try {
           parts.add(s.toString());
@@ -1620,6 +1595,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     setState(() {
       final idx = _waypoints.length + 1;
       _waypoints.add({'lat': lat, 'lon': lon, 'name': 'Point $idx'});
+      _syncSegmentDataWithWaypoints();
     });
   }
 
@@ -1629,14 +1605,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     int? focusWaypointIndex,
     int initialTab = 0,
   }) async {
-    String tripRefPath =
-        (_liveData['tripRef'] ?? widget.data['tripRef']) as String? ?? '';
+    String tripRefPath = _currentTripRefPath() ?? '';
     if (tripRefPath.isEmpty) {
       final user = _user;
       if (user == null) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Not logged in')));
+        ).showTryprSnackBar(const SnackBar(content: Text('Not logged in')));
         return;
       }
       tripRefPath = 'users/${user.uid}/trips/${widget.docId}';
@@ -1688,8 +1663,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
     // Determine trip reference path: use explicit tripRef if available,
     // otherwise construct path for personal trip
-    String tripRefPath =
-        (_liveData['tripRef'] ?? widget.data['tripRef']) as String? ?? '';
+    String tripRefPath = _currentTripRefPath() ?? '';
 
     if (tripRefPath.isEmpty) {
       // For personal trips, construct the path from user ID and trip ID
@@ -1697,7 +1671,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       if (user == null) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Not logged in')));
+        ).showTryprSnackBar(const SnackBar(content: Text('Not logged in')));
         return;
       }
       tripRefPath = 'users/${user.uid}/trips/${widget.docId}';
@@ -1746,7 +1720,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     bool localLoading = false;
 
     Future<void> doSearch(String q) async {
-      if (q.trim().isEmpty) {
+      final query = q.trim();
+      if (query.isEmpty) {
         localSuggestions = [];
         if (mounted) setState(() {});
         return;
@@ -1754,32 +1729,9 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       localLoading = true;
       if (mounted) setState(() {});
       try {
-        final url = Uri.parse(
-          'https://nominatim.openstreetmap.org/search',
-        ).replace(
-          queryParameters: {
-            'q': q,
-            'format': 'json',
-            'limit': '6',
-            'addressdetails': '1',
-          },
-        );
-        final resp = await http.get(
-          url,
-          headers: {'User-Agent': 'trypr-app/1.0 (https://example.com)'},
-        );
-        if (resp.statusCode == 200) {
-          final List<dynamic> list = jsonDecode(resp.body) as List<dynamic>;
-          localSuggestions =
-              list
-                  .map<Map<String, dynamic>>(
-                    (e) => Map<String, dynamic>.from(e as Map),
-                  )
-                  .toList();
-        } else {
-          localSuggestions = [];
-        }
-      } catch (e) {
+        final list = await searchNominatim(query);
+        localSuggestions = list.take(6).toList();
+      } catch (_) {
         localSuggestions = [];
       } finally {
         localLoading = false;
@@ -1881,6 +1833,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                         0.0;
                                     // update waypoint immediately and close
                                     _waypoints[index]['name'] = display;
+                                    _waypoints[index]['routing_query'] =
+                                        display;
                                     _waypoints[index]['lat'] = lat;
                                     _waypoints[index]['lon'] = lon;
                                     if (mounted) setState(() {});
@@ -1933,6 +1887,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   void _removeWaypoint(int index) {
     setState(() {
       _waypoints.removeAt(index);
+      _syncSegmentDataWithWaypoints();
     });
   }
 
@@ -1967,12 +1922,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     setState(() {
       _routeVia = const [];
       _routeInstructions = const [];
+      _routeGeometry3d = const [];
     });
     try {
       await tripRef.update({'routeVia': []});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           SnackBar(content: Text('Failed to clear corrections: $e')),
         );
       }
@@ -1984,7 +1940,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       () => showDialog<void>(
         context: context,
         builder: (ctx) {
-          final isTransit = _transportMode == 'transit';
+          final isTransit = _hasTransitModeInRoute;
           final arrivalName =
               (_transitArrivalStop?['name'] ?? _transitArrivalStop?['label'])
                   ?.toString()
@@ -2081,7 +2037,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       .toDouble();
 
               return AlertDialog(
-                title: const Text('Segment routing'),
+                title: const Text('Segment settings'),
                 content: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 640),
                   child: SizedBox(
@@ -2091,7 +2047,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Calculated follows roads/trails. Direct draws a straight (dashed) line.',
+                          'Set travel mode per leg. Calculated follows roads/trails; Direct draws a straight line.',
                           style: TextStyle(color: Colors.black54),
                         ),
                         const SizedBox(height: 10),
@@ -2108,6 +2064,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   (_waypoints[i + 1]['name'] ?? 'Stop ${i + 2}')
                                       .toString();
                               final current = _segmentTypeAt(i);
+                              final currentMode = _segmentTransportModeAt(i);
 
                               return Padding(
                                 padding: const EdgeInsets.symmetric(
@@ -2140,34 +2097,73 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 10),
-                                    Wrap(
-                                      spacing: 8,
-                                      children: [
-                                        ChoiceChip(
-                                          label: const Text('Calculated'),
-                                          selected: current == 'calculated',
-                                          onSelected: (v) async {
-                                            if (!v) return;
-                                            await _setSegmentRoutingType(
-                                              i,
-                                              'calculated',
-                                            );
-                                            setState2(() {});
-                                          },
-                                        ),
-                                        ChoiceChip(
-                                          label: const Text('Direct'),
-                                          selected: current == 'direct',
-                                          onSelected: (v) async {
-                                            if (!v) return;
-                                            await _setSegmentRoutingType(
-                                              i,
-                                              'direct',
-                                            );
-                                            setState2(() {});
-                                          },
-                                        ),
-                                      ],
+                                    SizedBox(
+                                      width: 210,
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          DropdownButtonFormField<String>(
+                                            initialValue: currentMode,
+                                            isExpanded: true,
+                                            decoration: const InputDecoration(
+                                              isDense: true,
+                                              labelText: 'Mode',
+                                              border: OutlineInputBorder(),
+                                            ),
+                                            items:
+                                                _transportOptions
+                                                    .map(
+                                                      (opt) => DropdownMenuItem(
+                                                        value: opt.mode,
+                                                        child: Text(
+                                                          '${opt.emoji} ${opt.label}',
+                                                        ),
+                                                      ),
+                                                    )
+                                                    .toList(),
+                                            onChanged: (value) async {
+                                              if (value == null) return;
+                                              await _setSegmentTransportMode(
+                                                i,
+                                                value,
+                                              );
+                                              setState2(() {});
+                                            },
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Wrap(
+                                            spacing: 8,
+                                            children: [
+                                              ChoiceChip(
+                                                label: const Text('Calculated'),
+                                                selected:
+                                                    current == 'calculated',
+                                                onSelected: (v) async {
+                                                  if (!v) return;
+                                                  await _setSegmentRoutingType(
+                                                    i,
+                                                    'calculated',
+                                                  );
+                                                  setState2(() {});
+                                                },
+                                              ),
+                                              ChoiceChip(
+                                                label: const Text('Direct'),
+                                                selected: current == 'direct',
+                                                onSelected: (v) async {
+                                                  if (!v) return;
+                                                  await _setSegmentRoutingType(
+                                                    i,
+                                                    'direct',
+                                                  );
+                                                  setState2(() {});
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -2237,13 +2233,22 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (display.trim().isEmpty) return;
 
     setState(() {
-      _waypoints.add({'lat': lat, 'lon': lon, 'name': display});
+      _waypoints.add({
+        'lat': lat,
+        'lon': lon,
+        'name': display,
+        'routing_query': display,
+      });
       _placeSuggestions = [];
       _searchController.clear();
+      _syncSegmentDataWithWaypoints();
     });
   }
 
   Widget _buildOmnibox(BuildContext context) {
+    // Hide the search bar entirely for read-only viewers.
+    if (widget.readOnly) return const SizedBox.shrink();
+
     final field = TextField(
       controller: _searchController,
       textInputAction: TextInputAction.search,
@@ -2429,46 +2434,45 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         const Icon(Icons.directions, size: 18, color: Colors.black87),
         const SizedBox(width: 8),
         const Text(
-          'Mode',
+          'Default',
           style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children:
-                [
-                  {'mode': 'driving', 'label': 'Car', 'emoji': '🚗'},
-                  {'mode': 'flying', 'label': 'Flight', 'emoji': '✈️'},
-                  {'mode': 'transit', 'label': 'Train', 'emoji': '🚆'},
-                  {'mode': 'walking', 'label': 'Walk', 'emoji': '🚶'},
-                  {'mode': 'biking', 'label': 'Bike', 'emoji': '🚲'},
-                  {'mode': 'bikepacking', 'label': 'Bikepack', 'emoji': '🚵'},
-                  {'mode': 'backpacking', 'label': 'Backpack', 'emoji': '🎒'},
-                ].map((opt) {
-                  final mode = opt['mode'] as String;
-                  final selected = _transportMode == mode;
-                  return ChoiceChip(
-                    label: Text(
-                      opt['emoji'] as String,
-                      style: const TextStyle(fontSize: 16),
-                    ),
-                    selected: selected,
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    onSelected:
-                        (!canWriteTrip)
-                            ? null
-                            : (v) {
-                              if (!v) return;
-                              _setTransportMode(mode);
-                            },
-                  );
-                }).toList(),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children:
+                  _transportOptions.map((opt) {
+                    final mode = opt.mode;
+                    final selected = _transportMode == mode;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ChoiceChip(
+                        label: Text(
+                          opt.emoji,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        selected: selected,
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
+                        onSelected:
+                            (!canWriteTrip)
+                                ? null
+                                : (v) {
+                                  if (!v) return;
+                                  _setTransportMode(mode);
+                                },
+                      ),
+                    );
+                  }).toList(),
+            ),
           ),
         ),
       ],
@@ -2503,7 +2507,17 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return Column(
       children: [
         transportRow,
-        if (_isAdventureMode(_transportMode))
+        const Padding(
+          padding: EdgeInsets.only(top: 4.0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Set per-leg modes from Segments.',
+              style: TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+          ),
+        ),
+        if (_requiresGearListForModes(_segmentTransportModes, _transportMode))
           Padding(
             padding: const EdgeInsets.only(top: 8.0),
             child: Wrap(
@@ -2542,12 +2556,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           style: const TextStyle(fontSize: 12, color: Colors.black54),
         ),
         const Spacer(),
-        IconButton(
-          tooltip: _editing ? 'Done' : 'Edit',
-          icon: Icon(_editing ? Icons.check : Icons.edit),
-          onPressed: canWriteTrip ? _toggleEditing : null,
-        ),
-        if (_editing)
+        if (!widget.readOnly)
+          IconButton(
+            tooltip: _editing ? 'Done' : 'Edit',
+            icon: Icon(_editing ? Icons.check : Icons.edit),
+            onPressed: canWriteTrip ? _toggleEditing : null,
+          ),
+        if (_editing && !widget.readOnly)
           IconButton(
             tooltip: 'Save',
             icon: const Icon(Icons.save),
@@ -2565,6 +2580,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   if (newIndex > oldIndex) newIndex -= 1;
                   final item = _waypoints.removeAt(oldIndex);
                   _waypoints.insert(newIndex, item);
+                  _syncSegmentDataWithWaypoints();
                 });
               },
               children: [
@@ -2615,7 +2631,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   index: i,
                   wp: wp,
                   isLast: i == waypoints.length - 1,
-                  onTap: () => _openTripPlanning(focusWaypointIndex: i),
+                  onTap:
+                      widget.readOnly
+                          ? null
+                          : () => _openTripPlanning(focusWaypointIndex: i),
                 );
               },
             );
@@ -2628,6 +2647,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             header,
             const SizedBox(height: 8),
             _buildRouteControls(canWriteTrip: canWriteTrip),
+            const SizedBox(height: 8),
+            _buildMapPointInsightCard(),
             const SizedBox(height: 8),
             Expanded(
               child: ClipRRect(
@@ -2686,12 +2707,13 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                         ),
                       ),
                       const Spacer(),
-                      IconButton(
-                        tooltip: _editing ? 'Done' : 'Edit',
-                        icon: Icon(_editing ? Icons.check : Icons.edit),
-                        onPressed: canWriteTrip ? _toggleEditing : null,
-                      ),
-                      if (_editing)
+                      if (!widget.readOnly)
+                        IconButton(
+                          tooltip: _editing ? 'Done' : 'Edit',
+                          icon: Icon(_editing ? Icons.check : Icons.edit),
+                          onPressed: canWriteTrip ? _toggleEditing : null,
+                        ),
+                      if (_editing && !widget.readOnly)
                         IconButton(
                           tooltip: 'Save',
                           icon: const Icon(Icons.save),
@@ -2701,6 +2723,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   ),
                   const SizedBox(height: 8),
                   _buildRouteControls(canWriteTrip: canWriteTrip),
+                  const SizedBox(height: 8),
+                  _buildMapPointInsightCard(),
                   const SizedBox(height: 8),
                   Expanded(
                     child:
@@ -2712,6 +2736,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   if (newIndex > oldIndex) newIndex -= 1;
                                   final item = _waypoints.removeAt(oldIndex);
                                   _waypoints.insert(newIndex, item);
+                                  _syncSegmentDataWithWaypoints();
                                 });
                               },
                               children: [
@@ -2771,9 +2796,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                   wp: wp,
                                   isLast: i == waypoints.length - 1,
                                   onTap:
-                                      () => _openTripPlanning(
-                                        focusWaypointIndex: i,
-                                      ),
+                                      widget.readOnly
+                                          ? null
+                                          : () => _openTripPlanning(
+                                            focusWaypointIndex: i,
+                                          ),
                                 );
                               },
                             ),
@@ -2811,38 +2838,41 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               ),
             ),
             const SizedBox(width: 12),
-            ElevatedButton(
-              onPressed: _saving ? null : _saveAll,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF111827),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+            if (!widget.readOnly)
+              ElevatedButton(
+                onPressed: _saving ? null : _saveAll,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF111827),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
                 ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(999),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_saving)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.auto_awesome, size: 18),
+                    const SizedBox(width: 8),
+                    Text(_saving ? 'Saving…' : 'Save Trip'),
+                  ],
                 ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_saving)
-                    const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      ),
-                    )
-                  else
-                    const Icon(Icons.auto_awesome, size: 18),
-                  const SizedBox(width: 8),
-                  Text(_saving ? 'Saving…' : 'Save Trip'),
-                ],
-              ),
-            ),
           ],
         ),
       ),
@@ -2886,7 +2916,49 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     );
   }
 
+  void _setMapMode(_TripDetailMapMode mode) {
+    if (_mapMode == mode) return;
+    setState(() => _mapMode = mode);
+  }
+
+  Widget _buildMapModeToggleOverlay(BuildContext context) {
+    if (!kIsWeb) return const SizedBox.shrink();
+    final twoDSelected = _mapMode == _TripDetailMapMode.map2d;
+    return Positioned(
+      right: 24,
+      top: 80,
+      child: _maybePointerIntercept(
+        _glassCard(
+          borderRadius: BorderRadius.circular(999),
+          padding: const EdgeInsets.all(4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _MapModeToggleButton(
+                label: '2D',
+                icon: Icons.map_outlined,
+                selected: twoDSelected,
+                onTap: () => _setMapMode(_TripDetailMapMode.map2d),
+              ),
+              const SizedBox(width: 6),
+              _MapModeToggleButton(
+                label: '3D',
+                icon: Icons.public,
+                selected: !twoDSelected,
+                onTap: () => _setMapMode(_TripDetailMapMode.globe3d),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildTopRightActions(BuildContext context) {
+    // Read-only visitors (e.g. unauthenticated share-link viewers) see no
+    // action buttons — they get a sign-in banner instead.
+    if (widget.readOnly) return const SizedBox.shrink();
+
     return Positioned(
       right: 24,
       top: 16,
@@ -2929,20 +3001,656 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     );
   }
 
+  double _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? double.nan;
+    return double.nan;
+  }
+
+  bool _isValidLatLon(double lat, double lon) {
+    return lat.isFinite &&
+        lon.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lon >= -180 &&
+        lon <= 180;
+  }
+
+  List<Map<String, dynamic>> _mapList(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw.map<Map<String, dynamic>>((e) {
+      if (e is Map<String, dynamic>) return Map<String, dynamic>.from(e);
+      if (e is Map) return Map<String, dynamic>.from(e.cast<String, dynamic>());
+      return <String, dynamic>{};
+    }).toList();
+  }
+
+  String _normalizedLabel(String raw) {
+    return raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  bool _labelsMatch(String a, String b) {
+    final na = _normalizedLabel(a);
+    final nb = _normalizedLabel(b);
+    return na.isNotEmpty && na == nb;
+  }
+
+  String _mapPointKind(Map<String, dynamic> point) {
+    final raw =
+        (point['kind'] ?? point['pointType'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+    if (raw.isNotEmpty) return raw;
+    if (point['waypointIndex'] != null) return 'waypoint';
+    return 'location';
+  }
+
+  String _mapPointTitle(Map<String, dynamic> point) {
+    final name = (point['name'] ?? point['title'] ?? '').toString().trim();
+    if (name.isNotEmpty) return name;
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt();
+    if (waypointIndex != null && waypointIndex >= 0) {
+      return 'Stop ${waypointIndex + 1}';
+    }
+    return 'Selected place';
+  }
+
+  List<Map<String, dynamic>> _activitiesForWaypoint(
+    int waypointIndex, {
+    String? waypointName,
+  }) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    final safeWaypointName = (waypointName ?? '').toString();
+
+    void appendActivities(dynamic raw) {
+      for (final a in _mapList(raw)) {
+        final key = [
+          (a['title'] ?? '').toString().trim().toLowerCase(),
+          (a['startTime'] ?? '').toString().trim(),
+          (a['location'] ?? '').toString().trim().toLowerCase(),
+          (a['category'] ?? '').toString().trim().toLowerCase(),
+        ].join('|');
+        if (!seen.add(key)) continue;
+        out.add(a);
+      }
+    }
+
+    if (waypointIndex >= 0 && waypointIndex < _waypoints.length) {
+      final waypoint = _waypoints[waypointIndex];
+      final legacyItinerary = _mapList(waypoint['itinerary']);
+      for (final day in legacyItinerary) {
+        appendActivities(day['activities']);
+      }
+    }
+
+    final unifiedCandidates = [
+      _liveData['tripItinerary'],
+      _liveData['itinerary'],
+      widget.data['tripItinerary'],
+      widget.data['itinerary'],
+    ];
+
+    for (final rawDays in unifiedCandidates) {
+      for (final day in _mapList(rawDays)) {
+        final dayWaypoint = (day['waypointIndex'] as num?)?.toInt();
+        final dayLocation = (day['locationName'] ?? '').toString();
+        final matchesWaypoint =
+            waypointIndex >= 0 && dayWaypoint == waypointIndex;
+        final matchesName =
+            safeWaypointName.isNotEmpty &&
+            _labelsMatch(dayLocation, safeWaypointName);
+        if (!matchesWaypoint && !matchesName) continue;
+        appendActivities(day['activities']);
+      }
+    }
+
+    return out;
+  }
+
+  List<String> _topActivityCategories(
+    Iterable<Map<String, dynamic>> activities, {
+    int max = 6,
+  }) {
+    final counts = <String, int>{};
+    for (final a in activities) {
+      final raw = (a['category'] ?? '').toString().trim();
+      if (raw.isEmpty) continue;
+      counts[raw] = (counts[raw] ?? 0) + 1;
+    }
+    final entries =
+        counts.entries.toList()..sort((a, b) {
+          final byCount = b.value.compareTo(a.value);
+          if (byCount != 0) return byCount;
+          return a.key.compareTo(b.key);
+        });
+    return entries.take(max).map((e) => e.key).toList(growable: false);
+  }
+
+  List<String> _categoriesForMapPoint(Map<String, dynamic> point) {
+    final kind = _mapPointKind(point);
+    final pointCategory = (point['category'] ?? '').toString().trim();
+
+    if (kind == 'activity') {
+      final out = <String>[];
+      if (pointCategory.isNotEmpty) out.add(pointCategory);
+      final dayIndex = (point['dayIndex'] as num?)?.toInt();
+      if (dayIndex != null && dayIndex >= 0) {
+        final itinerary = _mapList(
+          _liveData['tripItinerary'] ?? _liveData['itinerary'],
+        );
+        if (dayIndex < itinerary.length) {
+          final dayCategories = _topActivityCategories(
+            _mapList(itinerary[dayIndex]['activities']),
+          );
+          for (final category in dayCategories) {
+            if (!out.contains(category)) out.add(category);
+          }
+        }
+      }
+      return out.take(6).toList(growable: false);
+    }
+
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt() ?? -1;
+    final waypointName = (point['name'] ?? '').toString();
+    final waypointActivities = _activitiesForWaypoint(
+      waypointIndex,
+      waypointName: waypointName,
+    );
+    final categories = _topActivityCategories(waypointActivities);
+    if (categories.isNotEmpty) return categories;
+    if (pointCategory.isNotEmpty) return [pointCategory];
+    return const [];
+  }
+
+  String _mapPointSubtitle(Map<String, dynamic> point) {
+    final kind = _mapPointKind(point);
+    final category = (point['category'] ?? '').toString().trim();
+    final dayIndex = (point['dayIndex'] as num?)?.toInt();
+    if (kind == 'activity') {
+      final parts = <String>[];
+      if (dayIndex != null && dayIndex >= 0) {
+        parts.add('Day ${dayIndex + 1}');
+      }
+      if (category.isNotEmpty) parts.add(category);
+      return parts.join(' • ');
+    }
+    if (kind == 'accommodation') {
+      return 'Accommodation';
+    }
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt();
+    if (waypointIndex != null && waypointIndex >= 0) {
+      return 'Stop ${waypointIndex + 1}';
+    }
+    return 'Map selection';
+  }
+
+  String _vibeForCategory(String category) {
+    switch (category.trim().toLowerCase()) {
+      case 'hiking':
+      case 'walking':
+      case 'adventure':
+        return 'outdoor exploration';
+      case 'museum':
+      case 'sightseeing':
+      case 'photography':
+        return 'landmark and culture stops';
+      case 'restaurant':
+        return 'local food experiences';
+      case 'shopping':
+        return 'city-style wandering';
+      default:
+        return 'balanced sightseeing';
+    }
+  }
+
+  String _aiSummaryForMapPoint(
+    Map<String, dynamic> point,
+    List<String> categories,
+  ) {
+    final kind = _mapPointKind(point);
+    final title = _mapPointTitle(point);
+
+    if (kind == 'activity') {
+      final dayIndex = (point['dayIndex'] as num?)?.toInt();
+      final when =
+          dayIndex != null && dayIndex >= 0
+              ? 'on Day ${dayIndex + 1}'
+              : 'in your plan';
+      final category = (point['category'] ?? '').toString().trim();
+      final vibe = _vibeForCategory(
+        category.isNotEmpty
+            ? category
+            : (categories.isNotEmpty ? categories.first : ''),
+      );
+      return '$title is scheduled $when and fits $vibe. Keep this stop near nearby items to avoid extra transit time.';
+    }
+
+    if (kind == 'accommodation') {
+      final nearbyFocus =
+          categories.isEmpty
+              ? 'your planned activities'
+              : categories.take(3).join(', ');
+      return '$title looks like your base for this stop. Nearby focus areas: $nearbyFocus.';
+    }
+
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt() ?? -1;
+    final activities = _activitiesForWaypoint(
+      waypointIndex,
+      waypointName: title,
+    );
+    final activityCount = activities.length;
+    final dayCount =
+        (waypointIndex >= 0 && waypointIndex < _waypoints.length)
+            ? _mapList(_waypoints[waypointIndex]['itinerary']).length
+            : 0;
+    if (activityCount == 0) {
+      return '$title is currently a route anchor with no planned activities yet. Add a few stops to generate stronger recommendations.';
+    }
+    final categoryText =
+        categories.isEmpty ? 'mixed activities' : categories.take(3).join(', ');
+    final dayText =
+        dayCount > 0
+            ? '$dayCount planned day${dayCount == 1 ? '' : 's'}'
+            : 'this stop';
+    return '$title has $activityCount planned activit${activityCount == 1 ? 'y' : 'ies'} across $dayText, with a focus on $categoryText.';
+  }
+
+  void _handleMapPointTap(Map<String, dynamic> point) {
+    if (!mounted) return;
+    setState(() {
+      _selectedMapPoint = Map<String, dynamic>.from(point);
+    });
+  }
+
+  Widget _buildMapPointInsightCard() {
+    final point = _selectedMapPoint;
+    if (point == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.78),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0x12000000)),
+        ),
+        child: const Text(
+          'Tap any map pin to see a place summary.',
+          style: TextStyle(fontSize: 12, color: Colors.black54),
+        ),
+      );
+    }
+
+    final title = _mapPointTitle(point);
+    final subtitle = _mapPointSubtitle(point);
+    final categories = _categoriesForMapPoint(point);
+    final summary = _aiSummaryForMapPoint(point, categories);
+    final kind = _mapPointKind(point);
+    final icon =
+        kind == 'activity'
+            ? Icons.local_activity
+            : kind == 'accommodation'
+            ? Icons.hotel
+            : Icons.place;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x16000000)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: Colors.black87),
+              const SizedBox(width: 6),
+              const Text(
+                'Place Insight',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+              const Spacer(),
+              const Icon(Icons.auto_awesome, size: 14, color: Colors.black54),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+          ),
+          if (subtitle.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+          const SizedBox(height: 8),
+          const Text(
+            'AI Summary',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            summary,
+            style: const TextStyle(fontSize: 12, color: Colors.black87),
+          ),
+          if (categories.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Activity Categories',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: categories
+                  .take(6)
+                  .map(
+                    (c) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        c,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> _mapRoutePoints(
+    List<Map<String, dynamic>> waypoints,
+  ) {
+    final out = <Map<String, dynamic>>[];
+    for (final entry in waypoints.asMap().entries) {
+      final w = entry.value;
+      final lat = _toDouble(w['lat'] ?? w['latitude']);
+      final lon = _toDouble(w['lon'] ?? w['longitude'] ?? w['lng']);
+      if (!_isValidLatLon(lat, lon)) continue;
+      out.add({
+        'lat': lat,
+        'lon': lon,
+        'name': (w['name'] ?? '').toString(),
+        'pointType': 'waypoint',
+        'waypointIndex': entry.key,
+      });
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _legacyWaypointMarkers(
+    List<Map<String, dynamic>> waypoints,
+  ) {
+    final out = <Map<String, dynamic>>[];
+
+    for (final wEntry in waypoints.asMap().entries) {
+      final wIndex = wEntry.key;
+      final w = wEntry.value;
+
+      final accsAny = w['accommodations'];
+      final accs = accsAny is List ? accsAny : const [];
+      for (final accEntry in accs.asMap().entries) {
+        final accRaw = accEntry.value;
+        if (accRaw is! Map) continue;
+        final acc = Map<String, dynamic>.from(accRaw.cast<String, dynamic>());
+        final lat = _toDouble(acc['lat'] ?? acc['locationLat']);
+        final lon = _toDouble(acc['lon'] ?? acc['locationLon'] ?? acc['lng']);
+        if (!_isValidLatLon(lat, lon)) continue;
+        out.add({
+          'lat': lat,
+          'lon': lon,
+          'kind': 'accommodation',
+          'category': 'Accommodation',
+          'name': (acc['name'] ?? 'Accommodation').toString(),
+          'waypointIndex': wIndex,
+          'accommodationIndex': accEntry.key,
+        });
+      }
+
+      final itineraryAny = w['itinerary'];
+      final itinerary = itineraryAny is List ? itineraryAny : const [];
+      for (final dayEntry in itinerary.asMap().entries) {
+        final dayRaw = dayEntry.value;
+        if (dayRaw is! Map) continue;
+        final day = Map<String, dynamic>.from(dayRaw.cast<String, dynamic>());
+        final actsAny = day['activities'];
+        final acts = actsAny is List ? actsAny : const [];
+        for (final actEntry in acts.asMap().entries) {
+          final actRaw = actEntry.value;
+          if (actRaw is! Map) continue;
+          final act = Map<String, dynamic>.from(actRaw.cast<String, dynamic>());
+          final lat = _toDouble(act['locationLat']);
+          final lon = _toDouble(act['locationLon']);
+          if (!_isValidLatLon(lat, lon)) continue;
+          out.add({
+            'lat': lat,
+            'lon': lon,
+            'kind': 'activity',
+            'category': (act['category'] ?? 'Exploring').toString(),
+            'name': (act['title'] ?? 'Activity').toString(),
+            'waypointIndex': wIndex,
+            'dayIndex': dayEntry.key,
+            'activityIndex': actEntry.key,
+            'source': 'waypointItinerary',
+          });
+        }
+      }
+    }
+
+    return out;
+  }
+
+  List<Map<String, dynamic>> _unifiedTripItineraryMarkers() {
+    final out = <Map<String, dynamic>>[];
+    final candidates = [
+      _liveData['tripItinerary'],
+      _liveData['itinerary'],
+      widget.data['tripItinerary'],
+      widget.data['itinerary'],
+    ];
+
+    for (final raw in candidates) {
+      if (raw is! List) continue;
+      for (final dayEntry in raw.asMap().entries) {
+        final dayRaw = dayEntry.value;
+        if (dayRaw is! Map) continue;
+        final day = Map<String, dynamic>.from(dayRaw.cast<String, dynamic>());
+        final actsAny = day['activities'];
+        final acts = actsAny is List ? actsAny : const [];
+        for (final actEntry in acts.asMap().entries) {
+          final actRaw = actEntry.value;
+          if (actRaw is! Map) continue;
+          final act = Map<String, dynamic>.from(actRaw.cast<String, dynamic>());
+          final lat = _toDouble(act['locationLat']);
+          final lon = _toDouble(act['locationLon']);
+          if (!_isValidLatLon(lat, lon)) continue;
+          out.add({
+            'lat': lat,
+            'lon': lon,
+            'kind': 'activity',
+            'category': (act['category'] ?? 'Exploring').toString(),
+            'name': (act['title'] ?? 'Activity').toString(),
+            'dayIndex': dayEntry.key,
+            'activityIndex': actEntry.key,
+            'source': 'tripItinerary',
+          });
+        }
+      }
+    }
+
+    return out;
+  }
+
+  List<Map<String, dynamic>> _dedupeMarkers(List<Map<String, dynamic>> input) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final p in input) {
+      final lat = _toDouble(p['lat']).toStringAsFixed(5);
+      final lon = _toDouble(p['lon']).toStringAsFixed(5);
+      final kind = (p['kind'] ?? '').toString();
+      final category = (p['category'] ?? '').toString();
+      final name = (p['name'] ?? '').toString();
+      final key = '$lat|$lon|$kind|$category|$name';
+      if (!seen.add(key)) continue;
+      out.add(p);
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _mapSecondaryPoints(
+    List<Map<String, dynamic>> waypoints,
+  ) {
+    return _dedupeMarkers([
+      ..._legacyWaypointMarkers(waypoints),
+      ..._unifiedTripItineraryMarkers(),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final data = _liveData;
-    final name = data['name'] ?? 'Untitled Trip';
+    final name = (data['name'] ?? 'Untitled Trip').toString();
     final waypoints = _waypoints;
-    final totalKm = (data['totalKm'] ?? 0) as num;
+    final totalKm = _toDouble(data['totalKm']);
 
     final me = _user;
     final tripRefForView = me == null ? null : _resolveTripRefForView(me);
-    final canWriteTrip =
-        me != null &&
-        tripRefForView != null &&
-        _ownerUidFromTripRefPath(tripRefForView.path) == me.uid;
+    // Owner or sharedWith members can write to the trip.
+    final bool canWriteTrip;
+    if (me == null || tripRefForView == null) {
+      canWriteTrip = false;
+    } else {
+      final ownerUid = _ownerUidFromTripRefPath(tripRefForView.path);
+      final sharedAny = _liveData['sharedWith'] ?? widget.data['sharedWith'];
+      final sharedWith = sharedAny is List ? sharedAny : const <dynamic>[];
+      canWriteTrip = ownerUid == me.uid || sharedWith.contains(me.uid);
+    }
     final isNarrow = MediaQuery.sizeOf(context).width < 760;
+    final mapPoints = _mapRoutePoints(waypoints);
+    final secondaryPoints = _mapSecondaryPoints(waypoints);
+    final showMapLayer = !(widget.readOnly && !canWriteTrip);
+
+    final Widget backgroundLayer =
+        !showMapLayer
+            ? Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xFFF8FAFC), Color(0xFFEFF4FA)],
+                ),
+              ),
+            )
+            : (kIsWeb && _mapMode == _TripDetailMapMode.globe3d)
+            ? Globe3DEmbed(
+              points: mapPoints,
+              secondaryPoints: secondaryPoints,
+              routeGeometry: _routeGeometry3d,
+              transportMode: _transportMode.toUpperCase(),
+              onMapTap:
+                  _editing ? (lat, lon) => _addWaypointFromTap(lat, lon) : null,
+            )
+            : MapEmbed(
+              points: mapPoints,
+              transportMode: _transportMode,
+              segmentTransportModes: _segmentTransportModes,
+              routeVia: _routeVia,
+              segmentRoutingTypes: _segmentRoutingTypes,
+              initialRouteGeometry: _routeGeometry3d,
+              initialRouteInstructions: _routeInstructions,
+              preferInitialRouteData: _canUseCachedRoute,
+              onRouteInstructions: (lines) {
+                if (!mounted) return;
+                final nextLines = lines
+                    .map((line) => line.trim())
+                    .where((line) => line.isNotEmpty)
+                    .take(8)
+                    .toList(growable: false);
+                if (_sameRouteInstructions(nextLines) &&
+                    (_liveData['routeCacheKey'] ?? '').toString().trim() ==
+                        _currentRouteCacheKey()) {
+                  return;
+                }
+                setState(() {
+                  _routeInstructions = nextLines;
+                  _liveData['routeInstructions'] = nextLines;
+                  _liveData['routeCacheKey'] = _currentRouteCacheKey();
+                });
+                _scheduleRouteCachePersist();
+              },
+              onRouteGeometry: (geometry) {
+                if (!mounted) return;
+                final simplified = simplifyRouteGeometry(geometry);
+                if (_sameRouteGeometry(simplified) &&
+                    (_liveData['routeCacheKey'] ?? '').toString().trim() ==
+                        _currentRouteCacheKey()) {
+                  return;
+                }
+                setState(() {
+                  _routeGeometry3d = simplified;
+                  _liveData['routeGeometry3d'] = simplified;
+                  _liveData['routeCacheKey'] = _currentRouteCacheKey();
+                });
+                _scheduleRouteCachePersist();
+              },
+              onTransitArrivalStop: (arrivalStop) {
+                if (!mounted) return;
+                setState(() => _transitArrivalStop = arrivalStop);
+                if (_hasTransitModeInRoute) {
+                  _persistTransitArrivalStop(arrivalStop);
+                }
+              },
+              secondaryPoints: secondaryPoints,
+              onPointTap: _handleMapPointTap,
+              showNearbyContextOverlays: false,
+              onMapTap:
+                  _editing ? (lat, lon) => _addWaypointFromTap(lat, lon) : null,
+              onRouteTapAddVia:
+                  (!_editing && canWriteTrip)
+                      ? (afterIndex, lat, lon) => _upsertViaPoint(
+                        afterIndex: afterIndex,
+                        lat: lat,
+                        lon: lon,
+                      )
+                      : null,
+              onViaDragEnd:
+                  (!_editing && canWriteTrip)
+                      ? (viaIndex, lat, lon) =>
+                          _moveViaPoint(viaIndex: viaIndex, lat: lat, lon: lon)
+                      : null,
+              onViaTapDelete:
+                  (!_editing && canWriteTrip)
+                      ? (viaIndex) => _deleteViaPoint(viaIndex: viaIndex)
+                      : null,
+              routeComputingBannerTop: 112,
+            );
 
     return Scaffold(
       body: Stack(
@@ -2951,149 +3659,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           Positioned.fill(
             child: IgnorePointer(
               ignoring: _suspendMapTap,
-              child:
-                  kIsWeb
-                      ? Globe3DEmbed(
-                        points:
-                            waypoints.map((w) {
-                              return {
-                                'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
-                                'lon':
-                                    (w['lon'] ??
-                                        w['longitude'] ??
-                                        w['lng'] ??
-                                        0.0),
-                                'name': w['name'] ?? '',
-                              };
-                            }).toList(),
-                        transportMode: _transportMode.toUpperCase(),
-                        onMapTap:
-                            _editing
-                                ? (lat, lon) => _addWaypointFromTap(lat, lon)
-                                : null,
-                      )
-                      : MapEmbed(
-                        points:
-                            waypoints.map((w) {
-                              return {
-                                'lat': (w['lat'] ?? w['latitude'] ?? 0.0),
-                                'lon':
-                                    (w['lon'] ??
-                                        w['longitude'] ??
-                                        w['lng'] ??
-                                        0.0),
-                                'name': w['name'] ?? '',
-                              };
-                            }).toList(),
-                        transportMode: _transportMode,
-                        routeVia: _routeVia,
-                        segmentRoutingTypes: _segmentRoutingTypes,
-                        onRouteInstructions: (lines) {
-                          if (!mounted) return;
-                          setState(() => _routeInstructions = lines);
-                        },
-                        onTransitArrivalStop: (arrivalStop) {
-                          if (!mounted) return;
-                          setState(() => _transitArrivalStop = arrivalStop);
-                          if (_transportMode == 'transit') {
-                            _persistTransitArrivalStop(arrivalStop);
-                          }
-                        },
-                        secondaryPoints:
-                            waypoints.asMap().entries.expand((entry) {
-                              final wIndex = entry.key;
-                              final w = entry.value;
-
-                              final accs =
-                                  (w['accommodations'] as List<dynamic>?) ?? [];
-                              final itinerary =
-                                  (w['itinerary'] as List<dynamic>?) ?? [];
-
-                              final accMarkers = accs
-                                  .asMap()
-                                  .entries
-                                  .where(
-                                    (a) =>
-                                        (a.value as Map)['lat'] != null &&
-                                        (a.value as Map)['lon'] != null,
-                                  )
-                                  .map(
-                                    (a) => {
-                                      'lat': (a.value as Map)['lat'],
-                                      'lon': (a.value as Map)['lon'],
-                                      'kind': 'accommodation',
-                                      'category': 'Accommodation',
-                                      'waypointIndex': wIndex,
-                                      'accommodationIndex': a.key,
-                                    },
-                                  );
-
-                              final activityMarkers = itinerary
-                                  .asMap()
-                                  .entries
-                                  .expand((dayEntry) {
-                                    final dayIndex = dayEntry.key;
-                                    final day =
-                                        (dayEntry.value
-                                            as Map<String, dynamic>);
-                                    final acts =
-                                        (day['activities'] as List<dynamic>?) ??
-                                        [];
-                                    return acts
-                                        .asMap()
-                                        .entries
-                                        .where(
-                                          (a) =>
-                                              (a.value as Map)['locationLat'] !=
-                                                  null &&
-                                              (a.value as Map)['locationLon'] !=
-                                                  null,
-                                        )
-                                        .map(
-                                          (a) => {
-                                            'lat':
-                                                (a.value as Map)['locationLat'],
-                                            'lon':
-                                                (a.value as Map)['locationLon'],
-                                            'kind': 'activity',
-                                            'category':
-                                                (a.value as Map)['category'] ??
-                                                '',
-                                            'waypointIndex': wIndex,
-                                            'dayIndex': dayIndex,
-                                            'activityIndex': a.key,
-                                          },
-                                        );
-                                  });
-
-                              return [...accMarkers, ...activityMarkers];
-                            }).toList(),
-                        onMapTap:
-                            _editing
-                                ? (lat, lon) => _addWaypointFromTap(lat, lon)
-                                : null,
-                        onRouteTapAddVia:
-                            (!_editing && canWriteTrip)
-                                ? (afterIndex, lat, lon) => _upsertViaPoint(
-                                  afterIndex: afterIndex,
-                                  lat: lat,
-                                  lon: lon,
-                                )
-                                : null,
-                        onViaDragEnd:
-                            (!_editing && canWriteTrip)
-                                ? (viaIndex, lat, lon) => _moveViaPoint(
-                                  viaIndex: viaIndex,
-                                  lat: lat,
-                                  lon: lon,
-                                )
-                                : null,
-                        onViaTapDelete:
-                            (!_editing && canWriteTrip)
-                                ? (viaIndex) =>
-                                    _deleteViaPoint(viaIndex: viaIndex)
-                                : null,
-                      ),
+              child: backgroundLayer,
             ),
           ),
           if (kIsWeb && _suspendMapTap)
@@ -3108,6 +3674,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 _buildOmnibox(context),
                 _buildTopLeftNav(context, name.toString()),
                 _buildTopRightActions(context),
+                _buildMapModeToggleOverlay(context),
                 if (!isNarrow)
                   Positioned(
                     left: 24,
@@ -3119,10 +3686,109 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 else
                   _buildMobileRouteSheet(context, canWriteTrip: canWriteTrip),
                 _buildActionCluster(context, totalKm: totalKm),
+
+                // Read-only sign-in banner for unauthenticated share-link viewers.
+                if (widget.readOnly)
+                  Positioned(
+                    top: 16,
+                    right: 24,
+                    child: _maybePointerIntercept(
+                      _glassCard(
+                        borderRadius: BorderRadius.circular(999),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.lock_outline, size: 16),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'Read-only preview',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            ElevatedButton.icon(
+                              onPressed: () {
+                                Navigator.of(context).pushNamed('/sign-in');
+                              },
+                              icon: const Icon(Icons.login, size: 16),
+                              label: const Text('Sign in to join'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF111827),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                textStyle: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _MapModeToggleButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _MapModeToggleButton({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF111827) : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: selected ? Colors.white : Colors.black87,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: selected ? Colors.white : Colors.black87,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

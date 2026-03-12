@@ -15,40 +15,56 @@ class MapEmbed extends StatefulWidget {
   final void Function(Map<String, dynamic> point)? onPointTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
+  final void Function(List<Map<String, dynamic>> geometry)? onRouteGeometry;
   final void Function(List<String> lines)? onRouteInstructions;
   final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final List<Map<String, dynamic>> initialRouteGeometry;
+  final List<String> initialRouteInstructions;
+  final bool preferInitialRouteData;
   final String transportMode;
+  final List<String> segmentTransportModes;
   final List<Map<String, dynamic>> routeVia;
   final List<String> segmentRoutingTypes;
   final void Function(int afterIndex, double lat, double lon)? onRouteTapAddVia;
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
+  final void Function(Map<String, dynamic> campsite)? onHikingCampsiteTap;
   final List<Map<String, dynamic>> secondaryPoints;
   final bool disableDefaultUi;
   final bool disableGestures;
   final bool zoomControlsEnabled;
+  final bool showNearbyContextOverlays;
   final double minZoom;
   final double maxZoom;
+  final double routeComputingBannerTop;
   const MapEmbed({
     super.key,
     required this.points,
     this.onMapTap,
     this.onPointTap,
     this.onRouteSummary,
+    this.onRouteGeometry,
     this.onRouteInstructions,
     this.onTransitArrivalStop,
-    this.transportMode = 'driving',
+    this.initialRouteGeometry = const [],
+    this.initialRouteInstructions = const [],
+    this.preferInitialRouteData = false,
+    this.transportMode = 'car',
+    this.segmentTransportModes = const [],
     this.routeVia = const [],
     this.segmentRoutingTypes = const [],
     this.onRouteTapAddVia,
     this.onViaDragEnd,
     this.onViaTapDelete,
+    this.onHikingCampsiteTap,
     this.secondaryPoints = const [],
     this.disableDefaultUi = false,
     this.disableGestures = false,
     this.zoomControlsEnabled = false,
+    this.showNearbyContextOverlays = true,
     this.minZoom = 3,
     this.maxZoom = 18,
+    this.routeComputingBannerTop = 12,
   });
 
   @override
@@ -68,15 +84,70 @@ class _MapEmbedState extends State<MapEmbed> {
   String _viaSig = '';
   String _modeSig = '';
   String _segSig = '';
+  String _segModeSig = '';
+  String _lastRouteCalcSig = '';
+
+  String _normalizeTransportMode(String raw) {
+    switch (raw.trim().toLowerCase()) {
+      case 'car':
+      case 'driving':
+        return 'driving';
+      case 'plane':
+      case 'flying':
+      case 'flight':
+        return 'flying';
+      case 'train':
+      case 'rail':
+      case 'public_transit':
+      case 'public transit':
+      case 'transit':
+        return 'transit';
+      case 'walk':
+      case 'walking':
+        return 'walking';
+      case 'bike':
+      case 'biking':
+      case 'bicycling':
+      case 'bikepacking':
+        return 'biking';
+      case 'portaging':
+      case 'canoe':
+      case 'canoeing':
+      case 'portage':
+        return 'portaging';
+      case 'hiking':
+      case 'backpacking':
+        return 'hiking';
+      case 'gas_stops':
+      case 'gas/stops':
+      case 'gas-stops':
+      case 'gasstops':
+        return 'driving';
+      default:
+        return 'driving';
+    }
+  }
 
   bool _isAdventureMode(String mode) {
     final m = mode.trim().toLowerCase();
-    return m == 'bikepacking' || m == 'backpacking';
+    return m == 'hiking' || m == 'portaging';
   }
 
   String _segmentRoutingSignature(List<String> types) {
     if (types.isEmpty) return '';
     return types.map((t) => t.trim().toLowerCase()).join(',');
+  }
+
+  String _segmentTransportSignature(List<String> types) {
+    if (types.isEmpty) return '';
+    return types.map(_normalizeTransportMode).join(',');
+  }
+
+  String _segmentTransportModeFor(int segmentIndex) {
+    final fallback = _normalizeTransportMode(widget.transportMode);
+    if (segmentIndex < 0) return fallback;
+    if (segmentIndex >= widget.segmentTransportModes.length) return fallback;
+    return _normalizeTransportMode(widget.segmentTransportModes[segmentIndex]);
   }
 
   String _segmentRoutingTypeFor(int segmentIndex) {
@@ -87,7 +158,7 @@ class _MapEmbedState extends State<MapEmbed> {
   }
 
   Color _standardRouteColor(String mode) {
-    if (_isAdventureMode(mode)) return Colors.green;
+    if (_isAdventureMode(mode)) return const Color(0xFF2962FF);
     return Colors.blue;
   }
 
@@ -110,8 +181,12 @@ class _MapEmbedState extends State<MapEmbed> {
     switch (category) {
       case 'Driving':
         return Icons.directions_car;
+      case 'Transit':
+        return Icons.directions_transit;
       case 'Hiking':
         return Icons.terrain;
+      case 'Portaging':
+        return Icons.kayaking;
       case 'Biking':
         return Icons.directions_bike;
       case 'Walking':
@@ -130,6 +205,8 @@ class _MapEmbedState extends State<MapEmbed> {
         return Icons.photo_camera;
       case 'Adventure':
         return Icons.local_activity;
+      case 'Free Time':
+        return Icons.free_breakfast;
       default:
         return Icons.location_on;
     }
@@ -140,8 +217,12 @@ class _MapEmbedState extends State<MapEmbed> {
     switch (category) {
       case 'Driving':
         return Colors.blueAccent;
+      case 'Transit':
+        return const Color(0xFF546E7A);
       case 'Hiking':
         return const Color(0xFF2E7D32);
+      case 'Portaging':
+        return const Color(0xFF00897B);
       case 'Biking':
         return const Color(0xFF1565C0);
       case 'Walking':
@@ -160,6 +241,8 @@ class _MapEmbedState extends State<MapEmbed> {
         return const Color(0xFF0277BD);
       case 'Adventure':
         return const Color(0xFFFBC02D);
+      case 'Free Time':
+        return const Color(0xFF78909C);
       default:
         return Colors.orange.shade700;
     }
@@ -173,6 +256,7 @@ class _MapEmbedState extends State<MapEmbed> {
     _viaSig = _signature(widget.routeVia);
     _modeSig = widget.transportMode.trim().toLowerCase();
     _segSig = _segmentRoutingSignature(widget.segmentRoutingTypes);
+    _segModeSig = _segmentTransportSignature(widget.segmentTransportModes);
     // run rebuild defensively so exceptions don't bubble to the framework
     _safeRebuild();
   }
@@ -186,16 +270,21 @@ class _MapEmbedState extends State<MapEmbed> {
     final newVia = _signature(widget.routeVia);
     final newMode = widget.transportMode.trim().toLowerCase();
     final newSeg = _segmentRoutingSignature(widget.segmentRoutingTypes);
+    final newSegModes = _segmentTransportSignature(
+      widget.segmentTransportModes,
+    );
     if (newMain != _mainSig ||
         newSecondary != _secondarySig ||
         newVia != _viaSig ||
         newMode != _modeSig ||
-        newSeg != _segSig) {
+        newSeg != _segSig ||
+        newSegModes != _segModeSig) {
       _mainSig = newMain;
       _secondarySig = newSecondary;
       _viaSig = newVia;
       _modeSig = newMode;
       _segSig = newSeg;
+      _segModeSig = newSegModes;
       _rebuildFromPoints();
     }
   }
@@ -206,13 +295,15 @@ class _MapEmbedState extends State<MapEmbed> {
     if (afterIndex < 0 || afterIndex >= pts.length - 1) return const [];
 
     final out = <Map<String, dynamic>>[pts[afterIndex]];
-    for (final v in widget.routeVia) {
-      final after = (v['afterIndex'] as num?)?.toInt();
-      if (after != afterIndex) continue;
-      out.add({
-        'lat': (v['lat'] as num?)?.toDouble() ?? 0.0,
-        'lon': (v['lon'] as num?)?.toDouble() ?? 0.0,
-      });
+    if (_segmentTransportModeFor(afterIndex) != 'transit') {
+      for (final v in widget.routeVia) {
+        final after = (v['afterIndex'] as num?)?.toInt();
+        if (after != afterIndex) continue;
+        out.add({
+          'lat': (v['lat'] as num?)?.toDouble() ?? 0.0,
+          'lon': (v['lon'] as num?)?.toDouble() ?? 0.0,
+        });
+      }
     }
     out.add(pts[afterIndex + 1]);
     return out;
@@ -242,6 +333,27 @@ class _MapEmbedState extends State<MapEmbed> {
     return b.toString();
   }
 
+  String _routeCalculationSignature() {
+    final b = StringBuffer();
+    for (final p in widget.points) {
+      b
+        ..write(_toDouble(p['lat']).toStringAsFixed(6))
+        ..write(',')
+        ..write(_toDouble(p['lon']).toStringAsFixed(6))
+        ..write(';');
+    }
+    b
+      ..write('|')
+      ..write(_modeSig)
+      ..write('|')
+      ..write(_segSig)
+      ..write('|')
+      ..write(_segModeSig)
+      ..write('|')
+      ..write(_viaSig);
+    return b.toString();
+  }
+
   // ignore: unused_element
   List<Map<String, dynamic>> _expandedPointsWithVia() {
     final pts = widget.points;
@@ -251,6 +363,7 @@ class _MapEmbedState extends State<MapEmbed> {
     for (final v in widget.routeVia) {
       final after = (v['afterIndex'] as num?)?.toInt();
       if (after == null || after < 0 || after >= pts.length - 1) continue;
+      if (_segmentTransportModeFor(after) == 'transit') continue;
       byAfter.putIfAbsent(after, () => []).add({
         'lat': (v['lat'] as num?)?.toDouble() ?? 0.0,
         'lon': (v['lon'] as num?)?.toDouble() ?? 0.0,
@@ -322,6 +435,39 @@ class _MapEmbedState extends State<MapEmbed> {
     return (dx * dx) + (dy * dy);
   }
 
+  List<Map<String, dynamic>> _flattenRouteGeometry(
+    Map<int, List<ll.LatLng>> segGeometry,
+  ) {
+    if (segGeometry.isEmpty) return const [];
+    final keys = segGeometry.keys.toList()..sort();
+    final out = <Map<String, dynamic>>[];
+    double? lastLat;
+    double? lastLon;
+    for (final seg in keys) {
+      final path = segGeometry[seg] ?? const <ll.LatLng>[];
+      for (final p in path) {
+        final lat = p.latitude;
+        final lon = p.longitude;
+        if (lastLat != null &&
+            lastLon != null &&
+            (lat - lastLat).abs() < 1e-7 &&
+            (lon - lastLon).abs() < 1e-7) {
+          continue;
+        }
+        out.add({'lat': lat, 'lon': lon, 'lng': lon});
+        lastLat = lat;
+        lastLon = lon;
+      }
+    }
+    return out;
+  }
+
+  void _emitRouteGeometry(Map<int, List<ll.LatLng>> segGeometry) {
+    final cb = widget.onRouteGeometry;
+    if (cb == null) return;
+    cb(_flattenRouteGeometry(segGeometry));
+  }
+
   Future<void> _rebuildFromPoints() async {
     _markers = [];
     _secondaryMarkers = [];
@@ -386,6 +532,10 @@ class _MapEmbedState extends State<MapEmbed> {
 
     for (var i = 0; i < widget.routeVia.length; i++) {
       final v = widget.routeVia[i];
+      final after = (v['afterIndex'] as num?)?.toInt() ?? -1;
+      if (after >= 0 && _segmentTransportModeFor(after) == 'transit') {
+        continue;
+      }
       final lat = _toDouble(v['lat']);
       final lon = _toDouble(v['lon']);
       if (lat == 0.0 && lon == 0.0) continue;
@@ -421,10 +571,48 @@ class _MapEmbedState extends State<MapEmbed> {
       );
     }
 
-    final mode = widget.transportMode.trim().toLowerCase();
-    final standardColor = _standardRouteColor(mode);
+    final routeSig = _routeCalculationSignature();
+    if (widget.preferInitialRouteData &&
+        !widget.showNearbyContextOverlays &&
+        widget.initialRouteGeometry.length >= 2) {
+      final cachedPath = widget.initialRouteGeometry
+          .map((point) {
+            final lat = _toDouble(point['lat']);
+            final lon = _toDouble(point['lon'] ?? point['lng']);
+            return ll.LatLng(lat, lon);
+          })
+          .toList(growable: false);
+      if (cachedPath.length >= 2) {
+        widget.onRouteGeometry?.call(widget.initialRouteGeometry);
+        widget.onRouteInstructions?.call(
+          widget.initialRouteInstructions.take(8).toList(growable: false),
+        );
+        _routes = [
+          Polyline(
+            points: cachedPath,
+            strokeWidth:
+                _isAdventureMode(widget.transportMode.trim().toLowerCase())
+                    ? 4.0
+                    : 3.0,
+            color: _standardRouteColor(widget.transportMode).withOpacity(0.9),
+          ),
+        ];
+        _lastRouteCalcSig = routeSig;
+        if (mounted) {
+          setState(() {});
+        }
+        return;
+      }
+    }
+    if (_lastRouteCalcSig == routeSig) {
+      if (mounted) {
+        setState(() {});
+      }
+      return;
+    }
 
     final out = <Polyline>[];
+    final segGeometry = <int, List<ll.LatLng>>{};
     var distSum = 0.0;
     var durSum = 0.0;
 
@@ -432,6 +620,9 @@ class _MapEmbedState extends State<MapEmbed> {
       final segType = _segmentRoutingTypeFor(seg);
       final segPts = _segmentPoints(afterIndex: seg);
       if (segPts.length < 2) continue;
+      final mode = _segmentTransportModeFor(seg);
+      final standardColor = _standardRouteColor(mode);
+      final isAdventure = _isAdventureMode(mode);
 
       final fallback =
           segPts
@@ -444,6 +635,7 @@ class _MapEmbedState extends State<MapEmbed> {
           segDist += _haversineMeters(fallback[i], fallback[i + 1]);
         }
         distSum += segDist;
+        segGeometry[seg] = fallback;
         out.add(
           Polyline(
             points: fallback,
@@ -455,11 +647,35 @@ class _MapEmbedState extends State<MapEmbed> {
       }
 
       if (segType == 'direct') {
+        segGeometry[seg] = fallback;
         out.add(
           Polyline(
             points: fallback,
-            strokeWidth: 3.0,
-            color: Colors.green.withOpacity(0.9),
+            strokeWidth: isAdventure ? 4.0 : 3.0,
+            color:
+                isAdventure
+                    ? const Color(0xFF00E676)
+                    : Colors.green.withOpacity(0.9),
+          ),
+        );
+        continue;
+      }
+
+      if (mode == 'transit') {
+        // Never route transit/train legs through OSRM driving roads.
+        // Keep a neutral straight-line estimate when live transit data
+        // isn't available on this platform.
+        var segDist = 0.0;
+        for (var i = 0; i + 1 < fallback.length; i++) {
+          segDist += _haversineMeters(fallback[i], fallback[i + 1]);
+        }
+        distSum += segDist;
+        segGeometry[seg] = fallback;
+        out.add(
+          Polyline(
+            points: fallback,
+            strokeWidth: 4.0,
+            color: const Color(0xFF546E7A).withValues(alpha: 0.7),
           ),
         );
         continue;
@@ -469,7 +685,11 @@ class _MapEmbedState extends State<MapEmbed> {
       try {
         final profile = switch (mode) {
           'walking' => 'walking',
+          'hiking' => 'walking',
+          'backpacking' => 'walking',
+          'portaging' => 'walking',
           'biking' => 'cycling',
+          'bikepacking' => 'cycling',
           _ => 'driving',
         };
 
@@ -478,7 +698,14 @@ class _MapEmbedState extends State<MapEmbed> {
           'https://router.project-osrm.org/route/v1/$profile/$coords?overview=full&geometries=geojson',
         );
 
-        var resp = await http.get(url);
+        var resp = await http
+            .get(url)
+            .timeout(
+              const Duration(seconds: 8),
+              onTimeout: () {
+                return http.Response('{"routes":[]}', 504);
+              },
+            );
         if (resp.statusCode == 200) {
           final data = jsonDecode(resp.body) as Map<String, dynamic>;
           final routes = data['routes'] as List<dynamic>?;
@@ -502,10 +729,11 @@ class _MapEmbedState extends State<MapEmbed> {
               out.add(
                 Polyline(
                   points: latlngs,
-                  strokeWidth: 4.0,
-                  color: standardColor,
+                  strokeWidth: isAdventure ? 5.0 : 4.0,
+                  color: isAdventure ? const Color(0xFF00E676) : standardColor,
                 ),
               );
+              segGeometry[seg] = latlngs;
               if (dist != null) distSum += dist;
               if (dur != null) durSum += dur;
               continue;
@@ -518,7 +746,14 @@ class _MapEmbedState extends State<MapEmbed> {
         url = Uri.parse(
           'https://router.project-osrm.org/route/v1/$profile/$coords?overview=full&geometries=geojson',
         );
-        resp = await http.get(url);
+        resp = await http
+            .get(url)
+            .timeout(
+              const Duration(seconds: 8),
+              onTimeout: () {
+                return http.Response('{"routes":[]}', 504);
+              },
+            );
         if (resp.statusCode == 200) {
           final data = jsonDecode(resp.body) as Map<String, dynamic>;
           final routes = data['routes'] as List<dynamic>?;
@@ -542,10 +777,11 @@ class _MapEmbedState extends State<MapEmbed> {
               out.add(
                 Polyline(
                   points: latlngs,
-                  strokeWidth: 4.0,
-                  color: standardColor,
+                  strokeWidth: isAdventure ? 5.0 : 4.0,
+                  color: isAdventure ? const Color(0xFF00E676) : standardColor,
                 ),
               );
+              segGeometry[seg] = latlngs;
               if (dist != null) distSum += dist;
               if (dur != null) durSum += dur;
               continue;
@@ -556,14 +792,21 @@ class _MapEmbedState extends State<MapEmbed> {
         // fall through to fallback
       }
 
+      segGeometry[seg] = fallback;
       out.add(
         Polyline(
           points: fallback,
-          strokeWidth: 3.0,
-          color: standardColor.withOpacity(0.6),
+          strokeWidth: isAdventure ? 4.0 : 3.0,
+          color:
+              isAdventure
+                  ? const Color(0xFF00E676).withOpacity(0.7)
+                  : standardColor.withOpacity(0.6),
         ),
       );
     }
+
+    _emitRouteGeometry(segGeometry);
+    _lastRouteCalcSig = routeSig;
 
     setState(() {
       _routes = out;
@@ -604,9 +847,29 @@ class _MapEmbedState extends State<MapEmbed> {
       return const Center(child: Text('No points yet'));
     }
 
-    final mode = widget.transportMode.trim().toLowerCase();
+    final segments = widget.points.length > 1 ? widget.points.length - 1 : 0;
+    var useTopo = false;
+    if (segments <= 0) {
+      final mode = _normalizeTransportMode(widget.transportMode);
+      useTopo =
+          mode == 'biking' ||
+          mode == 'walking' ||
+          mode == 'hiking' ||
+          _isAdventureMode(mode);
+    } else {
+      for (var i = 0; i < segments; i++) {
+        final mode = _segmentTransportModeFor(i);
+        if (mode == 'biking' ||
+            mode == 'walking' ||
+            mode == 'hiking' ||
+            _isAdventureMode(mode)) {
+          useTopo = true;
+          break;
+        }
+      }
+    }
     final tileTemplate =
-        (mode == 'biking' || mode == 'walking' || _isAdventureMode(mode))
+        useTopo
             ? 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'
             : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 

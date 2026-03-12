@@ -138,6 +138,30 @@ class _VerifiedTripDetailScreenState extends State<VerifiedTripDetailScreen> {
     }).toList();
   }
 
+  String get _transportMode =>
+      (widget.tripData['transportMode'] ?? 'car').toString();
+
+  List<String> get _segmentTransportModes {
+    final raw = widget.tripData['segmentTransportModes'];
+    if (raw is! List) return const [];
+    return raw.map((v) => v.toString()).toList();
+  }
+
+  List<String> get _segmentRoutingTypes {
+    final raw = widget.tripData['segmentRoutingTypes'];
+    if (raw is! List) return const [];
+    return raw.map((v) => v.toString()).toList();
+  }
+
+  List<Map<String, dynamic>> get _routeVia {
+    final raw = widget.tripData['routeVia'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((v) => Map<String, dynamic>.from(v.cast<String, dynamic>()))
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.sizeOf(context).width;
@@ -383,7 +407,7 @@ class _VerifiedTripDetailScreenState extends State<VerifiedTripDetailScreen> {
               ),
               const SizedBox(height: 4),
               Text(
-                'A curated ${_recommendedDays}-day journey through ${_totalStops} amazing destinations',
+                'A curated $_recommendedDays-day journey through $_totalStops amazing destinations',
                 style: TextStyle(
                   fontSize: 16,
                   color: Colors.grey[600],
@@ -496,6 +520,10 @@ class _VerifiedTripDetailScreenState extends State<VerifiedTripDetailScreen> {
             height: 350,
             child: MapEmbed(
               points: _mapPoints,
+              transportMode: _transportMode,
+              segmentTransportModes: _segmentTransportModes,
+              segmentRoutingTypes: _segmentRoutingTypes,
+              routeVia: _routeVia,
               secondaryPoints: _activityMarkers,
               disableDefaultUi: false,
               zoomControlsEnabled: true,

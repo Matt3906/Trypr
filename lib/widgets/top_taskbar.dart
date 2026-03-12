@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/screens/my_trips_screen.dart';
@@ -43,6 +44,19 @@ class _TopTaskbarState extends State<TopTaskbar> {
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _adminDoc;
   VoidCallback? _signedInListener;
   StreamSubscription<User?>? _authSub;
+
+  bool _isPremiumFromUserDoc(Map<String, dynamic>? data) {
+    final source = data ?? const <String, dynamic>{};
+    final subscription =
+        (source['subscription'] ?? '').toString().toLowerCase();
+    final subscriptionType =
+        (source['subscriptionType'] ?? '').toString().toLowerCase();
+    final status =
+        (source['subscriptionStatus'] ?? '').toString().toLowerCase();
+    return subscription == 'premium' ||
+        subscriptionType == 'premium' ||
+        status == 'premium';
+  }
 
   @override
   void initState() {
@@ -141,7 +155,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
   Widget build(BuildContext context) {
     final dp = widget.dockProgress.clamp(0.0, 1.0);
     final w = MediaQuery.sizeOf(context).width;
-    final isMobile = w < 640;
+    final isMobile = w < 760;
     final horizontalPadding = w < 420 ? 12.0 : 18.0;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
@@ -403,6 +417,8 @@ class _TopTaskbarState extends State<TopTaskbar> {
             StreamBuilder<DocumentSnapshot<Map<String, dynamic>>?>(
               stream: _userDoc,
               builder: (ctx, snap) {
+                final userData = snap.data?.data();
+                final premiumActive = _isPremiumFromUserDoc(userData);
                 Widget avatarChild = Icon(
                   Icons.person_outline,
                   color: Color.lerp(Colors.white, Colors.black87, dp),
@@ -471,7 +487,11 @@ class _TopTaskbarState extends State<TopTaskbar> {
                               builder: (_) => const FriendsScreen(),
                             ),
                           );
+                        } else if (value == 'open_premium') {
+                          await Navigator.of(context).pushNamed('/premium');
                         } else if (value == 'sign_out') {
+                          final navigator = Navigator.of(context);
+                          final messenger = ScaffoldMessenger.of(context);
                           try {
                             await FirebaseAuth.instance.signOut();
                           } catch (_) {}
@@ -480,10 +500,11 @@ class _TopTaskbarState extends State<TopTaskbar> {
                           // Navigate back to sign-in clearing the stack so the
                           // application state resets to a fresh view.
                           if (mounted) {
-                            Navigator.of(
-                              context,
-                            ).pushNamedAndRemoveUntil('/', (route) => false);
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            navigator.pushNamedAndRemoveUntil(
+                              '/',
+                              (route) => false,
+                            );
+                            messenger.showTryprSnackBar(
                               const SnackBar(content: Text('Signed out')),
                             );
                           }
@@ -510,6 +531,14 @@ class _TopTaskbarState extends State<TopTaskbar> {
                           const PopupMenuItem(
                             value: 'friends',
                             child: Text('Friends'),
+                          ),
+                          PopupMenuItem(
+                            value: 'open_premium',
+                            child: Text(
+                              premiumActive
+                                  ? 'Manage Premium'
+                                  : 'Unlock Premium',
+                            ),
                           ),
                           const PopupMenuDivider(),
                           const PopupMenuItem(
@@ -562,7 +591,9 @@ class _NavItemState extends State<_NavItem> {
           ),
           decoration: BoxDecoration(
             color:
-                _isHovered ? widget.color.withOpacity(0.1) : Colors.transparent,
+                _isHovered
+                    ? widget.color.withValues(alpha: 0.1)
+                    : Colors.transparent,
             borderRadius: BorderRadius.circular(TryprRadius.md),
           ),
           child: GestureDetector(

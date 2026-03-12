@@ -9,6 +9,7 @@ import 'dart:html' as html;
 // ignore: uri_does_not_exist
 import 'dart:js_util' as js_util;
 
+import 'package:flutter/foundation.dart';
 import 'package:trypr/services/google_maps_loader_web.dart';
 
 Object? _directionsService;
@@ -23,14 +24,32 @@ Object? _getMaps() {
   return js_util.getProperty(google, 'maps');
 }
 
+Object _jsDepartureTime() {
+  try {
+    final dateCtor = js_util.getProperty(html.window, 'Date');
+    final millis =
+        DateTime.now().add(const Duration(minutes: 5)).millisecondsSinceEpoch;
+    return js_util.callConstructor(dateCtor, [millis]);
+  } catch (_) {
+    // Fallback keeps request valid enough for non-critical failure paths.
+    return DateTime.now().toIso8601String();
+  }
+}
+
 Future<void> _ensureDirectionsService() async {
   await ensureGoogleMapsLoaded();
   final maps = _getMaps();
   if (maps == null) return;
 
   if (_directionsService == null) {
-    final DirectionsService = js_util.getProperty(maps, 'DirectionsService');
-    _directionsService = js_util.callConstructor(DirectionsService, const []);
+    final directionsServiceCtor = js_util.getProperty(
+      maps,
+      'DirectionsService',
+    );
+    _directionsService = js_util.callConstructor(
+      directionsServiceCtor,
+      const [],
+    );
   }
 }
 
@@ -65,11 +84,16 @@ Future<DirectionsResult?> getDirections({
   required double destLng,
   required String mode,
   List<List<double>>? waypoints,
+  String? originQuery,
+  String? destQuery,
+  List<String>? waypointQueries,
   bool avoidHighways = false,
   bool avoidTolls = false,
+  bool includeTransitTrainMode = true,
 }) async {
   try {
-    await _ensureDirectionsService().timeout(const Duration(milliseconds: 800));
+    // DirectionsService initialization can take >800ms on cold web loads.
+    await _ensureDirectionsService().timeout(const Duration(seconds: 5));
     final svc = _directionsService;
     if (svc == null) return null;
 
@@ -77,15 +101,33 @@ Future<DirectionsResult?> getDirections({
     if (maps == null) return null;
 
     final c = Completer<DirectionsResult?>();
+    final trimmedOriginQuery = originQuery?.trim() ?? '';
+    final trimmedDestQuery = destQuery?.trim() ?? '';
+    final normalizedWaypointQueries = waypointQueries
+        ?.map((q) => q.trim())
+        .toList(growable: false);
+    final useQueryLocations =
+        trimmedOriginQuery.isNotEmpty ||
+        trimmedDestQuery.isNotEmpty ||
+        (normalizedWaypointQueries?.any((q) => q.isNotEmpty) ?? false);
 
     // Build waypoints array for Google
     final jsWaypoints = <Object>[];
     if (waypoints != null && waypoints.isNotEmpty) {
-      for (final wp in waypoints) {
+      for (var i = 0; i < waypoints.length; i++) {
+        final wp = waypoints[i];
         if (wp.length >= 2) {
+          final waypointQuery =
+              normalizedWaypointQueries != null &&
+                      i < normalizedWaypointQueries.length
+                  ? normalizedWaypointQueries[i]
+                  : '';
           jsWaypoints.add(
             js_util.jsify({
-              'location': js_util.jsify({'lat': wp[0], 'lng': wp[1]}),
+              'location':
+                  waypointQuery.isNotEmpty
+                      ? waypointQuery
+                      : js_util.jsify({'lat': wp[0], 'lng': wp[1]}),
               'stopover': true,
             }),
           );
@@ -100,8 +142,14 @@ Future<DirectionsResult?> getDirections({
     );
 
     final requestMap = <String, dynamic>{
-      'origin': js_util.jsify({'lat': originLat, 'lng': originLng}),
-      'destination': js_util.jsify({'lat': destLat, 'lng': destLng}),
+      'origin':
+          trimmedOriginQuery.isNotEmpty
+              ? trimmedOriginQuery
+              : js_util.jsify({'lat': originLat, 'lng': originLng}),
+      'destination':
+          trimmedDestQuery.isNotEmpty
+              ? trimmedDestQuery
+              : js_util.jsify({'lat': destLat, 'lng': destLng}),
       'travelMode': travelMode,
       // For bicycling mode, Google Maps already prefers bike paths, bike lanes,
       // and quieter roads. Adding avoidHighways further ensures we stay off
@@ -115,9 +163,19 @@ Future<DirectionsResult?> getDirections({
     }
 
     if (mode.toLowerCase() == 'transit') {
+      Object? trainMode;
+      try {
+        trainMode = js_util.getProperty(
+          js_util.getProperty(maps, 'TransitMode'),
+          'TRAIN',
+        );
+      } catch (_) {}
+
       requestMap['transitOptions'] = js_util.jsify({
         'routingPreference': 'FEWER_TRANSFERS',
-        'departureTime': DateTime.now().toIso8601String(),
+        'departureTime': _jsDepartureTime(),
+        if (includeTransitTrainMode && trainMode != null)
+          'modes': js_util.jsify([trainMode]),
       });
     }
 
@@ -131,6 +189,9 @@ Future<DirectionsResult?> getDirections({
       try {
         final statusStr = status?.toString() ?? '';
         if (statusStr != 'OK' || result == null) {
+          debugPrint(
+            'googleDirections status=$statusStr mode=$mode use_queries=$useQueryLocations',
+          );
           done(null);
           return;
         }
@@ -150,40 +211,31 @@ Future<DirectionsResult?> getDirections({
 
         final route = routeList.first;
 
-        // Get overview polyline
-        final overviewPolyline = js_util.getProperty(
-          route,
-          'overview_polyline',
-        );
-        if (overviewPolyline == null) {
-          done(null);
-          return;
-        }
-
-        // Decode the polyline
-        final encodedPath =
-            js_util.callMethod(overviewPolyline, 'getPath', const []) as List?;
         final polyPoints = <List<double>>[];
 
-        if (encodedPath != null) {
-          for (final pt in encodedPath) {
+        // Prefer overview_path (array of LatLng objects).
+        final overviewPath = js_util.getProperty(route, 'overview_path');
+        if (overviewPath is List && overviewPath.isNotEmpty) {
+          for (final pt in overviewPath) {
             final lat =
-                (js_util.callMethod(pt, 'lat', const []) as num?)?.toDouble() ??
-                0.0;
+                (js_util.callMethod(pt, 'lat', const []) as num?)?.toDouble();
             final lng =
-                (js_util.callMethod(pt, 'lng', const []) as num?)?.toDouble() ??
-                0.0;
+                (js_util.callMethod(pt, 'lng', const []) as num?)?.toDouble();
+            if (lat == null || lng == null) continue;
             polyPoints.add([lat, lng]);
           }
         }
 
-        // If getPath didn't work, try decoding the string
+        // Fallback to encoded overview polyline string.
         if (polyPoints.isEmpty) {
-          final encodedStr =
-              js_util.getProperty(overviewPolyline, 'points')?.toString();
-          if (encodedStr != null && encodedStr.isNotEmpty) {
-            final decoded = _decodePolyline(encodedStr);
-            polyPoints.addAll(decoded);
+          final overviewPolyline = js_util.getProperty(
+            route,
+            'overview_polyline',
+          );
+          final encodedStr = js_util.getProperty(overviewPolyline, 'points');
+          final encoded = encodedStr?.toString() ?? '';
+          if (encoded.isNotEmpty) {
+            polyPoints.addAll(_decodePolyline(encoded));
           }
         }
 
@@ -333,6 +385,31 @@ Future<DirectionsResult?> getDirections({
                     );
                   }
                 }
+
+                // If overview polyline is unavailable, build path from step
+                // paths so we still render the transit line.
+                if (polyPoints.isEmpty) {
+                  final stepPath = js_util.getProperty(step, 'path');
+                  if (stepPath is List && stepPath.isNotEmpty) {
+                    for (final pt in stepPath) {
+                      final lat =
+                          (js_util.callMethod(pt, 'lat', const []) as num?)
+                              ?.toDouble();
+                      final lng =
+                          (js_util.callMethod(pt, 'lng', const []) as num?)
+                              ?.toDouble();
+                      if (lat == null || lng == null) continue;
+                      if (polyPoints.isNotEmpty) {
+                        final last = polyPoints.last;
+                        if ((last[0] - lat).abs() < 1e-7 &&
+                            (last[1] - lng).abs() < 1e-7) {
+                          continue;
+                        }
+                      }
+                      polyPoints.add([lat, lng]);
+                    }
+                  }
+                }
               }
             }
           }
@@ -349,6 +426,7 @@ Future<DirectionsResult?> getDirections({
           ),
         );
       } catch (e) {
+        debugPrint('googleDirections callback_exception mode=$mode err=$e');
         done(null);
       }
     });
@@ -359,7 +437,8 @@ Future<DirectionsResult?> getDirections({
       const Duration(seconds: 15),
       onTimeout: () => null,
     );
-  } catch (_) {
+  } catch (e) {
+    debugPrint('googleDirections request_exception mode=$mode err=$e');
     return null;
   }
 }

@@ -1,11 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:flutter/services.dart';
 import 'package:trypr/screens/unlisted_page_builder_screen.dart';
 import 'package:trypr/screens/unlisted_page_responses_screen.dart';
 import 'package:trypr/screens/verified_trip_builder_screen.dart';
-import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:intl/intl.dart';
 
 /// POWER ADMIN PANEL - Complete platform control center
@@ -768,15 +768,15 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
           'createdAt': FieldValue.serverTimestamp(),
         });
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$userName is now an admin')));
+          ScaffoldMessenger.of(context).showTryprSnackBar(
+            SnackBar(content: Text('$userName is now an admin')),
+          );
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -820,13 +820,13 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Deleted $userName')));
+          ).showTryprSnackBar(SnackBar(content: Text('Deleted $userName')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -952,13 +952,13 @@ class _TripsManagementTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Trip deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Trip deleted')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -1127,7 +1127,7 @@ class _VerifiedTripsManagementTab extends StatelessWidget {
             .doc(tripId)
             .delete();
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context).showTryprSnackBar(
             const SnackBar(content: Text('Verified trip deleted')),
           );
         }
@@ -1135,7 +1135,7 @@ class _VerifiedTripsManagementTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -1259,7 +1259,7 @@ class _UnlistedPagesTab extends StatelessWidget {
                             case 'copy_link':
                               final url = '${Uri.base.origin}/page/$pageId';
                               Clipboard.setData(ClipboardData(text: url));
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              ScaffoldMessenger.of(context).showTryprSnackBar(
                                 const SnackBar(content: Text('Link copied')),
                               );
                               break;
@@ -1351,13 +1351,13 @@ class _UnlistedPagesTab extends StatelessWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Page deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Page deleted')));
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error deleting: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error deleting: $e')));
         }
       }
     }
@@ -1923,13 +1923,13 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Note saved')));
+        ).showTryprSnackBar(const SnackBar(content: Text('Note saved')));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
       }
     } finally {
       setState(() => _saving = false);
@@ -1948,7 +1948,7 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
   }
@@ -1990,13 +1990,13 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('Note deleted')));
+          ).showTryprSnackBar(const SnackBar(content: Text('Note deleted')));
         }
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
+          ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
         }
       }
     }
@@ -2026,7 +2026,7 @@ class _SettingsTab extends StatelessWidget {
                 subtitle: const Text('Export all data'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  ScaffoldMessenger.of(context).showTryprSnackBar(
                     const SnackBar(content: Text('Backup feature coming soon')),
                   );
                 },

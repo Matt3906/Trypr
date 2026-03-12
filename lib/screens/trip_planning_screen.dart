@@ -1,9 +1,22 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter_quill/flutter_quill.dart' as quill;
+import 'package:flutter_quill_extensions/flutter_quill_extensions.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:trypr/services/pick_file_data_url.dart';
+import 'package:trypr/services/open_external_url.dart';
 import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 import 'package:trypr/services/address_search.dart';
+import 'package:trypr/services/route_options.dart';
+import 'package:trypr/widgets/map_embed.dart';
+import 'package:trypr/widgets/web_interceptor.dart';
 
 /// ─────────────────────────────────────────────────────────────────────────────
 /// Trip Planning Workspace
@@ -42,18 +55,35 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
   // ─── Navigation ───────────────────────────────────────────────────────────
   late int _selectedTab;
   bool _saving = false;
+  bool _autoSaveInFlight = false;
   late Map<String, dynamic> _tripData;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tripSub;
+  Timer? _autoSaveTimer;
+  String _lastPersistedSignature = '';
+
+  Widget _overlaySafe(Widget child) {
+    if (!kIsWeb) return child;
+    return WebInterceptor(child: child);
+  }
 
   // ─── Itinerary ────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _itineraryDays = [];
   final ScrollController _itineraryScrollController = ScrollController();
+  int _selectedItineraryDayIndex = 0;
+  Map<String, dynamic>? _selectedItineraryMapPoint;
+  bool _updatingTravelRecommendations = false;
+  int _travelRecommendationRunId = 0;
+  final Map<int, TextEditingController> _dayTitleCtrls = {};
+  final Map<int, TextEditingController> _dayNotesCtrls = {};
 
   // ─── Notes ────────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _notes = [];
   int? _selectedNoteIndex;
   final _noteTitleCtrl = TextEditingController();
-  final _noteContentCtrl = TextEditingController();
+  final FocusNode _noteEditorFocus = FocusNode();
+  final ScrollController _noteEditorScroll = ScrollController();
+  quill.QuillController? _noteContentQuillCtrl;
+  String? _boundNoteId;
 
   // ─── Budget ───────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _budgetItems = [];
@@ -148,7 +178,12 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     _selectedTab = widget.initialTab.clamp(0, _tabs.length - 1);
     _tripData = Map<String, dynamic>.from(widget.tripData);
     _loadPlanningData();
+    _lastPersistedSignature = _planningSignature();
     _subscribeToTrip();
+    _autoSaveTimer = Timer.periodic(
+      const Duration(seconds: 6),
+      (_) => _autoSaveTick(),
+    );
 
     // Scroll to focused day after first frame
     if (widget.focusDayIndex != null) {
@@ -160,10 +195,19 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
 
   @override
   void dispose() {
+    _disposeNoteEditorController();
     _tripSub?.cancel();
+    _autoSaveTimer?.cancel();
     _itineraryScrollController.dispose();
+    for (final c in _dayTitleCtrls.values) {
+      c.dispose();
+    }
+    for (final c in _dayNotesCtrls.values) {
+      c.dispose();
+    }
     _noteTitleCtrl.dispose();
-    _noteContentCtrl.dispose();
+    _noteEditorFocus.dispose();
+    _noteEditorScroll.dispose();
     super.dispose();
   }
 
@@ -172,8 +216,15 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
   // ═════════════════════════════════════════════════════════════════════════════
 
   void _loadPlanningData() {
-    _itineraryDays = _loadOrGenerateItinerary();
+    _itineraryDays = _normalizeItineraryDays(_loadOrGenerateItinerary());
+    _syncItineraryControllers();
     _notes = _mapList(_tripData['tripNotes']);
+    if (_notes.isEmpty) {
+      _selectedNoteIndex = null;
+    } else if (_selectedNoteIndex != null) {
+      _selectedNoteIndex = _selectedNoteIndex!.clamp(0, _notes.length - 1);
+    }
+    _syncNoteControllers();
 
     final budget = _tripData['tripBudget'];
     if (budget is Map) {
@@ -185,6 +236,17 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     if (_checklists.isEmpty) _checklists = [_defaultChecklist()];
 
     _documents = _mapList(_tripData['tripDocuments']);
+    if (_itineraryDays.isEmpty) {
+      _selectedItineraryDayIndex = 0;
+    } else {
+      _selectedItineraryDayIndex = _selectedItineraryDayIndex.clamp(
+        0,
+        _itineraryDays.length - 1,
+      );
+    }
+
+    unawaited(_refreshTravelRecommendations(persist: false));
+    _lastPersistedSignature = _planningSignature();
   }
 
   List<Map<String, dynamic>> _mapList(dynamic raw) {
@@ -196,11 +258,591 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     }).toList();
   }
 
-  List<Map<String, dynamic>> _loadOrGenerateItinerary() {
+  void _disposeNoteEditorController() {
+    _noteContentQuillCtrl?.removeListener(_onNoteEditorChanged);
+    _noteContentQuillCtrl?.dispose();
+    _noteContentQuillCtrl = null;
+    _boundNoteId = null;
+  }
+
+  String _ensureNoteId(Map<String, dynamic> note) {
+    final existing = (note['id'] ?? '').toString().trim();
+    if (existing.isNotEmpty) return existing;
+    final created = _newId();
+    note['id'] = created;
+    return created;
+  }
+
+  String _normalizeNotePlainText(String text) {
+    var out = text;
+    while (out.endsWith('\n')) {
+      out = out.substring(0, out.length - 1);
+    }
+    return out;
+  }
+
+  List<dynamic>? _parseNoteDelta(dynamic raw) {
+    if (raw is List) return raw;
+    if (raw is Map && raw['ops'] is List) return raw['ops'] as List;
+    if (raw is String) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) return decoded;
+        if (decoded is Map && decoded['ops'] is List) {
+          return decoded['ops'] as List;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  quill.Document _documentFromNote(Map<String, dynamic> note) {
+    final deltaOps = _parseNoteDelta(note['contentDelta']);
+    if (deltaOps != null && deltaOps.isNotEmpty) {
+      try {
+        final jsonOps = deltaOps
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e.cast<String, dynamic>()))
+            .toList(growable: false);
+        if (jsonOps.isNotEmpty) {
+          return quill.Document.fromJson(jsonOps);
+        }
+      } catch (_) {}
+    }
+
+    final plain = (note['content'] ?? '').toString();
+    final doc = quill.Document();
+    if (plain.isNotEmpty) {
+      doc.insert(0, plain);
+    }
+    return doc;
+  }
+
+  int _boundNoteIndex() {
+    if (_boundNoteId == null) return -1;
+    return _notes.indexWhere((n) => (n['id'] ?? '').toString() == _boundNoteId);
+  }
+
+  void _persistBoundNoteEditorState() {
+    final controller = _noteContentQuillCtrl;
+    if (controller == null) return;
+    final idx = _boundNoteIndex();
+    if (idx < 0 || idx >= _notes.length) return;
+    final note = _notes[idx];
+    note['contentDelta'] = controller.document.toDelta().toJson();
+    note['content'] = _normalizeNotePlainText(
+      controller.document.toPlainText(),
+    );
+    note['updatedAt'] = DateTime.now().toIso8601String();
+  }
+
+  void _onNoteEditorChanged() {
+    _persistBoundNoteEditorState();
+  }
+
+  void _bindNoteEditorForSelection() {
+    if (_selectedNoteIndex == null || _selectedNoteIndex! >= _notes.length) {
+      _disposeNoteEditorController();
+      return;
+    }
+    final note = _notes[_selectedNoteIndex!];
+    final noteId = _ensureNoteId(note);
+    if (_boundNoteId == noteId && _noteContentQuillCtrl != null) {
+      return;
+    }
+
+    _persistBoundNoteEditorState();
+    _disposeNoteEditorController();
+
+    final doc = _documentFromNote(note);
+    final selectionOffset = doc.length > 0 ? doc.length - 1 : 0;
+    final controller = quill.QuillController(
+      document: doc,
+      selection: TextSelection.collapsed(offset: selectionOffset),
+    );
+    controller.addListener(_onNoteEditorChanged);
+    _noteContentQuillCtrl = controller;
+    _boundNoteId = noteId;
+  }
+
+  double _toDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? double.nan;
+    return double.nan;
+  }
+
+  bool _isValidLatLon(double lat, double lon) {
+    return lat.isFinite &&
+        lon.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lon >= -180 &&
+        lon <= 180;
+  }
+
+  int _timeToSortValue(String value) {
+    final parts = value.trim().split(':');
+    if (parts.length != 2) return 1 << 30;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) {
+      return 1 << 30;
+    }
+    return h * 60 + m;
+  }
+
+  List<Map<String, dynamic>> _sortActivitiesByStartTime(
+    List<Map<String, dynamic>> activities,
+  ) {
+    final indexed = activities.asMap().entries.toList();
+    indexed.sort((a, b) {
+      final av = _timeToSortValue((a.value['startTime'] ?? '').toString());
+      final bv = _timeToSortValue((b.value['startTime'] ?? '').toString());
+      if (av != bv) return av.compareTo(bv);
+      return a.key.compareTo(b.key);
+    });
+    return indexed.map((e) => e.value).toList();
+  }
+
+  List<Map<String, dynamic>> _normalizeItineraryDays(
+    List<Map<String, dynamic>> days,
+  ) {
+    return days.map((d) {
+      final day = Map<String, dynamic>.from(d);
+      day['activities'] = _sortActivitiesByStartTime(
+        _mapList(day['activities']),
+      );
+      return day;
+    }).toList();
+  }
+
+  void _syncItineraryControllers() {
+    for (var i = 0; i < _itineraryDays.length; i++) {
+      final day = _itineraryDays[i];
+      final title = (day['title'] ?? '').toString();
+      final notes = (day['notes'] ?? '').toString();
+
+      final titleCtrl = _dayTitleCtrls.putIfAbsent(
+        i,
+        () => TextEditingController(text: title),
+      );
+      if (titleCtrl.text != title) titleCtrl.text = title;
+
+      final notesCtrl = _dayNotesCtrls.putIfAbsent(
+        i,
+        () => TextEditingController(text: notes),
+      );
+      if (notesCtrl.text != notes) notesCtrl.text = notes;
+    }
+
+    final staleTitleKeys =
+        _dayTitleCtrls.keys.where((k) => k >= _itineraryDays.length).toList();
+    for (final k in staleTitleKeys) {
+      _dayTitleCtrls.remove(k)?.dispose();
+    }
+    final staleNotesKeys =
+        _dayNotesCtrls.keys.where((k) => k >= _itineraryDays.length).toList();
+    for (final k in staleNotesKeys) {
+      _dayNotesCtrls.remove(k)?.dispose();
+    }
+  }
+
+  TextEditingController _dayTitleControllerFor(int dayIndex) {
+    final day = _itineraryDays[dayIndex];
+    return _dayTitleCtrls.putIfAbsent(
+      dayIndex,
+      () => TextEditingController(text: (day['title'] ?? '').toString()),
+    );
+  }
+
+  TextEditingController _dayNotesControllerFor(int dayIndex) {
+    final day = _itineraryDays[dayIndex];
+    return _dayNotesCtrls.putIfAbsent(
+      dayIndex,
+      () => TextEditingController(text: (day['notes'] ?? '').toString()),
+    );
+  }
+
+  List<Map<String, dynamic>> _mapRoutePoints() {
+    final waypoints = _mapList(_tripData['waypoints']);
+    final out = <Map<String, dynamic>>[];
+    for (final entry in waypoints.asMap().entries) {
+      final w = entry.value;
+      final lat = _toDouble(w['lat'] ?? w['latitude']);
+      final lon = _toDouble(w['lon'] ?? w['longitude'] ?? w['lng']);
+      if (!_isValidLatLon(lat, lon)) continue;
+      out.add({
+        'lat': lat,
+        'lon': lon,
+        'name': (w['name'] ?? '').toString(),
+        'pointType': 'waypoint',
+        'waypointIndex': entry.key,
+      });
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _mapItineraryActivityPins() {
+    final pins = <Map<String, dynamic>>[];
+    for (final dayEntry in _itineraryDays.asMap().entries) {
+      final dayIndex = dayEntry.key;
+      final day = dayEntry.value;
+      final activities = _mapList(day['activities']);
+      for (final actEntry in activities.asMap().entries) {
+        final act = actEntry.value;
+        final lat = _toDouble(act['locationLat']);
+        final lon = _toDouble(act['locationLon']);
+        if (!_isValidLatLon(lat, lon)) continue;
+        pins.add({
+          'lat': lat,
+          'lon': lon,
+          'kind': 'activity',
+          'category': (act['category'] ?? 'Exploring').toString(),
+          'name': (act['title'] ?? 'Activity').toString(),
+          'dayIndex': dayIndex,
+          'activityIndex': actEntry.key,
+        });
+      }
+    }
+    return pins;
+  }
+
+  String _normalizedLabel(String raw) {
+    return raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  bool _labelsMatch(String a, String b) {
+    final na = _normalizedLabel(a);
+    final nb = _normalizedLabel(b);
+    return na.isNotEmpty && na == nb;
+  }
+
+  String _itineraryMapPointKind(Map<String, dynamic> point) {
+    final kind =
+        (point['kind'] ?? point['pointType'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+    if (kind.isNotEmpty) return kind;
+    if (point['waypointIndex'] != null) return 'waypoint';
+    return 'location';
+  }
+
+  String _itineraryMapPointTitle(Map<String, dynamic> point) {
+    final title = (point['name'] ?? point['title'] ?? '').toString().trim();
+    if (title.isNotEmpty) return title;
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt();
+    if (waypointIndex != null && waypointIndex >= 0) {
+      return 'Stop ${waypointIndex + 1}';
+    }
+    return 'Selected place';
+  }
+
+  List<Map<String, dynamic>> _activitiesForWaypointPoint(
+    int waypointIndex, {
+    String? waypointName,
+  }) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    final safeName = (waypointName ?? '').toString().trim();
+    for (final day in _itineraryDays) {
+      final dayWaypointIndex = (day['waypointIndex'] as num?)?.toInt();
+      final dayLocationName = (day['locationName'] ?? '').toString();
+      final matchesWaypoint =
+          waypointIndex >= 0 && dayWaypointIndex == waypointIndex;
+      final matchesName =
+          safeName.isNotEmpty && _labelsMatch(dayLocationName, safeName);
+      if (!matchesWaypoint && !matchesName) continue;
+      final activities = _mapList(day['activities']);
+      for (final activity in activities) {
+        final key = [
+          (activity['title'] ?? '').toString().trim().toLowerCase(),
+          (activity['startTime'] ?? '').toString().trim(),
+          (activity['location'] ?? '').toString().trim().toLowerCase(),
+          (activity['category'] ?? '').toString().trim().toLowerCase(),
+        ].join('|');
+        if (!seen.add(key)) continue;
+        out.add(activity);
+      }
+    }
+    return out;
+  }
+
+  List<String> _topCategoriesForActivities(
+    Iterable<Map<String, dynamic>> activities, {
+    int max = 6,
+  }) {
+    final counts = <String, int>{};
+    for (final activity in activities) {
+      final raw = (activity['category'] ?? '').toString().trim();
+      if (raw.isEmpty) continue;
+      counts[raw] = (counts[raw] ?? 0) + 1;
+    }
+    final sorted =
+        counts.entries.toList()..sort((a, b) {
+          final byCount = b.value.compareTo(a.value);
+          if (byCount != 0) return byCount;
+          return a.key.compareTo(b.key);
+        });
+    return sorted.take(max).map((entry) => entry.key).toList(growable: false);
+  }
+
+  List<String> _categoriesForItineraryMapPoint(Map<String, dynamic> point) {
+    final kind = _itineraryMapPointKind(point);
+    final category = (point['category'] ?? '').toString().trim();
+
+    if (kind == 'activity') {
+      final out = <String>[];
+      if (category.isNotEmpty) out.add(category);
+      final dayIndex = (point['dayIndex'] as num?)?.toInt();
+      if (dayIndex != null &&
+          dayIndex >= 0 &&
+          dayIndex < _itineraryDays.length) {
+        final dayCategories = _topCategoriesForActivities(
+          _mapList(_itineraryDays[dayIndex]['activities']),
+        );
+        for (final dayCategory in dayCategories) {
+          if (!out.contains(dayCategory)) out.add(dayCategory);
+        }
+      }
+      return out.take(6).toList(growable: false);
+    }
+
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt() ?? -1;
+    final waypointName = (point['name'] ?? '').toString();
+    final activities = _activitiesForWaypointPoint(
+      waypointIndex,
+      waypointName: waypointName,
+    );
+    final categories = _topCategoriesForActivities(activities);
+    if (categories.isNotEmpty) return categories;
+    if (category.isNotEmpty) return [category];
+    return const [];
+  }
+
+  String _itineraryMapPointSubtitle(Map<String, dynamic> point) {
+    final kind = _itineraryMapPointKind(point);
+    final category = (point['category'] ?? '').toString().trim();
+    final dayIndex = (point['dayIndex'] as num?)?.toInt();
+
+    if (kind == 'activity') {
+      final dayText =
+          dayIndex != null && dayIndex >= 0 && dayIndex < _itineraryDays.length
+              ? 'Day ${(_itineraryDays[dayIndex]['dayNumber'] ?? dayIndex + 1)}'
+              : '';
+      final parts = [
+        if (dayText.isNotEmpty) dayText,
+        if (category.isNotEmpty) category,
+      ];
+      return parts.join(' • ');
+    }
+    if (kind == 'waypoint') {
+      final waypointIndex = (point['waypointIndex'] as num?)?.toInt();
+      if (waypointIndex != null && waypointIndex >= 0) {
+        return 'Stop ${waypointIndex + 1}';
+      }
+    }
+    return category.isNotEmpty ? category : 'Map selection';
+  }
+
+  String _itineraryAiSummaryForPoint(
+    Map<String, dynamic> point,
+    List<String> categories,
+  ) {
+    final kind = _itineraryMapPointKind(point);
+    final title = _itineraryMapPointTitle(point);
+
+    if (kind == 'activity') {
+      final dayIndex = (point['dayIndex'] as num?)?.toInt();
+      final dayText =
+          dayIndex != null && dayIndex >= 0 && dayIndex < _itineraryDays.length
+              ? 'on Day ${(_itineraryDays[dayIndex]['dayNumber'] ?? dayIndex + 1)}'
+              : 'in your itinerary';
+      final category =
+          (point['category'] ?? (categories.isNotEmpty ? categories.first : ''))
+              .toString()
+              .trim();
+      final categoryText = category.isEmpty ? 'general exploration' : category;
+      return '$title is planned $dayText and fits a $categoryText focus. Keep this near your other stops to reduce transit time.';
+    }
+
+    final waypointIndex = (point['waypointIndex'] as num?)?.toInt() ?? -1;
+    final activities = _activitiesForWaypointPoint(
+      waypointIndex,
+      waypointName: title,
+    );
+    if (activities.isEmpty) {
+      return '$title is currently a routing anchor. Add activities here to build a stronger day plan.';
+    }
+    final dayCount =
+        _itineraryDays.where((day) {
+          final dayWaypoint = (day['waypointIndex'] as num?)?.toInt();
+          final dayLoc = (day['locationName'] ?? '').toString();
+          return (waypointIndex >= 0 && dayWaypoint == waypointIndex) ||
+              _labelsMatch(dayLoc, title);
+        }).length;
+    final categoryText =
+        categories.isEmpty ? 'mixed activities' : categories.take(3).join(', ');
+    final dayText =
+        dayCount > 0
+            ? '$dayCount planned day${dayCount == 1 ? '' : 's'}'
+            : 'this stop';
+    return '$title has ${activities.length} planned activit${activities.length == 1 ? 'y' : 'ies'} across $dayText, focused on $categoryText.';
+  }
+
+  void _handleItineraryMapPointTap(Map<String, dynamic> point) {
+    setState(() {
+      _selectedItineraryMapPoint = Map<String, dynamic>.from(point);
+    });
+  }
+
+  Widget _buildItineraryMapInsightCard() {
+    final point = _selectedItineraryMapPoint;
+    if (point == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.82),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0x14000000)),
+        ),
+        child: const Text(
+          'Tap a map pin to view a place summary and activity categories.',
+          style: TextStyle(fontSize: 12, color: TryprColors.textSecondary),
+        ),
+      );
+    }
+
+    final title = _itineraryMapPointTitle(point);
+    final subtitle = _itineraryMapPointSubtitle(point);
+    final categories = _categoriesForItineraryMapPoint(point);
+    final summary = _itineraryAiSummaryForPoint(point, categories);
+    final kind = _itineraryMapPointKind(point);
+    final icon =
+        kind == 'activity'
+            ? Icons.local_activity
+            : kind == 'waypoint'
+            ? Icons.location_city
+            : Icons.place;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.86),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x14000000)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: TryprColors.textPrimary),
+              const SizedBox(width: 6),
+              const Text(
+                'Place Insight',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+              const Spacer(),
+              const Icon(
+                Icons.auto_awesome,
+                size: 14,
+                color: TryprColors.textSecondary,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+          ),
+          if (subtitle.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                fontSize: 12,
+                color: TryprColors.textSecondary,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          const Text(
+            'AI Summary',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            summary,
+            style: const TextStyle(
+              fontSize: 12,
+              color: TryprColors.textPrimary,
+            ),
+          ),
+          if (categories.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Activity Categories',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: categories
+                  .take(6)
+                  .map(
+                    (category) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        '${categoryEmojis[category] ?? '📌'} $category',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> _loadOrGenerateItinerary({
+    bool forceRegenerate = false,
+    List<Map<String, dynamic>>? carryFromDays,
+  }) {
     // If unified itinerary already exists, use it
     final existing = _tripData['tripItinerary'];
-    if (existing is List && existing.isNotEmpty) {
+    if (!forceRegenerate && existing is List && existing.isNotEmpty) {
       return _mapList(existing);
+    }
+
+    final carryDays = <String, Map<String, dynamic>>{};
+    final carrySource = carryFromDays ?? _mapList(existing);
+    for (final d in carrySource) {
+      final key = (d['date'] ?? '').toString().trim();
+      if (key.isEmpty) continue;
+      carryDays[key] = Map<String, dynamic>.from(d);
     }
 
     // Generate from trip dates
@@ -317,6 +959,18 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       days.add(day);
     }
 
+    for (final day in days) {
+      final dateKey = (day['date'] ?? '').toString();
+      final previous = carryDays[dateKey];
+      if (previous == null) continue;
+      if (previous['activities'] is List) {
+        day['activities'] = _sortActivitiesByStartTime(
+          _mapList(previous['activities']),
+        );
+      }
+      day['notes'] = (previous['notes'] ?? '').toString();
+    }
+
     return days;
   }
 
@@ -327,6 +981,600 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final comma = name.indexOf(',');
     if (comma > 0) return name.substring(0, comma);
     return '${name.substring(0, 37)}…';
+  }
+
+  String _normalizeTransportMode(String raw) {
+    final mode = raw.trim().toLowerCase();
+    switch (mode) {
+      case 'flying':
+        return 'flying';
+      case 'train':
+      case 'rail':
+      case 'public_transit':
+      case 'public transit':
+      case 'transit':
+        return 'transit';
+      case 'walking':
+      case 'hiking':
+      case 'portaging':
+      case 'biking':
+      case 'bikepacking':
+      case 'backpacking':
+      case 'driving':
+        return mode;
+      case 'canoe':
+      case 'canoeing':
+      case 'portage':
+        return 'portaging';
+      default:
+        return 'driving';
+    }
+  }
+
+  String _segmentTransportModeFor(int segmentIndex) {
+    final fallback = _normalizeTransportMode(
+      (_tripData['transportMode'] ?? 'driving').toString(),
+    );
+    if (segmentIndex < 0) return fallback;
+    final raw = _tripData['segmentTransportModes'];
+    if (raw is! List || segmentIndex >= raw.length) return fallback;
+    return _normalizeTransportMode(raw[segmentIndex].toString());
+  }
+
+  int _resolveWaypointIndexForDay(
+    Map<String, dynamic> day,
+    List<Map<String, dynamic>> waypoints,
+  ) {
+    final direct = (day['waypointIndex'] as num?)?.toInt();
+    if (direct != null && direct >= 0 && direct < waypoints.length) {
+      return direct;
+    }
+
+    final date = _tryParseDate((day['date'] ?? '').toString());
+    if (date != null) {
+      for (var i = 0; i < waypoints.length; i++) {
+        final wpStart = _tryParseDate(
+          (waypoints[i]['startDate'] ?? '').toString(),
+        );
+        final wpEnd = _tryParseDate((waypoints[i]['endDate'] ?? '').toString());
+        if (wpStart == null || wpEnd == null) continue;
+        final ds = DateTime(date.year, date.month, date.day);
+        final ws = DateTime(wpStart.year, wpStart.month, wpStart.day);
+        final we = DateTime(wpEnd.year, wpEnd.month, wpEnd.day);
+        if (!ds.isBefore(ws) && !ds.isAfter(we)) return i;
+      }
+    }
+
+    final loc = (day['locationName'] ?? '').toString().trim().toLowerCase();
+    if (loc.isNotEmpty) {
+      for (var i = 0; i < waypoints.length; i++) {
+        final wp = (waypoints[i]['name'] ?? '').toString().trim().toLowerCase();
+        if (wp.isEmpty) continue;
+        if (wp == loc || wp.contains(loc) || loc.contains(wp)) return i;
+      }
+    }
+
+    return -1;
+  }
+
+  Map<String, double>? _waypointCoords(
+    List<Map<String, dynamic>> waypoints,
+    int index,
+  ) {
+    if (index < 0 || index >= waypoints.length) return null;
+    final wp = waypoints[index];
+    final lat = _toDouble(wp['lat'] ?? wp['latitude']);
+    final lon = _toDouble(wp['lon'] ?? wp['lng'] ?? wp['longitude']);
+    if (!_isValidLatLon(lat, lon)) return null;
+    return {'lat': lat, 'lon': lon};
+  }
+
+  int _segmentIndexForTravel({
+    required int fromIndex,
+    required int toIndex,
+    required int waypointCount,
+  }) {
+    if (waypointCount < 2) return -1;
+    if (fromIndex >= 0 && toIndex >= 0) {
+      if (toIndex == fromIndex + 1) return fromIndex;
+      if (fromIndex == toIndex + 1) return toIndex;
+    }
+    if (fromIndex >= 0 && fromIndex < waypointCount - 1) return fromIndex;
+    if (toIndex > 0 && (toIndex - 1) < waypointCount - 1) return toIndex - 1;
+    return -1;
+  }
+
+  String _travelModeLabel(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'transit':
+        return 'Transit';
+      case 'walking':
+      case 'hiking':
+      case 'backpacking':
+        return 'Walking';
+      case 'portaging':
+        return 'Portaging';
+      case 'biking':
+      case 'bikepacking':
+        return 'Biking';
+      case 'flying':
+        return 'Flight';
+      default:
+        return 'Driving';
+    }
+  }
+
+  IconData _travelModeIcon(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'transit':
+        return Icons.directions_transit;
+      case 'walking':
+      case 'hiking':
+      case 'backpacking':
+        return Icons.directions_walk;
+      case 'portaging':
+        return Icons.kayaking;
+      case 'biking':
+      case 'bikepacking':
+        return Icons.directions_bike;
+      case 'flying':
+        return Icons.flight;
+      default:
+        return Icons.directions_car;
+    }
+  }
+
+  String _travelCategoryForMode(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'transit':
+        return 'Transit';
+      case 'walking':
+      case 'hiking':
+      case 'backpacking':
+        return 'Walking';
+      case 'portaging':
+        return 'Adventure';
+      case 'biking':
+      case 'bikepacking':
+        return 'Biking';
+      default:
+        return 'Driving';
+    }
+  }
+
+  String _formatDurationShort(double seconds) {
+    if (!seconds.isFinite || seconds <= 0) return '';
+    final mins = (seconds / 60).round();
+    final h = mins ~/ 60;
+    final m = mins % 60;
+    if (h > 0 && m > 0) return '${h}h ${m}m';
+    if (h > 0) return '${h}h';
+    return '${m}m';
+  }
+
+  String _formatDistanceShort(double meters) {
+    if (!meters.isFinite || meters <= 0) return '';
+    if (meters < 1000) return '${meters.round()} m';
+    return '${(meters / 1000).toStringAsFixed(1)} km';
+  }
+
+  bool _jsonValueEquals(Object? a, Object? b) {
+    try {
+      return jsonEncode(a) == jsonEncode(b);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _timeTextTo24Hour(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+
+    final hhmm = RegExp(r'^(\\d{1,2}):(\\d{2})$').firstMatch(value);
+    if (hhmm != null) {
+      final h = int.tryParse(hhmm.group(1)!);
+      final m = int.tryParse(hhmm.group(2)!);
+      if (h != null && m != null && h >= 0 && h < 24 && m >= 0 && m < 60) {
+        return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
+      }
+    }
+
+    final amPm = RegExp(
+      r'(\\d{1,2})(?::(\\d{2}))?\\s*([APap][Mm])',
+    ).firstMatch(value);
+    if (amPm == null) return '';
+
+    final hRaw = int.tryParse(amPm.group(1)!);
+    final mRaw = int.tryParse(amPm.group(2) ?? '0');
+    if (hRaw == null || mRaw == null) return '';
+    if (hRaw < 1 || hRaw > 12 || mRaw < 0 || mRaw > 59) return '';
+
+    final meridiem = amPm.group(3)!.toLowerCase();
+    var hour = hRaw % 12;
+    if (meridiem == 'pm') hour += 12;
+    return '${hour.toString().padLeft(2, '0')}:${mRaw.toString().padLeft(2, '0')}';
+  }
+
+  String _shiftTimeBySeconds(String hhmm, double seconds) {
+    final match = RegExp(r'^(\\d{2}):(\\d{2})$').firstMatch(hhmm.trim());
+    if (match == null) return '';
+    final h = int.tryParse(match.group(1)!);
+    final m = int.tryParse(match.group(2)!);
+    if (h == null || m == null) return '';
+    var totalMinutes = h * 60 + m + (seconds / 60).round();
+    totalMinutes %= 24 * 60;
+    if (totalMinutes < 0) totalMinutes += 24 * 60;
+    final outH = totalMinutes ~/ 60;
+    final outM = totalMinutes % 60;
+    return '${outH.toString().padLeft(2, '0')}:${outM.toString().padLeft(2, '0')}';
+  }
+
+  Map<String, String> _recommendedTravelWindow(
+    Map<String, dynamic> recommended,
+  ) {
+    final departureText =
+        (recommended['departureTimeText'] ?? '').toString().trim();
+    final arrivalText =
+        (recommended['arrivalTimeText'] ?? '').toString().trim();
+    final durationSec = _toDouble(recommended['durationSeconds']);
+
+    var start = _timeTextTo24Hour(departureText);
+    var end = _timeTextTo24Hour(arrivalText);
+
+    if (start.isEmpty && end.isEmpty && durationSec > 0) {
+      start = '09:00';
+      end = _shiftTimeBySeconds(start, durationSec);
+    } else if (start.isNotEmpty && end.isEmpty && durationSec > 0) {
+      end = _shiftTimeBySeconds(start, durationSec);
+    } else if (start.isEmpty && end.isNotEmpty && durationSec > 0) {
+      start = _shiftTimeBySeconds(end, -durationSec);
+    }
+
+    return {'start': start, 'end': end};
+  }
+
+  String _recommendedTravelNotes({
+    required String mode,
+    required Map<String, dynamic> recommended,
+  }) {
+    final parts = <String>[];
+    final summary = (recommended['summary'] ?? '').toString().trim();
+    if (summary.isNotEmpty) {
+      parts.add('Recommended route: $summary');
+    }
+    parts.add('Mode: ${_travelModeLabel(mode)}');
+
+    final duration = _formatDurationShort(
+      _toDouble(recommended['durationSeconds']),
+    );
+    if (duration.isNotEmpty) parts.add('Duration: $duration');
+
+    final distance = _formatDistanceShort(
+      _toDouble(recommended['distanceMeters']),
+    );
+    if (distance.isNotEmpty) parts.add('Distance: $distance');
+
+    final transfers = (recommended['transferCount'] as num?)?.toInt() ?? 0;
+    if (_normalizeTransportMode(mode) == 'transit') {
+      parts.add('Transfers: $transfers');
+      final layovers = (recommended['layoverCount'] as num?)?.toInt() ?? 0;
+      final layoverMins = _toDouble(recommended['layoverMinutes']);
+      parts.add(
+        'Layovers: $layovers (${layoverMins > 0 ? layoverMins.round() : 0} min)',
+      );
+    }
+
+    final departure =
+        (recommended['departureTimeText'] ?? '').toString().trim();
+    final arrival = (recommended['arrivalTimeText'] ?? '').toString().trim();
+    if (departure.isNotEmpty || arrival.isNotEmpty) {
+      parts.add(
+        'Window: ${departure.isNotEmpty ? departure : '?'} -> ${arrival.isNotEmpty ? arrival : '?'}',
+      );
+    }
+
+    return parts.join('\n');
+  }
+
+  bool _clearTravelRecommendationFields(Map<String, dynamic> day) {
+    var changed = false;
+    for (final key in const [
+      'travelOptions',
+      'recommendedTravelOptionIndex',
+      'recommendedTravel',
+      'travelRecommendationStatus',
+      'travelRecommendationUpdatedAt',
+      'travelMode',
+    ]) {
+      if (day.remove(key) != null) changed = true;
+    }
+
+    final activities = _mapList(day['activities']);
+    final filtered =
+        activities.where((a) => a['isAutoTravel'] != true).toList();
+    if (filtered.length != activities.length) {
+      day['activities'] = _sortActivitiesByStartTime(filtered);
+      changed = true;
+    }
+    return changed;
+  }
+
+  bool _upsertAutoTravelActivity({
+    required Map<String, dynamic> day,
+    required String mode,
+    required Map<String, dynamic>? recommended,
+  }) {
+    final activities = _mapList(day['activities']);
+    final existingIndex = activities.indexWhere(
+      (a) => a['isAutoTravel'] == true,
+    );
+
+    if (recommended == null) {
+      if (existingIndex >= 0) {
+        activities.removeAt(existingIndex);
+        day['activities'] = _sortActivitiesByStartTime(activities);
+        return true;
+      }
+      return false;
+    }
+
+    final from = (day['travelFrom'] ?? '').toString();
+    final to = (day['travelTo'] ?? '').toString();
+    final title =
+        (from.isNotEmpty && to.isNotEmpty) ? 'Travel: $from -> $to' : 'Travel';
+    final window = _recommendedTravelWindow(recommended);
+    final start = (window['start'] ?? '').toString();
+    final end = (window['end'] ?? '').toString();
+
+    final activity = <String, dynamic>{
+      'title': title,
+      'startTime': start,
+      'endTime': end,
+      'location': [from, to].where((v) => v.trim().isNotEmpty).join(' -> '),
+      'notes': _recommendedTravelNotes(mode: mode, recommended: recommended),
+      'category': _travelCategoryForMode(mode),
+      'isAutoTravel': true,
+      'travelMode': mode,
+      'travelScore': _toDouble(recommended['score']),
+    };
+
+    var changed = false;
+    if (existingIndex >= 0) {
+      if (!_jsonValueEquals(activities[existingIndex], activity)) {
+        activities[existingIndex] = activity;
+        changed = true;
+      }
+    } else {
+      activities.insert(0, activity);
+      changed = true;
+    }
+
+    if (changed) {
+      day['activities'] = _sortActivitiesByStartTime(activities);
+    }
+    return changed;
+  }
+
+  double _travelOptionScore(TravelRouteOption option) {
+    final durationMins =
+        option.durationSeconds > 0 ? option.durationSeconds / 60.0 : 100000.0;
+    final transferPenalty = option.transferCount * 18.0;
+    final layoverPenalty = option.layoverCount * 12.0 + option.layoverMinutes;
+    return durationMins + transferPenalty + layoverPenalty;
+  }
+
+  Future<void> _refreshTravelRecommendations({required bool persist}) async {
+    final runId = ++_travelRecommendationRunId;
+    if (!mounted) return;
+    setState(() => _updatingTravelRecommendations = true);
+
+    final days =
+        _itineraryDays.map((d) => Map<String, dynamic>.from(d)).toList();
+    final waypoints = _mapList(_tripData['waypoints']);
+    var changed = false;
+
+    for (var i = 0; i < days.length; i++) {
+      final day = days[i];
+      final isTravel = day['isTravel'] == true;
+      if (!isTravel || (i + 1) >= days.length) {
+        if (_clearTravelRecommendationFields(day)) changed = true;
+        continue;
+      }
+
+      final nextDay = days[i + 1];
+      final fromIndex = _resolveWaypointIndexForDay(day, waypoints);
+      final toIndex = _resolveWaypointIndexForDay(nextDay, waypoints);
+      final coordsFrom = _waypointCoords(waypoints, fromIndex);
+      final coordsTo = _waypointCoords(waypoints, toIndex);
+
+      final segmentIndex = _segmentIndexForTravel(
+        fromIndex: fromIndex,
+        toIndex: toIndex,
+        waypointCount: waypoints.length,
+      );
+      final mode = _segmentTransportModeFor(segmentIndex);
+
+      if ((day['travelMode'] ?? '').toString() != mode) {
+        day['travelMode'] = mode;
+        changed = true;
+      }
+
+      if (coordsFrom == null || coordsTo == null) {
+        var localChanged = false;
+        if ((day['travelRecommendationStatus'] ?? '').toString() !=
+            'unavailable') {
+          day['travelRecommendationStatus'] = 'unavailable';
+          localChanged = true;
+        }
+        if (day.remove('travelOptions') != null) localChanged = true;
+        if (day.remove('recommendedTravel') != null) localChanged = true;
+        if (day.remove('recommendedTravelOptionIndex') != null) {
+          localChanged = true;
+        }
+        if (_upsertAutoTravelActivity(
+          day: day,
+          mode: mode,
+          recommended: null,
+        )) {
+          localChanged = true;
+        }
+        if (localChanged) changed = true;
+        continue;
+      }
+
+      final date = _tryParseDate((day['date'] ?? '').toString());
+      final departureTime =
+          date == null ? null : DateTime(date.year, date.month, date.day, 8);
+
+      final options = await getRouteOptions(
+        originLat: coordsFrom['lat']!,
+        originLng: coordsFrom['lon']!,
+        destLat: coordsTo['lat']!,
+        destLng: coordsTo['lon']!,
+        mode: mode,
+        departureTime: departureTime,
+        avoidHighways: _normalizeTransportMode(mode) == 'biking',
+      );
+
+      if (!mounted || runId != _travelRecommendationRunId) return;
+
+      if (options.isEmpty) {
+        final previousOptions = _mapList(day['travelOptions']);
+        final previousRecommendedRaw = day['recommendedTravel'];
+        Map<String, dynamic>? previousRecommended;
+        if (previousRecommendedRaw is Map<String, dynamic>) {
+          previousRecommended = Map<String, dynamic>.from(
+            previousRecommendedRaw,
+          );
+        } else if (previousRecommendedRaw is Map) {
+          previousRecommended = Map<String, dynamic>.from(
+            previousRecommendedRaw.cast<String, dynamic>(),
+          );
+        }
+
+        var localChanged = false;
+        if (previousOptions.isNotEmpty && previousRecommended != null) {
+          if ((day['travelRecommendationStatus'] ?? '').toString() != 'stale') {
+            day['travelRecommendationStatus'] = 'stale';
+            localChanged = true;
+          }
+          if (_upsertAutoTravelActivity(
+            day: day,
+            mode: mode,
+            recommended: previousRecommended,
+          )) {
+            localChanged = true;
+          }
+          if (localChanged) changed = true;
+          continue;
+        }
+
+        if ((day['travelRecommendationStatus'] ?? '').toString() !=
+            'unavailable') {
+          day['travelRecommendationStatus'] = 'unavailable';
+          localChanged = true;
+        }
+        if (day.remove('travelOptions') != null) localChanged = true;
+        if (day.remove('recommendedTravel') != null) localChanged = true;
+        if (day.remove('recommendedTravelOptionIndex') != null) {
+          localChanged = true;
+        }
+        if (_upsertAutoTravelActivity(
+          day: day,
+          mode: mode,
+          recommended: null,
+        )) {
+          localChanged = true;
+        }
+        if (localChanged) changed = true;
+        continue;
+      }
+
+      final scored =
+          options.asMap().entries.map((entry) {
+              final score = _travelOptionScore(entry.value);
+              return {
+                'sourceIndex': entry.key,
+                'score': score,
+                'option': entry.value,
+              };
+            }).toList()
+            ..sort(
+              (a, b) => (a['score'] as double).compareTo(b['score'] as double),
+            );
+
+      final serialized = <Map<String, dynamic>>[];
+      for (var rank = 0; rank < scored.length; rank++) {
+        final sourceIndex = scored[rank]['sourceIndex'] as int;
+        final score = scored[rank]['score'] as double;
+        final option = scored[rank]['option'] as TravelRouteOption;
+        serialized.add({
+          ...option.toMap(),
+          'sourceIndex': sourceIndex,
+          'score': score,
+          'rank': rank + 1,
+          'isRecommended': rank == 0,
+        });
+      }
+
+      final best = Map<String, dynamic>.from(serialized.first);
+      final bestSourceIndex = (best['sourceIndex'] as num).toInt();
+
+      var localChanged = false;
+      if (!_jsonValueEquals(day['travelOptions'], serialized)) {
+        day['travelOptions'] = serialized;
+        localChanged = true;
+      }
+      if ((day['recommendedTravelOptionIndex'] as num?)?.toInt() !=
+          bestSourceIndex) {
+        day['recommendedTravelOptionIndex'] = bestSourceIndex;
+        localChanged = true;
+      }
+      if (!_jsonValueEquals(day['recommendedTravel'], best)) {
+        day['recommendedTravel'] = best;
+        localChanged = true;
+      }
+      if ((day['travelRecommendationStatus'] ?? '').toString() != 'ready') {
+        day['travelRecommendationStatus'] = 'ready';
+        localChanged = true;
+      }
+      if (_upsertAutoTravelActivity(day: day, mode: mode, recommended: best)) {
+        localChanged = true;
+      }
+      if (localChanged) {
+        day['travelRecommendationUpdatedAt'] = DateTime.now().toIso8601String();
+        changed = true;
+      }
+    }
+
+    if (!mounted || runId != _travelRecommendationRunId) return;
+
+    if (changed) {
+      setState(() {
+        _itineraryDays = _normalizeItineraryDays(days);
+        _syncItineraryControllers();
+        if (_itineraryDays.isEmpty) {
+          _selectedItineraryDayIndex = 0;
+        } else {
+          _selectedItineraryDayIndex = _selectedItineraryDayIndex.clamp(
+            0,
+            _itineraryDays.length - 1,
+          );
+        }
+        _updatingTravelRecommendations = false;
+      });
+
+      if (persist) {
+        try {
+          await FirebaseFirestore.instance.doc(widget.tripRefPath).update({
+            'tripItinerary': _itineraryDays,
+          });
+        } catch (_) {}
+      }
+      return;
+    }
+
+    setState(() => _updatingTravelRecommendations = false);
   }
 
   Map<String, dynamic> _defaultChecklist() => {
@@ -356,6 +1604,12 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       _tripSub = ref.snapshots().listen((snap) {
         if (!snap.exists || !mounted) return;
         final remote = snap.data() ?? {};
+        final previousTransportMode =
+            (_tripData['transportMode'] ?? '').toString();
+        final previousSegmentModesSig = jsonEncode(
+          _tripData['segmentTransportModes'] ?? const [],
+        );
+        var shouldRefreshRecommendations = false;
         setState(() {
           _tripData = Map<String, dynamic>.from(remote);
           // Re-load only if planning data was updated externally
@@ -364,38 +1618,91 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
           if (remoteItin is List &&
               remoteItin.length != _itineraryDays.length) {
             _loadPlanningData();
+          } else {
+            final nextTransportMode =
+                (_tripData['transportMode'] ?? '').toString();
+            final nextSegmentModesSig = jsonEncode(
+              _tripData['segmentTransportModes'] ?? const [],
+            );
+            shouldRefreshRecommendations =
+                nextTransportMode != previousTransportMode ||
+                nextSegmentModesSig != previousSegmentModesSig;
           }
         });
+        if (shouldRefreshRecommendations && mounted) {
+          unawaited(_refreshTravelRecommendations(persist: false));
+        }
       });
     } catch (_) {}
   }
 
-  Future<void> _saveAll() async {
-    if (_saving) return;
-    setState(() => _saving = true);
+  Map<String, dynamic> _planningPayload() {
+    return {
+      'tripItinerary': _itineraryDays,
+      'tripNotes': _notes,
+      'tripBudget': {'currency': _currency, 'items': _budgetItems},
+      'tripChecklists': _checklists,
+      'tripDocuments': _documents,
+      'startDate': (_tripData['startDate'] ?? '').toString(),
+      'endDate': (_tripData['endDate'] ?? '').toString(),
+      'waypoints': _mapList(_tripData['waypoints']),
+    };
+  }
+
+  String _planningSignature() {
+    final payload = _planningPayload();
+    try {
+      return jsonEncode(payload);
+    } catch (_) {
+      return payload.toString();
+    }
+  }
+
+  Future<bool> _persistPlanning({required bool showFeedback}) async {
+    if (showFeedback) {
+      if (_saving) return false;
+      setState(() => _saving = true);
+    } else {
+      if (_autoSaveInFlight || _saving) return false;
+      _autoSaveInFlight = true;
+    }
+
     try {
       final ref = FirebaseFirestore.instance.doc(widget.tripRefPath);
-      await ref.update({
-        'tripItinerary': _itineraryDays,
-        'tripNotes': _notes,
-        'tripBudget': {'currency': _currency, 'items': _budgetItems},
-        'tripChecklists': _checklists,
-        'tripDocuments': _documents,
-      });
-      if (mounted) {
+      await ref.update(_planningPayload());
+      _lastPersistedSignature = _planningSignature();
+
+      if (showFeedback && mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Trip plan saved ✓')));
+        ).showTryprSnackBar(const SnackBar(content: Text('Trip plan saved ✓')));
       }
+      return true;
     } catch (e) {
-      if (mounted) {
+      if (showFeedback && mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Save failed: $e')));
       }
+      return false;
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (showFeedback) {
+        if (mounted) setState(() => _saving = false);
+      } else {
+        _autoSaveInFlight = false;
+      }
     }
+  }
+
+  Future<void> _autoSaveTick() async {
+    if (_saving || _autoSaveInFlight) return;
+    final signature = _planningSignature();
+    if (signature == _lastPersistedSignature) return;
+    await _persistPlanning(showFeedback: false);
+  }
+
+  Future<void> _saveAll() async {
+    await _persistPlanning(showFeedback: true);
   }
 
   // ═════════════════════════════════════════════════════════════════════════════
@@ -435,8 +1742,14 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
 
   void _scrollToDay(int dayIndex) {
     if (_itineraryDays.isEmpty) return;
+    final safeIndex = dayIndex.clamp(0, _itineraryDays.length - 1);
+    _selectedItineraryDayIndex = safeIndex;
+    if (!_itineraryScrollController.hasClients) {
+      if (mounted) setState(() {});
+      return;
+    }
     // Rough estimate: each day card ≈ 200px height
-    final offset = (dayIndex * 220.0).clamp(
+    final offset = (safeIndex * 220.0).clamp(
       0.0,
       _itineraryScrollController.position.maxScrollExtent,
     );
@@ -655,6 +1968,314 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
   }
 
   // ─── Date Picker ───────────────────────────────────────────────────────────
+  DateTime _stripDate(DateTime value) =>
+      DateTime(value.year, value.month, value.day);
+
+  bool _isSameDate(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  Future<DateTime?> _pickSinglePlanningDate({
+    required DateTime initialDate,
+    required DateTime firstDate,
+    required DateTime lastDate,
+  }) async {
+    final safeInitial =
+        initialDate.isBefore(firstDate)
+            ? firstDate
+            : (initialDate.isAfter(lastDate) ? lastDate : initialDate);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _stripDate(safeInitial),
+      firstDate: _stripDate(firstDate),
+      lastDate: _stripDate(lastDate),
+    );
+    if (picked == null) return null;
+    return _stripDate(picked);
+  }
+
+  Future<void> _editWaypointStayDates() async {
+    final tripStart = _tryParseDate((_tripData['startDate'] ?? '').toString());
+    final tripEnd = _tryParseDate((_tripData['endDate'] ?? '').toString());
+    if (tripStart == null || tripEnd == null) {
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Set trip dates first.')),
+      );
+      return;
+    }
+
+    final waypoints = _mapList(_tripData['waypoints']);
+    if (waypoints.isEmpty) {
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('No stops to edit yet.')),
+      );
+      return;
+    }
+
+    final initialTripStart = _stripDate(tripStart);
+    final initialTripEnd = _stripDate(tripEnd);
+    final local = <Map<String, dynamic>>[];
+    for (var i = 0; i < waypoints.length; i++) {
+      final wp = waypoints[i];
+      var start =
+          _tryParseDate((wp['startDate'] ?? '').toString()) ?? initialTripStart;
+      var end = _tryParseDate((wp['endDate'] ?? '').toString()) ?? start;
+      start = _stripDate(start);
+      end = _stripDate(end);
+      if (end.isBefore(start)) end = start;
+      local.add({
+        'name': (wp['name'] ?? 'Stop ${i + 1}').toString(),
+        'start': start,
+        'end': end,
+      });
+    }
+
+    final updatedWaypoints = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (ctx) {
+        String validationError = '';
+        return StatefulBuilder(
+          builder: (ctx2, setState2) {
+            Future<void> pickStart(int index) async {
+              final currentStart = local[index]['start'] as DateTime;
+              final currentEnd = local[index]['end'] as DateTime;
+              final picked = await _pickSinglePlanningDate(
+                initialDate: currentStart,
+                firstDate: initialTripStart,
+                lastDate: currentEnd,
+              );
+              if (picked == null) return;
+              setState2(() {
+                validationError = '';
+                local[index]['start'] = picked;
+                if ((local[index]['end'] as DateTime).isBefore(picked)) {
+                  local[index]['end'] = picked;
+                }
+              });
+            }
+
+            Future<void> pickEnd(int index) async {
+              final currentStart = local[index]['start'] as DateTime;
+              final currentEnd = local[index]['end'] as DateTime;
+              final picked = await _pickSinglePlanningDate(
+                initialDate: currentEnd,
+                firstDate: currentStart,
+                lastDate: initialTripEnd,
+              );
+              if (picked == null) return;
+              setState2(() {
+                validationError = '';
+                local[index]['end'] = picked;
+              });
+            }
+
+            String? validateLocalRanges() {
+              for (var i = 0; i < local.length; i++) {
+                final start = local[i]['start'] as DateTime;
+                final end = local[i]['end'] as DateTime;
+                if (end.isBefore(start)) {
+                  return 'Each stop must end on or after it starts.';
+                }
+                if (start.isBefore(initialTripStart) ||
+                    end.isAfter(initialTripEnd)) {
+                  return 'Stop dates must stay within the trip range.';
+                }
+              }
+
+              if (!_isSameDate(
+                local.first['start'] as DateTime,
+                initialTripStart,
+              )) {
+                return 'The first stop must start on ${_ymd(initialTripStart)}.';
+              }
+
+              for (var i = 1; i < local.length; i++) {
+                final prevEnd = local[i - 1]['end'] as DateTime;
+                final start = local[i]['start'] as DateTime;
+                final latestAllowedStart = _stripDate(
+                  prevEnd.add(const Duration(days: 1)),
+                );
+                // Allow overlapping stays (for realistic check-in/check-out),
+                // but prevent date gaps between consecutive stops.
+                if (start.isAfter(latestAllowedStart)) {
+                  return 'Stop ${i + 1} starts too late. It must start on or before ${_ymd(latestAllowedStart)} (overlaps are allowed).';
+                }
+              }
+
+              if (!_isSameDate(local.last['end'] as DateTime, initialTripEnd)) {
+                return 'The last stop must end on ${_ymd(initialTripEnd)}.';
+              }
+
+              return null;
+            }
+
+            return _overlaySafe(
+              AlertDialog(
+                title: const Text('Edit stay dates'),
+                content: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: SizedBox(
+                    width: 560,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Trip range: ${_ymd(initialTripStart)} → ${_ymd(initialTripEnd)}',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: TryprColors.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 360),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: local.length,
+                            separatorBuilder:
+                                (_, __) => const SizedBox(height: 10),
+                            itemBuilder: (_, i) {
+                              final entry = local[i];
+                              final start = entry['start'] as DateTime;
+                              final end = entry['end'] as DateTime;
+                              final nights = end.difference(start).inDays + 1;
+                              return Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: TryprColors.textTertiary.withValues(
+                                      alpha: 0.25,
+                                    ),
+                                  ),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      entry['name'].toString(),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: OutlinedButton.icon(
+                                            onPressed: () => pickStart(i),
+                                            icon: const Icon(Icons.event),
+                                            label: Text(_ymd(start)),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        const Icon(
+                                          Icons.arrow_forward,
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: OutlinedButton.icon(
+                                            onPressed: () => pickEnd(i),
+                                            icon: const Icon(
+                                              Icons.event_available,
+                                            ),
+                                            label: Text(_ymd(end)),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          '$nights night${nights == 1 ? '' : 's'}',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: TryprColors.textSecondary,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        if (validationError.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: Text(
+                              validationError,
+                              style: const TextStyle(
+                                color: TryprColors.error,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx2).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      final error = validateLocalRanges();
+                      if (error != null) {
+                        setState2(() => validationError = error);
+                        return;
+                      }
+                      final updated = <Map<String, dynamic>>[];
+                      for (var i = 0; i < waypoints.length; i++) {
+                        final wp = Map<String, dynamic>.from(waypoints[i]);
+                        final start = local[i]['start'] as DateTime;
+                        final end = local[i]['end'] as DateTime;
+                        wp['startDate'] = _ymd(start);
+                        wp['endDate'] = _ymd(end);
+                        wp['nights'] = end.difference(start).inDays + 1;
+                        updated.add(wp);
+                      }
+                      Navigator.of(ctx2).pop(updated);
+                    },
+                    child: const Text('Apply'),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (updatedWaypoints == null || !mounted) return;
+
+    setState(() {
+      _tripData['waypoints'] = updatedWaypoints;
+      _tripData['startDate'] =
+          (updatedWaypoints.first['startDate'] ?? _tripData['startDate'])
+              .toString();
+      _tripData['endDate'] =
+          (updatedWaypoints.last['endDate'] ?? _tripData['endDate']).toString();
+      _itineraryDays = _normalizeItineraryDays(
+        _loadOrGenerateItinerary(
+          forceRegenerate: true,
+          carryFromDays: _itineraryDays,
+        ),
+      );
+      _syncItineraryControllers();
+      _selectedItineraryDayIndex =
+          _itineraryDays.isEmpty
+              ? 0
+              : _selectedItineraryDayIndex.clamp(0, _itineraryDays.length - 1);
+    });
+
+    await _refreshTravelRecommendations(persist: false);
+    await _persistPlanning(showFeedback: true);
+  }
+
   Future<void> _pickTripDates() async {
     final startStr = (_tripData['startDate'] ?? '').toString();
     final endStr = (_tripData['endDate'] ?? '').toString();
@@ -697,34 +2318,28 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       _tripData['startDate'] = newStart;
       _tripData['endDate'] = newEnd;
       // Regenerate itinerary days for the new date range
-      _itineraryDays = _loadOrGenerateItinerary();
+      _itineraryDays = _normalizeItineraryDays(
+        _loadOrGenerateItinerary(
+          forceRegenerate: true,
+          carryFromDays: _itineraryDays,
+        ),
+      );
+      _syncItineraryControllers();
+      _selectedItineraryDayIndex =
+          _itineraryDays.isEmpty
+              ? 0
+              : _selectedItineraryDayIndex.clamp(0, _itineraryDays.length - 1);
     });
 
-    // Persist dates + regenerated itinerary to Firestore immediately
-    try {
-      final ref = FirebaseFirestore.instance.doc(widget.tripRefPath);
-      await ref.update({
-        'startDate': newStart,
-        'endDate': newEnd,
-        'tripItinerary': _itineraryDays,
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Trip dates updated ✓')));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save dates: $e')));
-      }
-    }
+    await _refreshTravelRecommendations(persist: false);
+
+    await _persistPlanning(showFeedback: true);
   }
 
   Widget _buildDateRow() {
     final startStr = (_tripData['startDate'] ?? '').toString();
     final endStr = (_tripData['endDate'] ?? '').toString();
+    final waypointCount = _mapList(_tripData['waypoints']).length;
 
     String label;
     if (startStr.isEmpty && endStr.isEmpty) {
@@ -742,43 +2357,60 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       label = '$s  →  $e${days > 0 ? '  ($days days)' : ''}';
     }
 
-    return GestureDetector(
-      onTap: _pickTripDates,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: TryprColors.primary.withValues(alpha: 0.07),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: TryprColors.primary.withValues(alpha: 0.25),
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.date_range, size: 20, color: TryprColors.primary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color:
-                      (startStr.isEmpty)
-                          ? TryprColors.textTertiary
-                          : TryprColors.textPrimary,
-                ),
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: _pickTripDates,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: TryprColors.primary.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: TryprColors.primary.withValues(alpha: 0.25),
               ),
             ),
-            Icon(
-              Icons.edit_calendar,
-              size: 18,
-              color: TryprColors.primary.withValues(alpha: 0.7),
+            child: Row(
+              children: [
+                Icon(Icons.date_range, size: 20, color: TryprColors.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color:
+                          (startStr.isEmpty)
+                              ? TryprColors.textTertiary
+                              : TryprColors.textPrimary,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.edit_calendar,
+                  size: 18,
+                  color: TryprColors.primary.withValues(alpha: 0.7),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Spacer(),
+              TextButton.icon(
+                onPressed: waypointCount == 0 ? null : _editWaypointStayDates,
+                icon: const Icon(Icons.alt_route, size: 16),
+                label: const Text('Edit Stay Dates Per Stop'),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -830,35 +2462,14 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       );
     }
 
-    // Day quick‑jump chips
-    final jumpChips = SizedBox(
-      height: 42,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _itineraryDays.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (ctx, i) {
-          final day = _itineraryDays[i];
-          final loc = (day['locationName'] ?? '').toString();
-          final isTravel = day['isTravel'] == true;
-          return ActionChip(
-            avatar:
-                isTravel ? const Icon(Icons.directions_car, size: 14) : null,
-            label: Text(
-              isTravel
-                  ? 'D${i + 1} 🚗'
-                  : (loc.isNotEmpty
-                      ? 'D${i + 1} · ${_shortName(loc)}'
-                      : 'Day ${i + 1}'),
-              style: const TextStyle(fontSize: 12),
-            ),
-            visualDensity: VisualDensity.compact,
-            onPressed: () => _scrollToDay(i),
-          );
-        },
-      ),
+    final routePoints = _mapRoutePoints();
+    final activityPins = _mapItineraryActivityPins();
+    final selectedDayIndex = _selectedItineraryDayIndex.clamp(
+      0,
+      _itineraryDays.length - 1,
     );
+    final selectedDay = _itineraryDays[selectedDayIndex];
+    final selectedDayNum = (selectedDay['dayNumber'] ?? selectedDayIndex + 1);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -876,17 +2487,370 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
         const SizedBox(height: 8),
         _buildDateRow(),
         const SizedBox(height: 8),
-        jumpChips,
-        const SizedBox(height: 8),
+        if (routePoints.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: GlassCard(
+              padding: const EdgeInsets.all(10),
+              borderRadius: 14,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.map_outlined, size: 18),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Itinerary Map',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${activityPins.length} activity pin${activityPins.length == 1 ? '' : 's'}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: TryprColors.textTertiary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  LayoutBuilder(
+                    builder: (ctx, box) {
+                      final wide = box.maxWidth >= 920;
+                      final map = SizedBox(
+                        height: 230,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: MapEmbed(
+                            points: routePoints,
+                            secondaryPoints: activityPins,
+                            zoomControlsEnabled: true,
+                            onPointTap: _handleItineraryMapPointTap,
+                          ),
+                        ),
+                      );
+
+                      if (wide) {
+                        return SizedBox(
+                          height: 230,
+                          child: Row(
+                            children: [
+                              Expanded(flex: 7, child: map),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                flex: 5,
+                                child: _buildItineraryMapInsightCard(),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      return Column(
+                        children: [
+                          map,
+                          const SizedBox(height: 10),
+                          _buildItineraryMapInsightCard(),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
         Expanded(
-          child: ListView.builder(
+          child: ListView(
             controller: _itineraryScrollController,
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-            itemCount: _itineraryDays.length,
-            itemBuilder: (ctx, i) => _buildDayCard(i),
+            children: [
+              if (routePoints.isNotEmpty) const SizedBox(height: 8),
+              _buildItineraryCalendarCard(selectedDayIndex),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    'Day $selectedDayNum Details',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: 'Previous day',
+                    icon: const Icon(Icons.chevron_left),
+                    onPressed:
+                        selectedDayIndex > 0
+                            ? () => _selectItineraryDay(selectedDayIndex - 1)
+                            : null,
+                  ),
+                  IconButton(
+                    tooltip: 'Next day',
+                    icon: const Icon(Icons.chevron_right),
+                    onPressed:
+                        selectedDayIndex < _itineraryDays.length - 1
+                            ? () => _selectItineraryDay(selectedDayIndex + 1)
+                            : null,
+                  ),
+                ],
+              ),
+              _buildDayCard(selectedDayIndex),
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  void _selectItineraryDay(int dayIndex) {
+    if (_itineraryDays.isEmpty) return;
+    final safe = dayIndex.clamp(0, _itineraryDays.length - 1);
+    if (safe == _selectedItineraryDayIndex) return;
+    setState(() => _selectedItineraryDayIndex = safe);
+  }
+
+  DateTime? _tryParseDate(String raw) {
+    try {
+      return DateTime.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Widget _buildItineraryMetricChip({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: TryprColors.surfaceVariant,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: TryprColors.textSecondary),
+          const SizedBox(width: 6),
+          Text(
+            '$value $label',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: TryprColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItineraryCalendarCard(int selectedDayIndex) {
+    final firstDate = _tryParseDate(
+      (_itineraryDays.first['date'] ?? '').toString(),
+    );
+    final leadingBlanks = firstDate == null ? 0 : (firstDate.weekday - 1);
+    final totalCells = ((leadingBlanks + _itineraryDays.length + 6) ~/ 7) * 7;
+    final activityCount = _itineraryDays.fold<int>(
+      0,
+      (total, d) => total + _mapList(d['activities']).length,
+    );
+    final travelDays =
+        _itineraryDays.where((d) => d['isTravel'] == true).length;
+    final plannedDays =
+        _itineraryDays
+            .where(
+              (d) =>
+                  _mapList(d['activities']).isNotEmpty ||
+                  (d['notes'] ?? '').toString().trim().isNotEmpty,
+            )
+            .length;
+
+    const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    return GlassCard(
+      padding: const EdgeInsets.all(12),
+      borderRadius: 14,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Calendar Planner',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildItineraryMetricChip(
+                icon: Icons.today,
+                value: '${_itineraryDays.length}',
+                label: 'days',
+              ),
+              _buildItineraryMetricChip(
+                icon: Icons.local_activity_outlined,
+                value: '$activityCount',
+                label: 'activities',
+              ),
+              _buildItineraryMetricChip(
+                icon: Icons.alt_route,
+                value: '$travelDays',
+                label: 'travel days',
+              ),
+              _buildItineraryMetricChip(
+                icon: Icons.check_circle_outline,
+                value: '$plannedDays',
+                label: 'planned',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children:
+                weekdayLabels
+                    .map(
+                      (w) => Expanded(
+                        child: Center(
+                          child: Text(
+                            w,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: TryprColors.textTertiary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+          ),
+          const SizedBox(height: 8),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: totalCells,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7,
+              mainAxisSpacing: 6,
+              crossAxisSpacing: 6,
+              childAspectRatio: 1.05,
+            ),
+            itemBuilder: (_, cellIndex) {
+              if (cellIndex < leadingBlanks) {
+                return const SizedBox.shrink();
+              }
+              final dayIndex = cellIndex - leadingBlanks;
+              if (dayIndex < 0 || dayIndex >= _itineraryDays.length) {
+                return const SizedBox.shrink();
+              }
+              final day = _itineraryDays[dayIndex];
+              final selected = dayIndex == selectedDayIndex;
+              final isTravel = day['isTravel'] == true;
+              final acts = _mapList(day['activities']).length;
+              final dayDate = _tryParseDate((day['date'] ?? '').toString());
+              final dayOfMonth =
+                  dayDate?.day.toString() ??
+                  (day['dayNumber'] ?? dayIndex + 1).toString();
+              final loc = _shortName((day['locationName'] ?? '').toString());
+
+              return InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => _selectItineraryDay(dayIndex),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color:
+                        selected
+                            ? TryprColors.primary.withValues(alpha: 0.12)
+                            : TryprColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color:
+                          selected
+                              ? TryprColors.primary
+                              : TryprColors.textTertiary.withValues(
+                                alpha: 0.25,
+                              ),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            dayOfMonth,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color:
+                                  selected
+                                      ? TryprColors.primary
+                                      : TryprColors.textPrimary,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (isTravel)
+                            const Icon(
+                              Icons.directions_car,
+                              size: 13,
+                              color: Colors.orange,
+                            ),
+                        ],
+                      ),
+                      Text(
+                        'D${day['dayNumber'] ?? dayIndex + 1}',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: TryprColors.textTertiary,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (!isTravel && loc.isNotEmpty)
+                        Text(
+                          loc,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: TryprColors.textSecondary,
+                          ),
+                        ),
+                      if (acts > 0)
+                        Container(
+                          margin: const EdgeInsets.only(top: 2),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: TryprColors.secondary.withValues(
+                              alpha: 0.16,
+                            ),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            '$acts',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: TryprColors.secondary,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -895,12 +2859,18 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final dateStr = (day['date'] ?? '').toString();
     final dayNum = (day['dayNumber'] ?? dayIndex + 1);
     final location = (day['locationName'] ?? '').toString();
-    final title = (day['title'] ?? '').toString();
-    final notes = (day['notes'] ?? '').toString();
-    final activities = _mapList(day['activities']);
+    final activities = _sortActivitiesByStartTime(_mapList(day['activities']));
     final isTravel = day['isTravel'] == true;
     final travelFrom = (day['travelFrom'] ?? '').toString();
     final travelTo = (day['travelTo'] ?? '').toString();
+    final travelMode = (day['travelMode'] ?? '').toString();
+    final recommendationStatus =
+        (day['travelRecommendationStatus'] ?? '').toString();
+    final travelOptions = _mapList(day['travelOptions']);
+    final recommendedSourceIndex =
+        (day['recommendedTravelOptionIndex'] as num?)?.toInt() ?? -1;
+    final titleCtrl = _dayTitleControllerFor(dayIndex);
+    final notesCtrl = _dayNotesControllerFor(dayIndex);
 
     return GlassCard(
       padding: const EdgeInsets.all(16),
@@ -1088,12 +3058,196 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
               ),
             ),
           ],
+          if (isTravel) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: TryprColors.surfaceVariant,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: TryprColors.textTertiary.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _travelModeIcon(travelMode),
+                        size: 15,
+                        color: TryprColors.textSecondary,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${_travelModeLabel(travelMode)} options',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (_updatingTravelRecommendations)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (travelOptions.isEmpty)
+                    Text(
+                      _updatingTravelRecommendations
+                          ? 'Calculating best travel options...'
+                          : recommendationStatus == 'unavailable'
+                          ? 'No live route options found for this segment yet.'
+                          : 'No travel recommendation yet.',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: TryprColors.textTertiary,
+                      ),
+                    ),
+                  if (travelOptions.isNotEmpty)
+                    ...travelOptions.take(3).map((opt) {
+                      final sourceIndex =
+                          (opt['sourceIndex'] as num?)?.toInt() ?? -1;
+                      final recommended =
+                          sourceIndex == recommendedSourceIndex ||
+                          opt['isRecommended'] == true;
+                      final duration = _formatDurationShort(
+                        _toDouble(opt['durationSeconds']),
+                      );
+                      final transfers =
+                          (opt['transferCount'] as num?)?.toInt() ?? 0;
+                      final layovers =
+                          (opt['layoverCount'] as num?)?.toInt() ?? 0;
+                      final departure =
+                          (opt['departureTimeText'] ?? '').toString().trim();
+                      final arrival =
+                          (opt['arrivalTimeText'] ?? '').toString().trim();
+
+                      return Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(top: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color:
+                              recommended
+                                  ? TryprColors.primary.withValues(alpha: 0.1)
+                                  : Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color:
+                                recommended
+                                    ? TryprColors.primary.withValues(
+                                      alpha: 0.45,
+                                    )
+                                    : TryprColors.textTertiary.withValues(
+                                      alpha: 0.2,
+                                    ),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    (opt['summary'] ?? 'Route option')
+                                        .toString(),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (recommended)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: TryprColors.primary.withValues(
+                                        alpha: 0.12,
+                                      ),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: const Text(
+                                      'Best',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: TryprColors.primary,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 3),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: [
+                                if (duration.isNotEmpty)
+                                  Text(
+                                    duration,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: TryprColors.textSecondary,
+                                    ),
+                                  ),
+                                if (_normalizeTransportMode(travelMode) ==
+                                    'transit')
+                                  Text(
+                                    '$transfers transfer${transfers == 1 ? '' : 's'}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: TryprColors.textSecondary,
+                                    ),
+                                  ),
+                                if (_normalizeTransportMode(travelMode) ==
+                                        'transit' &&
+                                    layovers > 0)
+                                  Text(
+                                    '$layovers layover${layovers == 1 ? '' : 's'}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: TryprColors.textSecondary,
+                                    ),
+                                  ),
+                                if (departure.isNotEmpty || arrival.isNotEmpty)
+                                  Text(
+                                    '${departure.isNotEmpty ? departure : '?'} -> ${arrival.isNotEmpty ? arrival : '?'}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: TryprColors.textSecondary,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                ],
+              ),
+            ),
+          ],
 
           const SizedBox(height: 8),
           // ── Editable title ──
           TextField(
-            controller: TextEditingController(text: title)
-              ..selection = TextSelection.collapsed(offset: title.length),
+            controller: titleCtrl,
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
             decoration: const InputDecoration(
               hintText: 'Day title…',
@@ -1105,8 +3259,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
           ),
           // ── Editable notes ──
           TextField(
-            controller: TextEditingController(text: notes)
-              ..selection = TextSelection.collapsed(offset: notes.length),
+            controller: notesCtrl,
             style: const TextStyle(
               fontSize: 13,
               color: TryprColors.textSecondary,
@@ -1258,235 +3411,263 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       builder:
           (ctx) => StatefulBuilder(
             builder:
-                (ctx, setD) => AlertDialog(
-                  title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
-                  content: SingleChildScrollView(
-                    child: SizedBox(
-                      width: 420,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          TextField(
-                            controller: titleCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Activity title',
-                              border: OutlineInputBorder(),
+                (ctx, setD) => _overlaySafe(
+                  AlertDialog(
+                    title: Text(isEdit ? 'Edit Activity' : 'Add Activity'),
+                    content: SingleChildScrollView(
+                      child: SizedBox(
+                        width: 420,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextField(
+                              controller: titleCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Activity title',
+                                border: OutlineInputBorder(),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          // Time pickers
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _timeTile(ctx, 'Start', startTime, (t) {
-                                  setD(() => startTime = t);
-                                }),
+                            const SizedBox(height: 10),
+                            // Time pickers
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _timeTile(ctx, 'Start', startTime, (
+                                    t,
+                                  ) {
+                                    setD(() => startTime = t);
+                                  }),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _timeTile(ctx, 'End', endTime, (t) {
+                                    setD(() => endTime = t);
+                                  }),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            // Location with search
+                            TextField(
+                              controller: locationCtrl,
+                              decoration: InputDecoration(
+                                labelText: 'Location',
+                                border: const OutlineInputBorder(),
+                                suffixIcon:
+                                    locLoading
+                                        ? const Padding(
+                                          padding: EdgeInsets.all(12),
+                                          child: SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          ),
+                                        )
+                                        : null,
                               ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: _timeTile(ctx, 'End', endTime, (t) {
-                                  setD(() => endTime = t);
-                                }),
+                              onChanged: (v) {
+                                locDebounce?.cancel();
+                                if (v.trim().isEmpty) {
+                                  setD(() {
+                                    locSuggestions = [];
+                                    locLoading = false;
+                                  });
+                                  return;
+                                }
+                                locDebounce = Timer(
+                                  const Duration(milliseconds: 350),
+                                  () async {
+                                    setD(() => locLoading = true);
+                                    final results =
+                                        await AddressSearchService.search(
+                                          v.trim(),
+                                        );
+                                    if (!mounted) return;
+                                    setD(() {
+                                      locSuggestions = results;
+                                      locLoading = false;
+                                    });
+                                  },
+                                );
+                              },
+                            ),
+                            if (locSuggestions.isNotEmpty)
+                              Container(
+                                constraints: const BoxConstraints(
+                                  maxHeight: 150,
+                                ),
+                                margin: const EdgeInsets.only(top: 4),
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.grey.shade300,
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: locSuggestions.length,
+                                  itemBuilder: (_, i) {
+                                    final s = locSuggestions[i];
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text(
+                                        s.displayName,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      onTap: () {
+                                        setD(() {
+                                          locationCtrl.text = s.displayName;
+                                          locationLat = s.lat;
+                                          locationLon = s.lon;
+                                          locSuggestions = [];
+                                        });
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          // Location with search
-                          TextField(
-                            controller: locationCtrl,
-                            decoration: InputDecoration(
-                              labelText: 'Location',
-                              border: const OutlineInputBorder(),
-                              suffixIcon:
-                                  locLoading
-                                      ? const Padding(
-                                        padding: EdgeInsets.all(12),
-                                        child: SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: notesCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Notes',
+                                border: OutlineInputBorder(),
+                              ),
+                              maxLines: 3,
+                            ),
+                            const SizedBox(height: 10),
+                            DropdownButtonFormField<String>(
+                              initialValue:
+                                  travelCategories.containsKey(category)
+                                      ? category
+                                      : 'Exploring',
+                              decoration: const InputDecoration(
+                                labelText: 'Category',
+                                border: OutlineInputBorder(),
+                              ),
+                              items:
+                                  travelCategories.keys
+                                      .map(
+                                        (c) => DropdownMenuItem(
+                                          value: c,
+                                          child: Row(
+                                            children: [
+                                              Text(
+                                                categoryEmojis[c] ?? '📌',
+                                                style: const TextStyle(
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(c),
+                                            ],
                                           ),
                                         ),
                                       )
-                                      : null,
+                                      .toList(),
+                              onChanged:
+                                  (v) =>
+                                      setD(() => category = v ?? 'Exploring'),
                             ),
-                            onChanged: (v) {
-                              locDebounce?.cancel();
-                              if (v.trim().isEmpty) {
-                                setD(() {
-                                  locSuggestions = [];
-                                  locLoading = false;
-                                });
-                                return;
-                              }
-                              locDebounce = Timer(
-                                const Duration(milliseconds: 350),
-                                () async {
-                                  setD(() => locLoading = true);
-                                  final results =
-                                      await AddressSearchService.search(
-                                        v.trim(),
-                                      );
-                                  if (!mounted) return;
-                                  setD(() {
-                                    locSuggestions = results;
-                                    locLoading = false;
-                                  });
-                                },
-                              );
-                            },
-                          ),
-                          if (locSuggestions.isNotEmpty)
-                            Container(
-                              constraints: const BoxConstraints(maxHeight: 150),
-                              margin: const EdgeInsets.only(top: 4),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: ListView.builder(
-                                shrinkWrap: true,
-                                itemCount: locSuggestions.length,
-                                itemBuilder: (_, i) {
-                                  final s = locSuggestions[i];
-                                  return ListTile(
-                                    dense: true,
-                                    title: Text(
-                                      s.displayName,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    onTap: () {
-                                      setD(() {
-                                        locationCtrl.text = s.displayName;
-                                        locationLat = s.lat;
-                                        locationLon = s.lon;
-                                        locSuggestions = [];
-                                      });
-                                    },
-                                  );
-                                },
-                              ),
-                            ),
-                          const SizedBox(height: 10),
-                          TextField(
-                            controller: notesCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Notes',
-                              border: OutlineInputBorder(),
-                            ),
-                            maxLines: 3,
-                          ),
-                          const SizedBox(height: 10),
-                          DropdownButtonFormField<String>(
-                            initialValue:
-                                travelCategories.containsKey(category)
-                                    ? category
-                                    : 'Exploring',
-                            decoration: const InputDecoration(
-                              labelText: 'Category',
-                              border: OutlineInputBorder(),
-                            ),
-                            items:
-                                travelCategories.keys
-                                    .map(
-                                      (c) => DropdownMenuItem(
-                                        value: c,
-                                        child: Row(
-                                          children: [
-                                            Text(
-                                              categoryEmojis[c] ?? '📌',
-                                              style: const TextStyle(
-                                                fontSize: 16,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Text(c),
-                                          ],
-                                        ),
-                                      ),
-                                    )
-                                    .toList(),
-                            onChanged:
-                                (v) => setD(() => category = v ?? 'Exploring'),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () {
-                        locDebounce?.cancel();
-                        Navigator.pop(ctx);
-                      },
-                      child: const Text('Cancel'),
-                    ),
-                    if (isEdit)
+                    actions: [
                       TextButton(
                         onPressed: () {
                           locDebounce?.cancel();
+                          Navigator.pop(ctx);
+                        },
+                        child: const Text('Cancel'),
+                      ),
+                      if (isEdit)
+                        TextButton(
+                          onPressed: () {
+                            locDebounce?.cancel();
+                            setState(() {
+                              final acts = _mapList(
+                                _itineraryDays[dayIndex]['activities'],
+                              );
+                              if (activityIndex != null &&
+                                  activityIndex < acts.length) {
+                                acts.removeAt(activityIndex);
+                              }
+                              _itineraryDays[dayIndex]['activities'] = acts;
+                            });
+                            Navigator.pop(ctx);
+                          },
+                          child: const Text(
+                            'Delete',
+                            style: TextStyle(color: TryprColors.error),
+                          ),
+                        ),
+                      GradientButton(
+                        onPressed: () async {
+                          locDebounce?.cancel();
+                          if (titleCtrl.text.trim().isEmpty) {
+                            ScaffoldMessenger.of(ctx).showTryprSnackBar(
+                              const SnackBar(
+                                content: Text('Please enter an activity title'),
+                              ),
+                            );
+                            return;
+                          }
+                          final locationText = locationCtrl.text.trim();
+                          var resolvedLat = locationLat;
+                          var resolvedLon = locationLon;
+
+                          if (locationText.isNotEmpty &&
+                              (resolvedLat == null || resolvedLon == null)) {
+                            try {
+                              final results = await AddressSearchService.search(
+                                locationText,
+                              );
+                              if (results.isNotEmpty) {
+                                resolvedLat = results.first.lat;
+                                resolvedLon = results.first.lon;
+                              }
+                            } catch (_) {}
+                          }
+
+                          final activity = <String, dynamic>{
+                            'title': titleCtrl.text.trim(),
+                            'startTime': startTime,
+                            'endTime': endTime,
+                            'location': locationText,
+                            'notes': notesCtrl.text.trim(),
+                            'category': category,
+                            if (resolvedLat != null) 'locationLat': resolvedLat,
+                            if (resolvedLon != null) 'locationLon': resolvedLon,
+                          };
                           setState(() {
                             final acts = _mapList(
                               _itineraryDays[dayIndex]['activities'],
                             );
-                            if (activityIndex != null &&
+                            if (isEdit &&
+                                activityIndex != null &&
                                 activityIndex < acts.length) {
-                              acts.removeAt(activityIndex);
+                              acts[activityIndex] = activity;
+                            } else {
+                              acts.add(activity);
                             }
-                            _itineraryDays[dayIndex]['activities'] = acts;
+                            _itineraryDays[dayIndex]['activities'] =
+                                _sortActivitiesByStartTime(acts);
                           });
-                          Navigator.pop(ctx);
+                          if (!mounted) return;
+                          Navigator.of(context).pop();
                         },
-                        child: const Text(
-                          'Delete',
-                          style: TextStyle(color: TryprColors.error),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 10,
                         ),
+                        child: const Text('Save'),
                       ),
-                    GradientButton(
-                      onPressed: () {
-                        locDebounce?.cancel();
-                        if (titleCtrl.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(ctx).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter an activity title'),
-                            ),
-                          );
-                          return;
-                        }
-                        final activity = <String, dynamic>{
-                          'title': titleCtrl.text.trim(),
-                          'startTime': startTime,
-                          'endTime': endTime,
-                          'location': locationCtrl.text.trim(),
-                          'notes': notesCtrl.text.trim(),
-                          'category': category,
-                          if (locationLat != null) 'locationLat': locationLat,
-                          if (locationLon != null) 'locationLon': locationLon,
-                        };
-                        setState(() {
-                          final acts = _mapList(
-                            _itineraryDays[dayIndex]['activities'],
-                          );
-                          if (isEdit &&
-                              activityIndex != null &&
-                              activityIndex < acts.length) {
-                            acts[activityIndex] = activity;
-                          } else {
-                            acts.add(activity);
-                          }
-                          _itineraryDays[dayIndex]['activities'] = acts;
-                        });
-                        Navigator.pop(ctx);
-                      },
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 10,
-                      ),
-                      child: const Text('Save'),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
           ),
     );
@@ -1598,6 +3779,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                       'id': _newId(),
                       'title': '',
                       'content': '',
+                      'contentDelta': null,
                       'color': '#FFFFFF',
                       'createdAt': DateTime.now().toIso8601String(),
                     });
@@ -1685,6 +3867,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                                           _selectedNoteIndex =
                                               _selectedNoteIndex! - 1;
                                         }
+                                        _syncNoteControllers();
                                       });
                                     },
                                   ),
@@ -1714,6 +3897,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final note = _notes[_selectedNoteIndex!];
     final colorHex = (note['color'] ?? '#FFFFFF').toString();
     final bgColor = _parseHexColor(colorHex);
+    final editorController = _noteContentQuillCtrl;
 
     return Container(
       color: bgColor.withValues(alpha: 0.3),
@@ -1727,7 +3911,12 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                 if (showBack)
                   IconButton(
                     icon: const Icon(Icons.arrow_back),
-                    onPressed: () => setState(() => _selectedNoteIndex = null),
+                    onPressed: () {
+                      setState(() {
+                        _selectedNoteIndex = null;
+                        _syncNoteControllers();
+                      });
+                    },
                   ),
                 Expanded(
                   child: TextField(
@@ -1740,7 +3929,11 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                       hintText: 'Note title…',
                       border: InputBorder.none,
                     ),
-                    onChanged: (v) => _notes[_selectedNoteIndex!]['title'] = v,
+                    onChanged: (v) {
+                      _notes[_selectedNoteIndex!]['title'] = v;
+                      _notes[_selectedNoteIndex!]['updatedAt'] =
+                          DateTime.now().toIso8601String();
+                    },
                   ),
                 ),
               ],
@@ -1763,6 +3956,8 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         onTap: () {
                           setState(() {
                             _notes[_selectedNoteIndex!]['color'] = hex;
+                            _notes[_selectedNoteIndex!]['updatedAt'] =
+                                DateTime.now().toIso8601String();
                           });
                         },
                         child: Container(
@@ -1788,18 +3983,88 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
           const SizedBox(height: 8),
           // Content
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: TextField(
-                controller: _noteContentCtrl,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                decoration: const InputDecoration(
-                  hintText: 'Write your notes here…',
-                  border: InputBorder.none,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.82),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+              ),
+              child:
+                  editorController == null
+                      ? const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                      : Column(
+                        children: [
+                          quill.QuillSimpleToolbar(
+                            controller: editorController,
+                            config: quill.QuillSimpleToolbarConfig(
+                              multiRowsDisplay: false,
+                              showFontFamily: false,
+                              showFontSize: false,
+                              showSmallButton: false,
+                              showColorButton: false,
+                              showBackgroundColorButton: false,
+                              showAlignmentButtons: false,
+                              showSubscript: false,
+                              showSuperscript: false,
+                              showInlineCode: false,
+                              showCodeBlock: false,
+                              showQuote: false,
+                              showIndent: false,
+                              showSearchButton: false,
+                              showDirection: false,
+                              showClipboardCut: true,
+                              showClipboardCopy: true,
+                              showClipboardPaste: true,
+                              embedButtons: FlutterQuillEmbeds.toolbarButtons(
+                                imageButtonOptions:
+                                    QuillToolbarImageButtonOptions(
+                                      imageButtonConfig:
+                                          QuillToolbarImageConfig(
+                                            onRequestPickImage:
+                                                (_) =>
+                                                    _pickAndUploadNoteImage(),
+                                          ),
+                                    ),
+                                videoButtonOptions: null,
+                                cameraButtonOptions: null,
+                              ),
+                            ),
+                          ),
+                          const Divider(height: 1),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: quill.QuillEditor(
+                                controller: editorController,
+                                focusNode: _noteEditorFocus,
+                                scrollController: _noteEditorScroll,
+                                config: quill.QuillEditorConfig(
+                                  placeholder:
+                                      'Write your notes here (supports bold, italics, lists, and images)…',
+                                  embedBuilders:
+                                      FlutterQuillEmbeds.defaultEditorBuilders(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Tip: paste images directly from clipboard when supported by your browser/device.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.black.withValues(alpha: 0.55),
                 ),
-                onChanged: (v) => _notes[_selectedNoteIndex!]['content'] = v,
               ),
             ),
           ),
@@ -1812,8 +4077,11 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     if (_selectedNoteIndex != null && _selectedNoteIndex! < _notes.length) {
       final n = _notes[_selectedNoteIndex!];
       _noteTitleCtrl.text = (n['title'] ?? '').toString();
-      _noteContentCtrl.text = (n['content'] ?? '').toString();
+      _bindNoteEditorForSelection();
+      return;
     }
+    _noteTitleCtrl.clear();
+    _bindNoteEditorForSelection();
   }
 
   Color _parseHexColor(String hex) {
@@ -2156,8 +4424,9 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
 
   String _numStr(dynamic n) {
     if (n == null) return '';
-    if (n is num)
+    if (n is num) {
       return n == 0 ? '' : n.toStringAsFixed(n == n.roundToDouble() ? 0 : 2);
+    }
     return n.toString();
   }
 
@@ -2380,6 +4649,215 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
   //  TAB 5 — DOCUMENTS & INFO
   // ═════════════════════════════════════════════════════════════════════════════
 
+  ({Uint8List bytes, String contentType})? _decodeDataUrl(String dataUrl) {
+    final raw = dataUrl.trim();
+    if (!raw.startsWith('data:')) return null;
+    final comma = raw.indexOf(',');
+    if (comma <= 0) return null;
+
+    final header = raw.substring(0, comma);
+    final payload = raw.substring(comma + 1);
+
+    String contentType = 'application/octet-stream';
+    if (header.startsWith('data:')) {
+      final meta = header.substring(5);
+      final parts = meta.split(';');
+      if (parts.isNotEmpty && parts.first.trim().isNotEmpty) {
+        contentType = parts.first.trim();
+      }
+    }
+
+    try {
+      return (bytes: base64Decode(payload), contentType: contentType);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _sanitizeFileName(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return 'document.bin';
+    return trimmed.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  }
+
+  String _guessImageContentType(String fileName) {
+    final lower = fileName.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.bmp')) return 'image/bmp';
+    return 'image/jpeg';
+  }
+
+  Future<String?> _uploadNoteImageFromBytes({
+    required Uint8List bytes,
+    required String contentType,
+    required String fileName,
+  }) async {
+    final safeName = _sanitizeFileName(fileName);
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final storagePath = 'tripNotes/${widget.tripId}/${ts}_$safeName';
+    final ref = FirebaseStorage.instance.ref(storagePath);
+    final task = await ref.putData(
+      bytes,
+      SettableMetadata(
+        contentType: contentType,
+        customMetadata: {
+          'tripId': widget.tripId,
+          'originalName': fileName,
+          'source': 'tripNotes',
+        },
+      ),
+    );
+    return task.ref.getDownloadURL();
+  }
+
+  Future<String?> _pickAndUploadNoteImage() async {
+    try {
+      if (kIsWeb) {
+        final picked = await pickFileDataUrl(
+          accept: '.png,.jpg,.jpeg,.webp,.gif,.bmp',
+        );
+        if (picked == null) return null;
+        final decoded = _decodeDataUrl(picked.dataUrl);
+        if (decoded == null || !decoded.contentType.startsWith('image/')) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showTryprSnackBar(
+              const SnackBar(
+                content: Text('Please choose a valid image file.'),
+              ),
+            );
+          }
+          return null;
+        }
+        return _uploadNoteImageFromBytes(
+          bytes: decoded.bytes,
+          contentType: decoded.contentType,
+          fileName: picked.fileName,
+        );
+      }
+
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(source: ImageSource.gallery);
+      if (picked == null) return null;
+      final bytes = await picked.readAsBytes();
+      final contentType =
+          (picked.mimeType?.trim().isNotEmpty ?? false)
+              ? picked.mimeType!.trim()
+              : _guessImageContentType(picked.name);
+      return _uploadNoteImageFromBytes(
+        bytes: bytes,
+        contentType: contentType,
+        fileName: picked.name,
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(
+            content: Text('Image upload failed. Please try again.'),
+          ),
+        );
+      }
+      return null;
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024.0;
+    if (kb < 1024) return '${kb.toStringAsFixed(1)} KB';
+    final mb = kb / 1024.0;
+    if (mb < 1024) return '${mb.toStringAsFixed(1)} MB';
+    final gb = mb / 1024.0;
+    return '${gb.toStringAsFixed(2)} GB';
+  }
+
+  Future<Map<String, dynamic>?> _uploadDocumentAttachment() async {
+    if (!kIsWeb) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(
+            content: Text(
+              'Document upload is currently available on web only.',
+            ),
+          ),
+        );
+      }
+      return null;
+    }
+
+    final picked = await pickFileDataUrl(
+      accept: '.pdf,.png,.jpg,.jpeg,.webp,.txt,.doc,.docx,.xls,.xlsx,.csv,.rtf',
+    );
+    if (picked == null) return null;
+
+    final decoded = _decodeDataUrl(picked.dataUrl);
+    if (decoded == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Unsupported file format selected.')),
+        );
+      }
+      return null;
+    }
+
+    final safeName = _sanitizeFileName(picked.fileName);
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final storagePath = 'tripDocuments/${widget.tripId}/${ts}_$safeName';
+    final ref = FirebaseStorage.instance.ref(storagePath);
+    final meta = SettableMetadata(
+      contentType: decoded.contentType,
+      customMetadata: {
+        'tripId': widget.tripId,
+        'originalName': picked.fileName,
+      },
+    );
+
+    final task = await ref.putData(decoded.bytes, meta);
+    final url = await task.ref.getDownloadURL();
+    return {
+      'fileName': picked.fileName,
+      'url': url,
+      'contentType': decoded.contentType,
+      'sizeBytes': decoded.bytes.length,
+      'storagePath': storagePath,
+      'uploadedAt': DateTime.now().toIso8601String(),
+    };
+  }
+
+  Future<void> _copyToClipboard(String value, String successMessage) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showTryprSnackBar(SnackBar(content: Text(successMessage)));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _openAttachmentUrl(String url) async {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return;
+
+    try {
+      final opened = await openExternalUrl(trimmed, sameTab: true);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Could not open this attachment.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Could not open this attachment.')),
+        );
+      }
+    }
+  }
+
   Widget _buildDocumentsTab() {
     return Column(
       children: [
@@ -2455,6 +4933,14 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final doc = _documents[index];
     final cat = (doc['category'] ?? 'Other').toString();
     final emoji = _docCategoryEmojis[cat] ?? '📄';
+    final attachmentMap =
+        doc['attachment'] is Map
+            ? Map<String, dynamic>.from(doc['attachment'] as Map)
+            : <String, dynamic>{};
+    final attachmentUrl = (attachmentMap['url'] ?? '').toString();
+    final attachmentName =
+        (attachmentMap['fileName'] ?? 'Attachment').toString();
+    final attachmentSize = (attachmentMap['sizeBytes'] as num?)?.toInt() ?? 0;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -2524,6 +5010,84 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                 ),
               ),
             ],
+            if (attachmentUrl.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: TryprColors.primary.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: TryprColors.primary.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.attach_file, size: 16),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            attachmentName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          _formatBytes(attachmentSize),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: TryprColors.textTertiary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => _openAttachmentUrl(attachmentUrl),
+                          icon: const Icon(Icons.open_in_new, size: 14),
+                          label: const Text('Open'),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed:
+                              () => _copyToClipboard(
+                                attachmentUrl,
+                                'Attachment link copied',
+                              ),
+                          icon: const Icon(Icons.link, size: 14),
+                          label: const Text('Copy link'),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -2539,6 +5103,11 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       text: existing?['content']?.toString() ?? '',
     );
     String category = existing?['category']?.toString() ?? 'Other';
+    Map<String, dynamic>? attachment =
+        existing?['attachment'] is Map
+            ? Map<String, dynamic>.from(existing!['attachment'] as Map)
+            : null;
+    bool uploading = false;
 
     showDialog(
       context: context,
@@ -2602,6 +5171,114 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                           ),
                           maxLines: 6,
                         ),
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: TryprColors.textTertiary.withValues(
+                                alpha: 0.25,
+                              ),
+                            ),
+                            color: TryprColors.surfaceVariant,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Attachment',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (attachment != null &&
+                                  (attachment!['url'] ?? '')
+                                      .toString()
+                                      .isNotEmpty) ...[
+                                Row(
+                                  children: [
+                                    const Icon(Icons.attach_file, size: 15),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        (attachment!['fileName'] ??
+                                                'Attachment')
+                                            .toString(),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, size: 16),
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed:
+                                          () => setD(() => attachment = null),
+                                    ),
+                                  ],
+                                ),
+                              ] else
+                                const Text(
+                                  'No file attached',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: TryprColors.textTertiary,
+                                  ),
+                                ),
+                              const SizedBox(height: 6),
+                              OutlinedButton.icon(
+                                onPressed:
+                                    uploading
+                                        ? null
+                                        : () async {
+                                          setD(() => uploading = true);
+                                          try {
+                                            final uploaded =
+                                                await _uploadDocumentAttachment();
+                                            if (uploaded != null) {
+                                              setD(() => attachment = uploaded);
+                                            }
+                                          } catch (e) {
+                                            if (!ctx.mounted) return;
+                                            ScaffoldMessenger.of(
+                                              ctx,
+                                            ).showTryprSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  'Upload failed: $e',
+                                                ),
+                                              ),
+                                            );
+                                          } finally {
+                                            if (mounted) {
+                                              setD(() => uploading = false);
+                                            }
+                                          }
+                                        },
+                                icon:
+                                    uploading
+                                        ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                        : const Icon(Icons.upload_file),
+                                label: Text(
+                                  uploading ? 'Uploading…' : 'Upload file',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -2617,7 +5294,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                       ),
                       onPressed: () {
                         if (titleCtrl.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(ctx).showSnackBar(
+                          ScaffoldMessenger.of(ctx).showTryprSnackBar(
                             const SnackBar(
                               content: Text('Please enter a title'),
                             ),
@@ -2629,6 +5306,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                           'title': titleCtrl.text.trim(),
                           'content': contentCtrl.text.trim(),
                           'category': category,
+                          if (attachment != null) 'attachment': attachment,
                         };
                         setState(() {
                           if (isEdit &&

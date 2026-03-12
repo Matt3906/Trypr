@@ -3,6 +3,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 
 /// Destination Detail Screen V2: Complete redesign with Google Calendar-style itinerary
@@ -91,7 +92,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       await tripRef.update({'waypoints': waypoints});
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           const SnackBar(content: Text('✓ Destination plan saved')),
         );
       }
@@ -99,7 +100,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Failed to save: $e')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -985,7 +986,7 @@ class _DestinationDetailScreenState extends State<DestinationDetailScreen>
   }
 
   void _showAIAssistant(String mode) {
-    ScaffoldMessenger.of(context).showSnackBar(
+    ScaffoldMessenger.of(context).showTryprSnackBar(
       SnackBar(content: Text('AI Suggestions for $mode coming soon!')),
     );
   }

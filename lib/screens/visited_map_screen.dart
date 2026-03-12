@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -65,7 +66,7 @@ class _VisitedMapScreenState extends State<VisitedMapScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Failed to add: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Failed to add: $e')));
       }
     }
   }
@@ -85,7 +86,7 @@ class _VisitedMapScreenState extends State<VisitedMapScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Failed to remove: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Failed to remove: $e')));
       }
     }
   }

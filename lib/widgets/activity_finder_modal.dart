@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:trypr/services/ai_suggestions.dart';
@@ -17,6 +18,8 @@ enum ActivityType {
   towns,
   attractions,
 }
+
+enum RouteStayType { hotel, hostel, camping }
 
 enum BudgetTier { budget, moderate, luxury }
 
@@ -64,6 +67,28 @@ IconData _iconForType(ActivityType t) {
   }
 }
 
+String _labelForRouteStayType(RouteStayType t) {
+  switch (t) {
+    case RouteStayType.hotel:
+      return 'Hotel';
+    case RouteStayType.hostel:
+      return 'Hostel';
+    case RouteStayType.camping:
+      return 'Camping';
+  }
+}
+
+IconData _iconForRouteStayType(RouteStayType t) {
+  switch (t) {
+    case RouteStayType.hotel:
+      return Icons.hotel;
+    case RouteStayType.hostel:
+      return Icons.bed;
+    case RouteStayType.camping:
+      return Icons.forest;
+  }
+}
+
 String _labelForBudget(BudgetTier b) {
   switch (b) {
     case BudgetTier.budget:
@@ -93,8 +118,11 @@ Map<String, dynamic> _buildPreferences({
   required int groupSize,
   required TimeAvailable timeAvailable,
   required bool haveCar,
+  RouteStayType? routeStayType,
+  String? routeFromName,
+  String? routeToName,
 }) {
-  return {
+  final out = <String, dynamic>{
     'mode': mode.name,
     'activityType': type.name,
     'budgetTier': budget.name,
@@ -102,6 +130,17 @@ Map<String, dynamic> _buildPreferences({
     'timeAvailable': timeAvailable.name,
     'haveCar': haveCar,
   };
+  if (mode == ActivityFinderMode.routeStop) {
+    out['stayType'] = (routeStayType ?? RouteStayType.hotel).name;
+    out['routeIntent'] = 'between_stops';
+    out['scope'] = 'along_route';
+    out['maxTravelMinutes'] = 30;
+    final from = (routeFromName ?? '').trim();
+    final to = (routeToName ?? '').trim();
+    if (from.isNotEmpty) out['routeFrom'] = from;
+    if (to.isNotEmpty) out['routeTo'] = to;
+  }
+  return out;
 }
 
 Future<void> showActivityFinderModal(
@@ -146,6 +185,8 @@ Future<void> showSmartRouteModal(
   required String startDate,
   required String endDate,
   required Future<void> Function(Map<String, dynamic> suggestion) onAddStop,
+  String? routeFromName,
+  String? routeToName,
 }) async {
   return showModalBottomSheet<void>(
     context: context,
@@ -163,6 +204,8 @@ Future<void> showSmartRouteModal(
         dayCount: 0,
         onAddToItinerary: (_, __) async {},
         onAddStop: onAddStop,
+        routeFromName: routeFromName,
+        routeToName: routeToName,
       );
     },
   );
@@ -180,6 +223,8 @@ class _ActivityFinderSheet extends StatefulWidget {
   final Future<void> Function(int dayIndex, Map<String, dynamic> suggestion)
   onAddToItinerary;
   final Future<void> Function(Map<String, dynamic> suggestion)? onAddStop;
+  final String? routeFromName;
+  final String? routeToName;
 
   const _ActivityFinderSheet({
     required this.mode,
@@ -192,6 +237,8 @@ class _ActivityFinderSheet extends StatefulWidget {
     required this.dayCount,
     required this.onAddToItinerary,
     this.onAddStop,
+    this.routeFromName,
+    this.routeToName,
   });
 
   @override
@@ -200,6 +247,7 @@ class _ActivityFinderSheet extends StatefulWidget {
 
 class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
   ActivityType _type = ActivityType.adventure;
+  RouteStayType _routeStayType = RouteStayType.hotel;
   BudgetTier _budget = BudgetTier.moderate;
   int _groupSize = 1;
   TimeAvailable _time = TimeAvailable.halfDay;
@@ -230,12 +278,19 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
                 const SizedBox(height: 8),
                 Text(message),
-                if (technicalDetails != null && technicalDetails.trim().isNotEmpty) ...[
+                if (technicalDetails != null &&
+                    technicalDetails.trim().isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  const Text('Details', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text(
+                    'Details',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 6),
                   Container(
                     width: double.infinity,
@@ -246,7 +301,10 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                     ),
                     child: Text(
                       technicalDetails,
-                      style: const TextStyle(fontSize: 12, color: Colors.black87),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black87,
+                      ),
                     ),
                   ),
                 ],
@@ -257,9 +315,11 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
             if (technicalDetails != null && technicalDetails.trim().isNotEmpty)
               TextButton(
                 onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: technicalDetails));
+                  await Clipboard.setData(
+                    ClipboardData(text: technicalDetails),
+                  );
                   if (!ctx.mounted) return;
-                  ScaffoldMessenger.of(ctx).showSnackBar(
+                  ScaffoldMessenger.of(ctx).showTryprSnackBar(
                     const SnackBar(content: Text('Copied error details')),
                   );
                 },
@@ -339,9 +399,6 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
   }
 
   List<ActivityType> get _allowedTypes {
-    if (widget.mode == ActivityFinderMode.routeStop) {
-      return const [ActivityType.towns, ActivityType.attractions];
-    }
     return const [
       ActivityType.adventure,
       ActivityType.foodDrink,
@@ -349,6 +406,7 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
       ActivityType.relaxation,
       ActivityType.sightseeing,
       ActivityType.nightlife,
+      ActivityType.attractions,
     ];
   }
 
@@ -377,17 +435,30 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
         groupSize: _groupSize,
         timeAvailable: _time,
         haveCar: _haveCar,
+        routeStayType: _routeStayType,
+        routeFromName: widget.routeFromName,
+        routeToName: widget.routeToName,
       );
 
       // Strict input: no free-text. Only structured preferences.
-      final res = await svc.suggestItinerary(
-        destinationName: widget.destinationName,
-        lat: widget.lat,
-        lon: widget.lon,
-        startDate: widget.startDate,
-        endDate: widget.endDate,
-        preferences: preferences,
-      );
+      final res =
+          widget.mode == ActivityFinderMode.routeStop
+              ? await svc.suggestAccommodations(
+                destinationName: widget.destinationName,
+                lat: widget.lat,
+                lon: widget.lon,
+                startDate: widget.startDate,
+                endDate: widget.endDate,
+                preferences: preferences,
+              )
+              : await svc.suggestItinerary(
+                destinationName: widget.destinationName,
+                lat: widget.lat,
+                lon: widget.lon,
+                startDate: widget.startDate,
+                endDate: widget.endDate,
+                preferences: preferences,
+              );
 
       if (!mounted) return;
       setState(() {
@@ -527,49 +598,112 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                             children: [
                               _sectionTitle(
                                 widget.mode == ActivityFinderMode.routeStop
-                                    ? 'Stop Type'
+                                    ? 'Stay Type'
                                     : 'Activity Type',
                               ),
                               SizedBox(
                                 height: 46,
-                                child: ListView(
-                                  scrollDirection: Axis.horizontal,
-                                  children:
-                                      _allowedTypes.map((t) {
-                                        final selected = t == _type;
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            right: 10,
-                                          ),
-                                          child: ChoiceChip(
-                                            selectedColor: const Color(
-                                              0xFF00897B,
-                                            ).withValues(alpha: 0.12),
-                                            label: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  _iconForType(t),
-                                                  size: 18,
-                                                  color:
-                                                      selected
-                                                          ? const Color(
-                                                            0xFF00897B,
-                                                          )
-                                                          : Colors.black54,
-                                                ),
-                                                const SizedBox(width: 6),
-                                                Text(_labelForType(t)),
-                                              ],
-                                            ),
-                                            selected: selected,
-                                            onSelected: (_) {
-                                              setState(() => _type = t);
-                                            },
-                                          ),
-                                        );
-                                      }).toList(),
-                                ),
+                                child:
+                                    widget.mode == ActivityFinderMode.routeStop
+                                        ? ListView(
+                                          scrollDirection: Axis.horizontal,
+                                          children:
+                                              RouteStayType.values.map((type) {
+                                                final selected =
+                                                    type == _routeStayType;
+                                                return Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        right: 10,
+                                                      ),
+                                                  child: ChoiceChip(
+                                                    selectedColor: const Color(
+                                                      0xFF00897B,
+                                                    ).withValues(alpha: 0.12),
+                                                    label: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                          _iconForRouteStayType(
+                                                            type,
+                                                          ),
+                                                          size: 18,
+                                                          color:
+                                                              selected
+                                                                  ? const Color(
+                                                                    0xFF00897B,
+                                                                  )
+                                                                  : Colors
+                                                                      .black54,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 6,
+                                                        ),
+                                                        Text(
+                                                          _labelForRouteStayType(
+                                                            type,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    selected: selected,
+                                                    onSelected:
+                                                        (_) => setState(
+                                                          () =>
+                                                              _routeStayType =
+                                                                  type,
+                                                        ),
+                                                  ),
+                                                );
+                                              }).toList(),
+                                        )
+                                        : ListView(
+                                          scrollDirection: Axis.horizontal,
+                                          children:
+                                              _allowedTypes.map((t) {
+                                                final selected = t == _type;
+                                                return Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        right: 10,
+                                                      ),
+                                                  child: ChoiceChip(
+                                                    selectedColor: const Color(
+                                                      0xFF00897B,
+                                                    ).withValues(alpha: 0.12),
+                                                    label: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                          _iconForType(t),
+                                                          size: 18,
+                                                          color:
+                                                              selected
+                                                                  ? const Color(
+                                                                    0xFF00897B,
+                                                                  )
+                                                                  : Colors
+                                                                      .black54,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 6,
+                                                        ),
+                                                        Text(
+                                                          _labelForType(t),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    selected: selected,
+                                                    onSelected:
+                                                        (_) => setState(
+                                                          () => _type = t,
+                                                        ),
+                                                  ),
+                                                );
+                                              }).toList(),
+                                        ),
                               ),
 
                               _sectionTitle('Budget'),
@@ -641,27 +775,30 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                 ],
                               ),
 
-                              _sectionTitle('Time Available'),
-                              DropdownButtonFormField<TimeAvailable>(
-                                initialValue: _time,
-                                items:
-                                    TimeAvailable.values
-                                        .map(
-                                          (t) => DropdownMenuItem(
-                                            value: t,
-                                            child: Text(_labelForTime(t)),
-                                          ),
-                                        )
-                                        .toList(),
-                                onChanged: (v) {
-                                  if (v == null) return;
-                                  setState(() => _time = v);
-                                },
-                                decoration: const InputDecoration(
-                                  border: OutlineInputBorder(),
-                                  isDense: true,
-                                ),
-                              ),
+                              if (widget.mode != ActivityFinderMode.routeStop)
+                                ...[
+                                  _sectionTitle('Time Available'),
+                                  DropdownButtonFormField<TimeAvailable>(
+                                    initialValue: _time,
+                                    items:
+                                        TimeAvailable.values
+                                            .map(
+                                              (t) => DropdownMenuItem(
+                                                value: t,
+                                                child: Text(_labelForTime(t)),
+                                              ),
+                                            )
+                                            .toList(),
+                                    onChanged: (v) {
+                                      if (v == null) return;
+                                      setState(() => _time = v);
+                                    },
+                                    decoration: const InputDecoration(
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                    ),
+                                  ),
+                                ],
 
                               _sectionTitle('Have a Car?'),
                               Row(
@@ -744,6 +881,11 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                             final rating =
                                 (s['rating'] as num?)?.toDouble() ?? 0;
                             final category = (s['category'] ?? '').toString();
+                            final stayTypeRaw = (s['stayType'] ?? '').toString();
+                            final stayType =
+                                stayTypeRaw.trim().isNotEmpty
+                                    ? stayTypeRaw
+                                    : _labelForRouteStayType(_routeStayType);
                             final price =
                                 (s['estimatedPrice'] as num?)?.toDouble() ??
                                 (s['price'] as num?)?.toDouble() ??
@@ -751,7 +893,7 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
 
                             final actionLabel =
                                 widget.mode == ActivityFinderMode.routeStop
-                                    ? 'Add Stop'
+                                    ? 'Add Via Stop'
                                     : 'Add to Itinerary';
 
                             return Padding(
@@ -785,7 +927,13 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                       spacing: 8,
                                       runSpacing: 8,
                                       children: [
-                                        if (category.trim().isNotEmpty)
+                                        if (widget.mode ==
+                                            ActivityFinderMode.routeStop)
+                                          Chip(
+                                            visualDensity: VisualDensity.compact,
+                                            label: Text(stayType),
+                                          )
+                                        else if (category.trim().isNotEmpty)
                                           Chip(
                                             visualDensity:
                                                 VisualDensity.compact,

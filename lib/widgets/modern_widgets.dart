@@ -22,46 +22,56 @@ class GradientButton extends StatefulWidget {
 
 class _GradientButtonState extends State<GradientButton> {
   bool _isHovered = false;
+  bool _isPressed = false;
 
   @override
   Widget build(BuildContext context) {
+    final visualScale = _isPressed ? 0.985 : (_isHovered ? 1.01 : 1.0);
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              _isHovered ? TryprColors.primaryDark : TryprColors.primary,
-              _isHovered ? TryprColors.primary : TryprColors.primaryLight,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: widget.borderRadius,
-          boxShadow: [
-            BoxShadow(
-              color: TryprColors.primary.withOpacity(_isHovered ? 0.4 : 0.25),
-              blurRadius: _isHovered ? 12 : 8,
-              offset: const Offset(0, 4),
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutCubic,
+        scale: visualScale,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                _isHovered ? TryprColors.primaryDark : TryprColors.primary,
+                _isHovered ? TryprColors.primary : TryprColors.primaryLight,
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: widget.onPressed,
             borderRadius: widget.borderRadius,
-            child: Padding(
-              padding: widget.padding,
-              child: DefaultTextStyle(
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 15,
+            boxShadow: [
+              BoxShadow(
+                color: TryprColors.primary.withOpacity(_isHovered ? 0.4 : 0.25),
+                blurRadius: _isHovered ? 12 : 8,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: widget.onPressed,
+              onTapDown: (_) => setState(() => _isPressed = true),
+              onTapUp: (_) => setState(() => _isPressed = false),
+              onTapCancel: () => setState(() => _isPressed = false),
+              borderRadius: widget.borderRadius,
+              child: Padding(
+                padding: widget.padding,
+                child: DefaultTextStyle(
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
+                  child: widget.child,
                 ),
-                child: widget.child,
               ),
             ),
           ),

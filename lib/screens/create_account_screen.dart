@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:trypr/theme/app_theme.dart';
@@ -23,9 +24,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   Future<void> _createAccount() async {
     if (_passwordController.text != _confirmController.text) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Passwords do not match')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Passwords do not match')),
+      );
       return;
     }
     setState(() => _loading = true);
@@ -45,7 +46,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         MaterialPageRoute(builder: (_) => const CompleteProfileScreen()),
       );
     } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Create account failed')),
       );
     } finally {
@@ -79,9 +80,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         MaterialPageRoute(builder: (_) => const CompleteProfileScreen()),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Google sign up failed')));
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Google sign up failed')),
+      );
     } finally {
       if (mounted) setState(() => _googleLoading = false);
     }

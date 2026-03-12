@@ -4,7 +4,10 @@
     {
       "label": "Flutter: Build Web",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1",
+      "command": "bash tool/flutter_build_web.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1"
+      },
       "group": {
         "kind": "build",
         "isDefault": true
@@ -26,6 +29,19 @@
       "problemMatcher": []
     },
     {
+      "label": "Flutter: Run Web Server (with Maps key)",
+      "type": "shell",
+      "command": "bash tool/flutter_run_web_server.sh",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_run_chrome.ps1"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Serve: npx live-server (build/web)",
       "type": "shell",
       "command": "npx live-server build/web --port=5500 --open=./index.html",
@@ -38,7 +54,10 @@
     {
       "label": "Watch: Rebuild Web on Change",
       "type": "shell",
-      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1\"",
+      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"bash tool/flutter_build_web.sh\"",
+      "windows": {
+        "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1\""
+      },
       "presentation": {
         "reveal": "always",
         "panel": "shared"

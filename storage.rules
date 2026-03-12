@@ -6,16 +6,40 @@ service firebase.storage {
       allow read: if true;
       allow write: if request.auth != null;
     }
+
+    // Public cover images for unlisted pages.
+    match /unlistedPages/{pageId}/{allImages=**} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // File attachments submitted from public unlisted-page forms.
+    // Anyone with the page link can upload, but size/type are constrained.
+    match /unlistedFormUploads/{pageId}/{allFiles=**} {
+      allow read: if true;
+      allow write: if request.resource.size < 15 * 1024 * 1024
+                   && request.resource.contentType.matches('application/.*|image/.*|text/.*');
+    }
+
+    // Trip document attachments currently require authentication.
+    // (Further ownership/collaborator checks can be added later.)
+    match /tripDocuments/{tripId}/{allDocs=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Shared trip gallery uploads.
+    match /tripPhotos/{tripId}/{allPhotos=**} {
+      allow read, write: if request.auth != null;
+    }
     
     // Allow authenticated users to read/write their own files
     match /users/{userId}/{allPaths=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
     
-    // Default: require authentication for other paths
+    // Default deny - all permitted paths must be explicitly listed above.
     match /{allPaths=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }

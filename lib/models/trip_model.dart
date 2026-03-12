@@ -14,13 +14,20 @@ class Stop {
   });
 
   factory Stop.fromMap(Map<String, dynamic> data) {
+    double asDouble(dynamic value) {
+      if (value is num) return value.toDouble();
+      if (value is String) return double.tryParse(value) ?? 0.0;
+      return 0.0;
+    }
+
     // Support both field naming conventions:
     //   Firestore waypoints: name / lat / lon
     //   Legacy TripModel:    placeName / latitude / longitude
     return Stop(
-      placeName: (data['name'] ?? data['placeName'] ?? '').toString(),
-      latitude: (data['lat'] ?? data['latitude'] ?? 0).toDouble(),
-      longitude: (data['lon'] ?? data['longitude'] ?? 0).toDouble(),
+      placeName:
+          (data['name'] ?? data['placeName'] ?? data['title'] ?? '').toString(),
+      latitude: asDouble(data['lat'] ?? data['latitude']),
+      longitude: asDouble(data['lon'] ?? data['lng'] ?? data['longitude']),
       placeId: data['placeId'] as String?,
     );
   }
@@ -44,6 +51,9 @@ class TripModel {
   final double? distance; // in km
   final String? description;
   final List<String>? participants;
+  final String? transportMode;
+  final List<String>? segmentTransportModes;
+  final List<String>? segmentRoutingTypes;
 
   TripModel({
     required this.id,
@@ -54,6 +64,9 @@ class TripModel {
     this.distance,
     this.description,
     this.participants,
+    this.transportMode,
+    this.segmentTransportModes,
+    this.segmentRoutingTypes,
   });
 
   factory TripModel.fromFirestore(DocumentSnapshot doc) {
@@ -81,8 +94,19 @@ class TripModel {
       return DateTime.now();
     }
 
+    List<String>? parseStringList(dynamic raw) {
+      if (raw is! List) return null;
+      final out = raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList(growable: false);
+      return out.isEmpty ? null : out;
+    }
+
     // Support both field naming conventions
-    final name = (data['name'] ?? data['tripName'] ?? 'Untitled Trip').toString();
+    final name =
+        (data['name'] ?? data['tripName'] ?? 'Untitled Trip').toString();
+    final rawTransport = (data['transportMode'] ?? '').toString().trim();
 
     return TripModel(
       id: id,
@@ -92,7 +116,12 @@ class TripModel {
       endDate: parseDate(data['endDate']),
       distance: (data['totalKm'] ?? data['distance'] as num?)?.toDouble(),
       description: data['description'] as String?,
-      participants: List<String>.from(data['sharedWith'] ?? data['participants'] ?? []),
+      participants: List<String>.from(
+        data['sharedWith'] ?? data['participants'] ?? [],
+      ),
+      transportMode: rawTransport.isEmpty ? null : rawTransport,
+      segmentTransportModes: parseStringList(data['segmentTransportModes']),
+      segmentRoutingTypes: parseStringList(data['segmentRoutingTypes']),
     );
   }
 
@@ -105,6 +134,11 @@ class TripModel {
       'totalKm': distance,
       'description': description,
       'sharedWith': participants,
+      if (transportMode != null) 'transportMode': transportMode,
+      if (segmentTransportModes != null)
+        'segmentTransportModes': segmentTransportModes,
+      if (segmentRoutingTypes != null)
+        'segmentRoutingTypes': segmentRoutingTypes,
     };
   }
 

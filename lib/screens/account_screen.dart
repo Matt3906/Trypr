@@ -1,17 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/theme/app_theme.dart';
+import 'package:trypr/services/pick_image_data_url.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
-import 'package:trypr/widgets/map_embed.dart';
-import 'package:trypr/widgets/trip_builder_layout.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/foundation.dart' show kIsWeb, setEquals;
-import 'dart:math' as math;
-// Web-only file picker
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
 
 // MAP PACKAGES
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
@@ -349,10 +345,12 @@ class _AccountScreenState extends State<AccountScreen> {
             polygonId: gmaps.PolygonId(id),
             points:
                 ring.map((p) => gmaps.LatLng(p.latitude, p.longitude)).toList(),
-            fillColor: Theme.of(context).colorScheme.primary.withOpacity(0.28),
+            fillColor: Theme.of(
+              context,
+            ).colorScheme.primary.withValues(alpha: 0.28),
             strokeColor: Theme.of(
               context,
-            ).colorScheme.primary.withOpacity(0.55),
+            ).colorScheme.primary.withValues(alpha: 0.55),
             strokeWidth: 1,
           ),
         );
@@ -361,22 +359,149 @@ class _AccountScreenState extends State<AccountScreen> {
     return out;
   }
 
+  ImageProvider<Object>? _profileImageProvider(String? profileImageDataUrl) {
+    if (profileImageDataUrl == null || profileImageDataUrl.isEmpty) return null;
+    if (kIsWeb) return NetworkImage(profileImageDataUrl);
+    try {
+      return MemoryImage(base64Decode(profileImageDataUrl.split(',').last));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _initialsFor(String value) {
+    final parts =
+        value
+            .trim()
+            .split(RegExp(r'\s+'))
+            .where((part) => part.isNotEmpty)
+            .toList();
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts.first[0].toUpperCase();
+    return (parts.first[0] + parts.last[0]).toUpperCase();
+  }
+
+  Color _chipAccent(String seed) {
+    const palette = <Color>[
+      TryprColors.primary,
+      TryprColors.secondary,
+      TryprColors.coral,
+      TryprColors.mint,
+      TryprColors.peach,
+      TryprColors.lavender,
+      TryprColors.rose,
+    ];
+    final idx =
+        seed.runes.fold<int>(0, (total, ch) => total + ch) % palette.length;
+    return palette[idx];
+  }
+
+  Widget _heroPill(IconData icon, String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(TryprRadius.full),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metricTile({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color accent,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(TryprSpacing.md),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(TryprRadius.lg),
+        border: Border.all(color: accent.withValues(alpha: 0.3)),
+        boxShadow: TryprColors.softShadow,
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: accent, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: TryprColors.textPrimary,
+                  ),
+                ),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: TryprColors.textSecondary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionContainer({required Widget child}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(TryprRadius.xl),
+        border: Border.all(color: const Color(0xFFE8EEF5)),
+      ),
+      padding: const EdgeInsets.all(TryprSpacing.lg),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final stream = _userDocStream();
-    final panelContent = SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900),
-          child: Card(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
+    return Scaffold(
+      appBar: const TopTaskbar(dockProgress: 1.0),
+      backgroundColor: TryprColors.background,
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(TryprSpacing.lg),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 920),
+            child: SoftCard(
+              elevated: true,
+              padding: const EdgeInsets.all(TryprSpacing.xl),
               child:
                   stream == null
                       ? _signedOutContent(context)
@@ -386,9 +511,15 @@ class _AccountScreenState extends State<AccountScreen> {
                           if (snap.connectionState == ConnectionState.waiting) {
                             return const SizedBox(
                               height: 180,
-                              child: Center(child: CircularProgressIndicator()),
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                  color: TryprColors.primary,
+                                ),
+                              ),
                             );
                           }
+
+                          final isCompact = MediaQuery.sizeOf(ctx).width < 760;
                           final doc = snap.data;
                           final data = doc?.data() ?? <String, dynamic>{};
 
@@ -460,363 +591,953 @@ class _AccountScreenState extends State<AccountScreen> {
                             }
                           }
 
+                          final totalSupported = supportedTotal();
+                          final visitedCount = _stagedVisited.length;
+                          final progressValue =
+                              totalSupported > 0
+                                  ? (visitedCount / totalSupported)
+                                  : 0.0;
+                          final progressPercent = (progressValue * 100).round();
+                          final profileProvider = _profileImageProvider(
+                            profileImage,
+                          );
+                          final initials = _initialsFor(displayName.toString());
+                          final cityText = city.toString();
+                          final sortedVisited = visitedSet.toList()..sort();
+
+                          Future<void> persistVisited() async {
+                            final u = _user;
+                            if (u == null) return;
+                            final docRef = FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(u.uid);
+                            try {
+                              await docRef.set({
+                                'visitedCountries': _stagedVisited.toList(),
+                              }, SetOptions(merge: true));
+                              if (!ctx.mounted) return;
+                              setState(() => _isEditingVisited = false);
+                            } catch (err) {
+                              if (!ctx.mounted) return;
+                              ScaffoldMessenger.of(ctx).showTryprSnackBar(
+                                SnackBar(content: Text('Failed to save: $err')),
+                              );
+                            }
+                          }
+
                           return Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Text(
-                                'Account',
-                                style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                children: [
-                                  CircleAvatar(
-                                    radius: 36,
-                                    backgroundColor: Colors.grey.shade200,
-                                    backgroundImage:
-                                        profileImage != null
-                                            ? (kIsWeb
-                                                ? NetworkImage(profileImage)
-                                                : MemoryImage(
-                                                      base64Decode(
-                                                        profileImage
-                                                            .split(',')
-                                                            .last,
-                                                      ),
-                                                    )
-                                                    as ImageProvider)
-                                            : null,
-                                    child:
-                                        profileImage == null
-                                            ? const Icon(
-                                              Icons.person,
-                                              size: 36,
-                                              color: Colors.grey,
-                                            )
-                                            : null,
+                              Container(
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF1F6FAE),
+                                      TryprColors.primary,
+                                      Color(0xFF2BA9A0),
+                                    ],
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
                                   ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _infoRow('Name', displayName),
+                                  borderRadius: BorderRadius.circular(
+                                    TryprRadius.xl,
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              _infoRow('Email', email),
-                              const SizedBox(height: 8),
-                              _infoRow('City', city.toString()),
-                              const SizedBox(height: 8),
-                              _infoRow('Date of birth', dobStr),
-                              const SizedBox(height: 8),
-                              _infoRow('Sex', sex.toString()),
-                              const SizedBox(height: 8),
-                              _infoRow('Subscription', subscription.toString()),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Friends',
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              const SizedBox(height: 8),
-                              if (friends.isEmpty)
-                                const Text(
-                                  'No friends added yet',
-                                  style: TextStyle(color: Colors.black54),
-                                )
-                              else ...[
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children:
-                                      friends.map((f) {
-                                        final fname =
-                                            (f['name'] ??
-                                                    f['displayName'] ??
-                                                    f['email'] ??
-                                                    f['id'] ??
-                                                    'Friend')
-                                                .toString();
-                                        return Chip(label: Text(fname));
-                                      }).toList(),
+                                  boxShadow: TryprColors.softShadow,
                                 ),
-                              ],
-
-                              const Divider(height: 32),
-
-                              // -------------------------------------------------
-                              // INTERACTIVE MAP SECTION
-                              // -------------------------------------------------
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'My Travel Map',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium
-                                        ?.copyWith(fontWeight: FontWeight.w600),
-                                  ),
-                                  const SizedBox.shrink(),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              // Embedded interactive country-shape map
-                              SizedBox(
-                                // make map taller so top and bottom are visible
-                                height: 460,
-                                child: Card(
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(8.0),
-                                    child: Builder(
-                                      builder: (ctx) {
-                                        // initialize staged set from live data on first build
-                                        if (_stagedVisited.isEmpty) {
-                                          _stagedVisited.addAll(visitedSet);
-                                        }
-                                        // ensure polygons are loaded (idempotent)
-                                        _loadCountryPolygons();
-
-                                        if (_mapsKey.isEmpty) {
-                                          return const Center(
-                                            child: Padding(
-                                              padding: EdgeInsets.all(12),
-                                              child: Text(
-                                                'Google Maps is not configured. Build with '
-                                                '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
-                                                textAlign: TextAlign.center,
-                                              ),
-                                            ),
-                                          );
-                                        }
-
-                                        return gmaps.GoogleMap(
-                                          initialCameraPosition:
-                                              const gmaps.CameraPosition(
-                                                target: gmaps.LatLng(20, 0),
-                                                zoom: 2,
-                                              ),
-                                          minMaxZoomPreference:
-                                              const gmaps.MinMaxZoomPreference(
-                                                2,
-                                                18,
-                                              ),
-                                          polygons:
-                                              _polygonsLoaded
-                                                  ? _buildGmapPolygonsSet(
-                                                    _stagedVisited,
-                                                  )
-                                                  : const <gmaps.Polygon>{},
-                                          markers:
-                                              _polygonsLoaded
-                                                  ? _buildGmapMarkersForMissingPolygons(
-                                                    _stagedVisited,
-                                                  )
-                                                  : _buildGmapMarkers(
-                                                    _stagedVisited,
-                                                  ),
-                                          onTap: (p) {
-                                            // Add a visited country by tapping on its polygon.
-                                            if (!_polygonsLoaded) return;
-
-                                            final latlng = LatLng(
-                                              p.latitude,
-                                              p.longitude,
-                                            );
-                                            String? foundKey;
-                                            _countryPolygons.forEach((
-                                              k,
-                                              polyRings,
-                                            ) {
-                                              for (final ring in polyRings) {
-                                                if (_pointInPolygon(
-                                                  latlng,
-                                                  ring,
-                                                )) {
-                                                  foundKey = k;
-                                                  break;
-                                                }
-                                              }
-                                            });
-
-                                            if (foundKey == null) return;
-                                            final display =
-                                                _normalizeCountryName(
-                                                  foundKey!,
-                                                );
-                                            if (_stagedVisited.contains(
-                                              display,
-                                            )) {
-                                              return;
-                                            }
-                                            setState(() {
-                                              _stagedVisited.add(display);
-                                              _isEditingVisited = true;
-                                            });
-                                          },
-                                          mapToolbarEnabled: false,
-                                          myLocationButtonEnabled: false,
-                                          zoomControlsEnabled: false,
-                                          compassEnabled: false,
-                                          rotateGesturesEnabled: false,
-                                          tiltGesturesEnabled: false,
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: LinearProgressIndicator(
-                                            value:
-                                                (supportedTotal() > 0)
-                                                    ? (_stagedVisited.length /
-                                                        supportedTotal())
-                                                    : 0,
-                                            minHeight: 8,
+                                child: Stack(
+                                  children: [
+                                    Positioned(
+                                      right: -28,
+                                      top: -22,
+                                      child: Container(
+                                        width: 120,
+                                        height: 120,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Colors.white.withValues(
+                                            alpha: 0.11,
                                           ),
                                         ),
-                                        const SizedBox(width: 10),
-                                        Text(
-                                          '${((supportedTotal() > 0) ? (_stagedVisited.length / supportedTotal() * 100) : 0).round()}%',
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: -24,
+                                      bottom: -28,
+                                      child: Container(
+                                        width: 110,
+                                        height: 110,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: Colors.white.withValues(
+                                            alpha: 0.07,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.all(
+                                        TryprSpacing.lg,
+                                      ),
+                                      child:
+                                          isCompact
+                                              ? Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      CircleAvatar(
+                                                        radius: 28,
+                                                        backgroundColor: Colors
+                                                            .white
+                                                            .withValues(
+                                                              alpha: 0.22,
+                                                            ),
+                                                        backgroundImage:
+                                                            profileProvider,
+                                                        child:
+                                                            profileProvider ==
+                                                                    null
+                                                                ? Text(
+                                                                  initials,
+                                                                  style: const TextStyle(
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w700,
+                                                                  ),
+                                                                )
+                                                                : null,
+                                                      ),
+                                                      const SizedBox(
+                                                        width: TryprSpacing.md,
+                                                      ),
+                                                      Expanded(
+                                                        child: Column(
+                                                          crossAxisAlignment:
+                                                              CrossAxisAlignment
+                                                                  .start,
+                                                          children: [
+                                                            Text(
+                                                              displayName
+                                                                  .toString(),
+                                                              style: Theme.of(
+                                                                    context,
+                                                                  )
+                                                                  .textTheme
+                                                                  .headlineSmall
+                                                                  ?.copyWith(
+                                                                    color:
+                                                                        Colors
+                                                                            .white,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w700,
+                                                                  ),
+                                                            ),
+                                                            const SizedBox(
+                                                              height: 2,
+                                                            ),
+                                                            Text(
+                                                              email.toString(),
+                                                              style: const TextStyle(
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                                fontSize: 13,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(
+                                                    height: TryprSpacing.md,
+                                                  ),
+                                                  Wrap(
+                                                    spacing: 8,
+                                                    runSpacing: 8,
+                                                    children: [
+                                                      _heroPill(
+                                                        Icons.workspace_premium,
+                                                        subscription.toString(),
+                                                      ),
+                                                      _heroPill(
+                                                        Icons.public,
+                                                        '$visitedCount countries',
+                                                      ),
+                                                      _heroPill(
+                                                        Icons
+                                                            .people_alt_outlined,
+                                                        '${friends.length} friends',
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              )
+                                              : Row(
+                                                children: [
+                                                  CircleAvatar(
+                                                    radius: 34,
+                                                    backgroundColor: Colors
+                                                        .white
+                                                        .withValues(
+                                                          alpha: 0.22,
+                                                        ),
+                                                    backgroundImage:
+                                                        profileProvider,
+                                                    child:
+                                                        profileProvider == null
+                                                            ? Text(
+                                                              initials,
+                                                              style: const TextStyle(
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700,
+                                                                fontSize: 20,
+                                                              ),
+                                                            )
+                                                            : null,
+                                                  ),
+                                                  const SizedBox(
+                                                    width: TryprSpacing.md,
+                                                  ),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Text(
+                                                          displayName
+                                                              .toString(),
+                                                          style: Theme.of(
+                                                                context,
+                                                              )
+                                                              .textTheme
+                                                              .headlineSmall
+                                                              ?.copyWith(
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700,
+                                                              ),
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 4,
+                                                        ),
+                                                        Text(
+                                                          email.toString(),
+                                                          style:
+                                                              const TextStyle(
+                                                                color:
+                                                                    Colors
+                                                                        .white,
+                                                                fontSize: 14,
+                                                              ),
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 10,
+                                                        ),
+                                                        Wrap(
+                                                          spacing: 8,
+                                                          runSpacing: 8,
+                                                          children: [
+                                                            _heroPill(
+                                                              Icons.location_on,
+                                                              cityText == '—'
+                                                                  ? 'City not set'
+                                                                  : cityText,
+                                                            ),
+                                                            _heroPill(
+                                                              Icons
+                                                                  .badge_outlined,
+                                                              sex.toString(),
+                                                            ),
+                                                            _heroPill(
+                                                              Icons
+                                                                  .cake_outlined,
+                                                              dobStr,
+                                                            ),
+                                                            _heroPill(
+                                                              Icons
+                                                                  .workspace_premium,
+                                                              subscription
+                                                                  .toString(),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: TryprSpacing.lg),
+                              LayoutBuilder(
+                                builder: (statsCtx, statsBox) {
+                                  final cards = <Widget>[
+                                    _metricTile(
+                                      icon: Icons.public,
+                                      label: 'Countries visited',
+                                      value: '$visitedCount',
+                                      accent: TryprColors.primary,
+                                    ),
+                                    _metricTile(
+                                      icon: Icons.route_outlined,
+                                      label: 'World coverage',
+                                      value: '$progressPercent%',
+                                      accent: TryprColors.secondary,
+                                    ),
+                                    _metricTile(
+                                      icon: Icons.people_alt_outlined,
+                                      label: 'Friends',
+                                      value: '${friends.length}',
+                                      accent: TryprColors.peach,
+                                    ),
+                                    _metricTile(
+                                      icon: Icons.workspace_premium_outlined,
+                                      label: 'Membership',
+                                      value: subscription.toString(),
+                                      accent: TryprColors.mint,
+                                    ),
+                                  ];
+
+                                  if (statsBox.maxWidth < 760) {
+                                    return Column(
+                                      children: [
+                                        for (
+                                          var i = 0;
+                                          i < cards.length;
+                                          i++
+                                        ) ...[
+                                          cards[i],
+                                          if (i < cards.length - 1)
+                                            const SizedBox(
+                                              height: TryprSpacing.sm,
+                                            ),
+                                        ],
+                                      ],
+                                    );
+                                  }
+
+                                  return Row(
+                                    children: [
+                                      for (
+                                        var i = 0;
+                                        i < cards.length;
+                                        i++
+                                      ) ...[
+                                        Expanded(child: cards[i]),
+                                        if (i < cards.length - 1)
+                                          const SizedBox(
+                                            width: TryprSpacing.sm,
+                                          ),
+                                      ],
+                                    ],
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: TryprSpacing.lg),
+                              _sectionContainer(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Container(
+                                          width: 36,
+                                          height: 36,
+                                          decoration: BoxDecoration(
+                                            color: TryprColors.secondary
+                                                .withValues(alpha: 0.14),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.people_outline,
+                                            color: TryprColors.secondary,
+                                          ),
+                                        ),
+                                        const SizedBox(width: TryprSpacing.md),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'Travel Circle',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                      color:
+                                                          TryprColors
+                                                              .textPrimary,
+                                                    ),
+                                              ),
+                                              Text(
+                                                'People connected to your account',
+                                                style:
+                                                    Theme.of(
+                                                      context,
+                                                    ).textTheme.bodySmall,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (!isCompact)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 6,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: TryprColors.surfaceVariant,
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                    TryprRadius.full,
+                                                  ),
+                                            ),
+                                            child: Text(
+                                              '${friends.length} total',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 12,
+                                                color:
+                                                    TryprColors.textSecondary,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: TryprSpacing.md),
+                                    if (friends.isEmpty)
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(
+                                          TryprSpacing.md,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: TryprColors.surfaceVariant,
+                                          borderRadius: BorderRadius.circular(
+                                            TryprRadius.md,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          'No friends added yet. Invite someone and start planning together.',
+                                          style:
+                                              Theme.of(
+                                                context,
+                                              ).textTheme.bodyMedium,
+                                        ),
+                                      )
+                                    else
+                                      Wrap(
+                                        spacing: TryprSpacing.sm,
+                                        runSpacing: TryprSpacing.sm,
+                                        children:
+                                            friends.map((f) {
+                                              final fname =
+                                                  (f['name'] ??
+                                                          f['displayName'] ??
+                                                          f['email'] ??
+                                                          f['id'] ??
+                                                          'Friend')
+                                                      .toString();
+                                              final accent = _chipAccent(fname);
+                                              return Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 10,
+                                                      vertical: 8,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color: accent.withValues(
+                                                    alpha: 0.12,
+                                                  ),
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                        TryprRadius.full,
+                                                      ),
+                                                  border: Border.all(
+                                                    color: accent.withValues(
+                                                      alpha: 0.3,
+                                                    ),
+                                                  ),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    CircleAvatar(
+                                                      radius: 11,
+                                                      backgroundColor: accent
+                                                          .withValues(
+                                                            alpha: 0.22,
+                                                          ),
+                                                      child: Text(
+                                                        _initialsFor(fname),
+                                                        style: const TextStyle(
+                                                          fontSize: 10,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                          color:
+                                                              TryprColors
+                                                                  .textPrimary,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 8),
+                                                    ConstrainedBox(
+                                                      constraints:
+                                                          BoxConstraints(
+                                                            maxWidth:
+                                                                isCompact
+                                                                    ? 170
+                                                                    : 220,
+                                                          ),
+                                                      child: Text(
+                                                        fname,
+                                                        overflow:
+                                                            TextOverflow
+                                                                .ellipsis,
+                                                        style: const TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                          fontSize: 13,
+                                                          color:
+                                                              TryprColors
+                                                                  .textPrimary,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                            }).toList(),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: TryprSpacing.md),
+                              _sectionContainer(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Container(
+                                          width: 36,
+                                          height: 36,
+                                          decoration: BoxDecoration(
+                                            color: TryprColors.primary
+                                                .withValues(alpha: 0.14),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.travel_explore,
+                                            color: TryprColors.primary,
+                                          ),
+                                        ),
+                                        const SizedBox(width: TryprSpacing.md),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'My Travel Map',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                    ),
+                                              ),
+                                              Text(
+                                                'Tap countries to mark places you have visited',
+                                                style:
+                                                    Theme.of(
+                                                      context,
+                                                    ).textTheme.bodySmall,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 6,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: TryprColors.primary
+                                                .withValues(alpha: 0.12),
+                                            borderRadius: BorderRadius.circular(
+                                              TryprRadius.full,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '$progressPercent% explored',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 12,
+                                              color: TryprColors.primaryDark,
+                                            ),
+                                          ),
                                         ),
                                       ],
                                     ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  ElevatedButton(
-                                    onPressed:
-                                        _isEditingVisited
-                                            ? () async {
-                                              // persist staged set to Firestore
-                                              final u = _user;
-                                              if (u == null) return;
-                                              final docRef = FirebaseFirestore
-                                                  .instance
-                                                  .collection('users')
-                                                  .doc(u.uid);
-                                              try {
-                                                await docRef.set({
-                                                  'visitedCountries':
-                                                      _stagedVisited.toList(),
-                                                }, SetOptions(merge: true));
-                                                setState(
-                                                  () =>
-                                                      _isEditingVisited = false,
+                                    const SizedBox(height: TryprSpacing.md),
+                                    SizedBox(
+                                      height: isCompact ? 320 : 460,
+                                      child: Card(
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            TryprRadius.md,
+                                          ),
+                                        ),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(8),
+                                          child: Builder(
+                                            builder: (mapCtx) {
+                                              if (_stagedVisited.isEmpty) {
+                                                _stagedVisited.addAll(
+                                                  visitedSet,
                                                 );
-                                              } catch (err) {
-                                                if (!mounted) return;
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  SnackBar(
-                                                    content: Text(
-                                                      'Failed to save: $err',
+                                              }
+                                              _loadCountryPolygons();
+
+                                              if (_mapsKey.isEmpty) {
+                                                return const Center(
+                                                  child: Padding(
+                                                    padding: EdgeInsets.all(
+                                                      TryprSpacing.md,
+                                                    ),
+                                                    child: Text(
+                                                      'Google Maps is not configured. Build with '
+                                                      '--dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY',
+                                                      textAlign:
+                                                          TextAlign.center,
                                                     ),
                                                   ),
                                                 );
                                               }
-                                            }
-                                            : null,
-                                    child: const Text('Save'),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Align(
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  '${_stagedVisited.length} visited / ${supportedTotal()} supported',
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
 
-                              // Read-only list of visited places
-                              Text(
-                                "Visited Regions (${visitedSet.length})",
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              if (visitedSet.isNotEmpty)
-                                Wrap(
-                                  spacing: 6,
-                                  runSpacing: 6,
-                                  children:
-                                      visitedSet
-                                          .map(
-                                            (c) => Chip(
-                                              label: Text(
-                                                c,
-                                                style: const TextStyle(
-                                                  fontSize: 11,
-                                                ),
-                                              ),
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                              backgroundColor: Colors.white,
-                                              side: BorderSide(
-                                                color: Colors.grey.shade300,
-                                              ),
-                                              onDeleted:
-                                                  () => _toggleRegion(
-                                                    c,
-                                                    visitedRaw,
-                                                  ),
+                                              return gmaps.GoogleMap(
+                                                initialCameraPosition:
+                                                    const gmaps.CameraPosition(
+                                                      target: gmaps.LatLng(
+                                                        20,
+                                                        0,
+                                                      ),
+                                                      zoom: 2,
+                                                    ),
+                                                minMaxZoomPreference:
+                                                    const gmaps.MinMaxZoomPreference(
+                                                      2,
+                                                      18,
+                                                    ),
+                                                polygons:
+                                                    _polygonsLoaded
+                                                        ? _buildGmapPolygonsSet(
+                                                          _stagedVisited,
+                                                        )
+                                                        : const <
+                                                          gmaps.Polygon
+                                                        >{},
+                                                markers:
+                                                    _polygonsLoaded
+                                                        ? _buildGmapMarkersForMissingPolygons(
+                                                          _stagedVisited,
+                                                        )
+                                                        : _buildGmapMarkers(
+                                                          _stagedVisited,
+                                                        ),
+                                                onTap: (p) {
+                                                  if (!_polygonsLoaded) {
+                                                    return;
+                                                  }
+
+                                                  final latlng = LatLng(
+                                                    p.latitude,
+                                                    p.longitude,
+                                                  );
+                                                  String? foundKey;
+                                                  _countryPolygons.forEach((
+                                                    k,
+                                                    polyRings,
+                                                  ) {
+                                                    for (final ring
+                                                        in polyRings) {
+                                                      if (_pointInPolygon(
+                                                        latlng,
+                                                        ring,
+                                                      )) {
+                                                        foundKey = k;
+                                                        break;
+                                                      }
+                                                    }
+                                                  });
+
+                                                  if (foundKey == null) {
+                                                    return;
+                                                  }
+                                                  final display =
+                                                      _normalizeCountryName(
+                                                        foundKey!,
+                                                      );
+                                                  if (_stagedVisited.contains(
+                                                    display,
+                                                  )) {
+                                                    return;
+                                                  }
+                                                  setState(() {
+                                                    _stagedVisited.add(display);
+                                                    _isEditingVisited = true;
+                                                  });
+                                                },
+                                                mapToolbarEnabled: false,
+                                                myLocationButtonEnabled: false,
+                                                zoomControlsEnabled: false,
+                                                compassEnabled: false,
+                                                rotateGesturesEnabled: false,
+                                                tiltGesturesEnabled: false,
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: TryprSpacing.md),
+                                    if (isCompact) ...[
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: LinearProgressIndicator(
+                                              value: progressValue,
+                                              minHeight: 8,
                                             ),
-                                          )
-                                          .toList(),
-                                )
-                              else
-                                const Text(
-                                  "No regions marked yet.",
-                                  style: TextStyle(
-                                    color: Colors.grey,
-                                    fontSize: 12,
-                                  ),
+                                          ),
+                                          const SizedBox(
+                                            width: TryprSpacing.sm,
+                                          ),
+                                          Text('$progressPercent%'),
+                                        ],
+                                      ),
+                                      const SizedBox(height: TryprSpacing.sm),
+                                      SizedBox(
+                                        width: double.infinity,
+                                        child: ElevatedButton.icon(
+                                          onPressed:
+                                              _isEditingVisited
+                                                  ? persistVisited
+                                                  : null,
+                                          icon: const Icon(Icons.save_outlined),
+                                          label: const Text('Save travel map'),
+                                        ),
+                                      ),
+                                    ] else ...[
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child:
+                                                      LinearProgressIndicator(
+                                                        value: progressValue,
+                                                        minHeight: 8,
+                                                      ),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Text('$progressPercent%'),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          ElevatedButton.icon(
+                                            onPressed:
+                                                _isEditingVisited
+                                                    ? persistVisited
+                                                    : null,
+                                            icon: const Icon(
+                                              Icons.save_outlined,
+                                            ),
+                                            label: const Text(
+                                              'Save travel map',
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                    const SizedBox(height: TryprSpacing.sm),
+                                    Text(
+                                      '$visitedCount visited / $totalSupported supported',
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
+                                  ],
                                 ),
-
-                              const SizedBox(height: 24),
-
-                              Row(
-                                children: [
-                                  ElevatedButton.icon(
+                              ),
+                              const SizedBox(height: TryprSpacing.md),
+                              _sectionContainer(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Container(
+                                          width: 36,
+                                          height: 36,
+                                          decoration: BoxDecoration(
+                                            color: TryprColors.peach.withValues(
+                                              alpha: 0.18,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.flag_outlined,
+                                            color: TryprColors.warning,
+                                          ),
+                                        ),
+                                        const SizedBox(width: TryprSpacing.md),
+                                        Expanded(
+                                          child: Text(
+                                            'Visited Regions',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.titleMedium?.copyWith(
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: TryprColors.surfaceVariant,
+                                            borderRadius: BorderRadius.circular(
+                                              TryprRadius.full,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            '${visitedSet.length}',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: TryprSpacing.md),
+                                    if (visitedSet.isNotEmpty)
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children:
+                                            sortedVisited.map((c) {
+                                              final accent = _chipAccent(c);
+                                              return Chip(
+                                                label: Text(
+                                                  c,
+                                                  style: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w600,
+                                                    color:
+                                                        TryprColors.textPrimary,
+                                                  ),
+                                                ),
+                                                side: BorderSide(
+                                                  color: accent.withValues(
+                                                    alpha: 0.28,
+                                                  ),
+                                                ),
+                                                backgroundColor: accent
+                                                    .withValues(alpha: 0.12),
+                                                deleteIconColor: accent,
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                onDeleted:
+                                                    () => _toggleRegion(
+                                                      c,
+                                                      visitedRaw,
+                                                    ),
+                                              );
+                                            }).toList(),
+                                      )
+                                    else
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(
+                                          TryprSpacing.md,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: TryprColors.surfaceVariant,
+                                          borderRadius: BorderRadius.circular(
+                                            TryprRadius.md,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          'No regions marked yet. Use the map above to start building your footprint.',
+                                          style:
+                                              Theme.of(
+                                                context,
+                                              ).textTheme.bodyMedium,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: TryprSpacing.lg),
+                              if (isCompact) ...[
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: ElevatedButton.icon(
                                     onPressed: () {
                                       _showEditProfile(context, data);
                                     },
                                     icon: const Icon(Icons.edit),
                                     label: const Text('Edit profile'),
                                   ),
-                                  const SizedBox(width: 12),
-                                  OutlinedButton.icon(
+                                ),
+                                const SizedBox(height: TryprSpacing.sm),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: OutlinedButton.icon(
                                     onPressed: () async {
                                       await FirebaseAuth.instance.signOut();
-                                      if (!mounted) return;
-                                      Navigator.of(
-                                        context,
-                                      ).pushNamedAndRemoveUntil(
+                                      if (!ctx.mounted) return;
+                                      Navigator.of(ctx).pushNamedAndRemoveUntil(
                                         '/sign-in',
                                         (route) => false,
                                       );
                                       ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
+                                        ctx,
+                                      ).showTryprSnackBar(
                                         const SnackBar(
                                           content: Text('Signed out'),
                                         ),
@@ -825,18 +1546,53 @@ class _AccountScreenState extends State<AccountScreen> {
                                     icon: const Icon(Icons.logout),
                                     label: const Text('Sign out'),
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              // Debug: show raw user document for troubleshooting
+                                ),
+                              ] else ...[
+                                Wrap(
+                                  spacing: TryprSpacing.sm,
+                                  runSpacing: TryprSpacing.sm,
+                                  children: [
+                                    ElevatedButton.icon(
+                                      onPressed: () {
+                                        _showEditProfile(context, data);
+                                      },
+                                      icon: const Icon(Icons.edit),
+                                      label: const Text('Edit profile'),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    OutlinedButton.icon(
+                                      onPressed: () async {
+                                        await FirebaseAuth.instance.signOut();
+                                        if (!ctx.mounted) return;
+                                        Navigator.of(
+                                          ctx,
+                                        ).pushNamedAndRemoveUntil(
+                                          '/sign-in',
+                                          (route) => false,
+                                        );
+                                        ScaffoldMessenger.of(
+                                          ctx,
+                                        ).showTryprSnackBar(
+                                          const SnackBar(
+                                            content: Text('Signed out'),
+                                          ),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.logout),
+                                      label: const Text('Sign out'),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                              const SizedBox(height: TryprSpacing.sm),
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: TextButton.icon(
                                   onPressed: () {
                                     showDialog<void>(
-                                      context: context,
+                                      context: ctx,
                                       builder:
-                                          (ctx) => AlertDialog(
+                                          (dialogCtx) => AlertDialog(
                                             title: const Text(
                                               'Raw user document',
                                             ),
@@ -851,7 +1607,9 @@ class _AccountScreenState extends State<AccountScreen> {
                                               TextButton(
                                                 onPressed:
                                                     () =>
-                                                        Navigator.of(ctx).pop(),
+                                                        Navigator.of(
+                                                          dialogCtx,
+                                                        ).pop(),
                                                 child: const Text('Close'),
                                               ),
                                             ],
@@ -871,51 +1629,52 @@ class _AccountScreenState extends State<AccountScreen> {
         ),
       ),
     );
-
-    return Scaffold(
-      appBar: const TopTaskbar(dockProgress: 1.0),
-      body: TripBuilderLayout(
-        map: const MapEmbed(points: []),
-        panel: panelContent,
-      ),
-    );
   }
 
   Widget _signedOutContent(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Account',
-          style: Theme.of(
-            context,
-          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'Sign in to view your account details',
-          style: TextStyle(fontSize: 16),
-        ),
-        const SizedBox(height: 12),
-        ElevatedButton(
-          onPressed: () => Navigator.of(context).pushNamed('/sign-in'),
-          child: const Text('Sign in'),
-        ),
-      ],
-    );
-  }
-
-  Widget _infoRow(String label, String value) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 140,
-          child: Text(label, style: const TextStyle(color: Colors.black54)),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.w600),
+        Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [
+                Color(0xFF1F6FAE),
+                TryprColors.primary,
+                Color(0xFF2BA9A0),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(TryprRadius.xl),
+          ),
+          padding: const EdgeInsets.all(TryprSpacing.xl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Account',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Sign in to view your profile, travel map, and social circle.',
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
+              const SizedBox(height: TryprSpacing.lg),
+              ElevatedButton.icon(
+                onPressed: () => Navigator.of(context).pushNamed('/sign-in'),
+                icon: const Icon(Icons.login),
+                label: const Text('Sign in'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: TryprColors.primaryDark,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -997,82 +1756,91 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Edit profile',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 12),
-          Form(
-            key: _formKey,
-            child: Column(
-              children: [
-                TextFormField(
-                  controller: nameCtl,
-                  decoration: const InputDecoration(labelText: 'Name'),
-                ),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: cityCtl,
-                  decoration: const InputDecoration(labelText: 'City'),
-                ),
-                const SizedBox(height: 8),
-                Row(
+    final isCompact = MediaQuery.sizeOf(context).width < 640;
+    return SafeArea(
+      top: false,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.9,
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(TryprSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Edit profile',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: TryprSpacing.md),
+              Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    CircleAvatar(
-                      radius: 36,
-                      backgroundColor: Colors.grey.shade200,
-                      backgroundImage:
-                          localProfileImage != null
-                              ? (kIsWeb
-                                  ? NetworkImage(localProfileImage!)
-                                  : MemoryImage(
-                                        base64Decode(
-                                          localProfileImage!.split(',').last,
-                                        ),
-                                      )
-                                      as ImageProvider)
-                              : null,
-                      child:
-                          localProfileImage == null
-                              ? const Icon(
-                                Icons.person,
-                                size: 36,
-                                color: Colors.grey,
-                              )
-                              : null,
+                    TextFormField(
+                      controller: nameCtl,
+                      decoration: const InputDecoration(labelText: 'Name'),
                     ),
-                    const SizedBox(width: 12),
-                    ElevatedButton.icon(
-                      onPressed: _onUploadPressed,
-                      icon: const Icon(Icons.upload_file),
-                      label: const Text('Upload profile picture'),
+                    const SizedBox(height: TryprSpacing.sm),
+                    TextFormField(
+                      controller: cityCtl,
+                      decoration: const InputDecoration(labelText: 'City'),
                     ),
-                    const SizedBox(width: 12),
-                    if (localProfileImage != null)
-                      TextButton(
-                        onPressed: () {
-                          setState(() {
-                            localProfileImage = null;
-                            removeImage = true;
-                          });
-                        },
-                        child: const Text('Remove'),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: InputDecorator(
+                    const SizedBox(height: TryprSpacing.sm),
+                    Wrap(
+                      spacing: TryprSpacing.md,
+                      runSpacing: TryprSpacing.sm,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        CircleAvatar(
+                          radius: 36,
+                          backgroundColor: TryprColors.surfaceVariant,
+                          backgroundImage:
+                              localProfileImage != null
+                                  ? (kIsWeb
+                                      ? NetworkImage(localProfileImage!)
+                                      : MemoryImage(
+                                            base64Decode(
+                                              localProfileImage!
+                                                  .split(',')
+                                                  .last,
+                                            ),
+                                          )
+                                          as ImageProvider)
+                                  : null,
+                          child:
+                              localProfileImage == null
+                                  ? const Icon(
+                                    Icons.person,
+                                    size: 36,
+                                    color: TryprColors.textTertiary,
+                                  )
+                                  : null,
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: _onUploadPressed,
+                          icon: const Icon(Icons.upload_file),
+                          label: const Text('Upload profile picture'),
+                        ),
+                        if (localProfileImage != null)
+                          TextButton(
+                            onPressed: () {
+                              setState(() {
+                                localProfileImage = null;
+                                removeImage = true;
+                              });
+                            },
+                            child: const Text('Remove'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: TryprSpacing.sm),
+                    if (isCompact) ...[
+                      InputDecorator(
                         decoration: const InputDecoration(labelText: 'Sex'),
                         child: DropdownButtonHideUnderline(
                           child: DropdownButton<String>(
@@ -1091,137 +1859,120 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: InputDecorator(
-                        decoration: const InputDecoration(
-                          labelText: 'Date of birth',
-                        ),
-                        child: InkWell(
-                          onTap: () async {
-                            final now = DateTime.now();
-                            final picked = await showDatePicker(
-                              context: context,
-                              initialDate: dob ?? DateTime(now.year - 25),
-                              firstDate: DateTime(1900),
-                              lastDate: DateTime(now.year),
-                            );
-                            if (picked != null && mounted) {
-                              setState(() => dob = picked);
-                            }
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12.0),
-                            child: Text(
-                              dob != null
-                                  ? '${dob!.year}-${dob!.month.toString().padLeft(2, '0')}-${dob!.day.toString().padLeft(2, '0')}'
-                                  : 'Select date',
+                      const SizedBox(height: TryprSpacing.sm),
+                      _dobPicker(context),
+                    ] else ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Sex',
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: sex,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'male',
+                                      child: Text('Male'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'female',
+                                      child: Text('Female'),
+                                    ),
+                                  ],
+                                  onChanged:
+                                      (v) => setState(() => sex = v ?? 'male'),
+                                ),
+                              ),
                             ),
                           ),
+                          const SizedBox(width: TryprSpacing.md),
+                          Expanded(child: _dobPicker(context)),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: TryprSpacing.md),
+                    if (isCompact) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _onSavePressed,
+                          child: const Text('Save'),
                         ),
                       ),
-                    ),
+                      const SizedBox(height: TryprSpacing.sm),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                    ] else ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: _onSavePressed,
+                              child: const Text('Save'),
+                            ),
+                          ),
+                          const SizedBox(width: TryprSpacing.md),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: _onSavePressed,
-                        child: const Text('Save'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('Cancel'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dobPicker(BuildContext context) {
+    return InputDecorator(
+      decoration: const InputDecoration(labelText: 'Date of birth'),
+      child: InkWell(
+        onTap: () async {
+          final now = DateTime.now();
+          final picked = await showDatePicker(
+            context: context,
+            initialDate: dob ?? DateTime(now.year - 25),
+            firstDate: DateTime(1900),
+            lastDate: DateTime(now.year),
+          );
+          if (picked != null && mounted) {
+            setState(() => dob = picked);
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12.0),
+          child: Text(
+            dob != null
+                ? '${dob!.year}-${dob!.month.toString().padLeft(2, '0')}-${dob!.day.toString().padLeft(2, '0')}'
+                : 'Select date',
+          ),
+        ),
       ),
     );
   }
 
   Future<void> _onUploadPressed() async {
-    if (!kIsWeb) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Profile upload currently supported on web only'),
-          ),
-        );
-      }
-      return;
-    }
-    final input = html.FileUploadInputElement();
-    input.accept = 'image/*';
-    input.click();
-    input.onChange.listen((e) {
-      final files = input.files;
-      if (files == null || files.isEmpty) return;
-      final reader = html.FileReader();
-      reader.readAsDataUrl(files[0]);
-      reader.onLoad.first.then((_) async {
-        final result = reader.result as String?;
-        if (result != null) {
-          try {
-            final img = html.ImageElement();
-            img.src = result;
-            await img.onLoad.first;
-            final w = img.width ?? 0;
-            final h = img.height ?? 0;
-            final srcSize = (w < h ? w : h);
-            const int targetSize = 256;
-            final canvas = html.CanvasElement(
-              width: targetSize,
-              height: targetSize,
-            );
-            final ctxCanvas = canvas.context2D;
-            ctxCanvas.beginPath();
-            ctxCanvas.arc(
-              targetSize / 2,
-              targetSize / 2,
-              targetSize / 2,
-              0,
-              2 * math.pi,
-            );
-            ctxCanvas.clip();
-            final sx = ((w - srcSize) / 2).toInt();
-            final sy = ((h - srcSize) / 2).toInt();
-            ctxCanvas.drawImageScaledFromSource(
-              img,
-              sx,
-              sy,
-              srcSize,
-              srcSize,
-              0,
-              0,
-              targetSize,
-              targetSize,
-            );
-            final cropped = canvas.toDataUrl('image/png');
-            if (!mounted) return;
-            setState(() {
-              localProfileImage = cropped;
-              removeImage = false;
-            });
-          } catch (_) {
-            if (!mounted) return;
-            setState(() {
-              localProfileImage = result;
-              removeImage = false;
-            });
-          }
-        }
-      });
+    final picked = await pickImageDataUrl();
+    if (picked == null || !mounted) return;
+    setState(() {
+      localProfileImage = picked;
+      removeImage = false;
     });
   }
 
@@ -1253,12 +2004,12 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
       Navigator.of(context).pop();
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Profile updated')));
+      ).showTryprSnackBar(const SnackBar(content: Text('Profile updated')));
     } catch (err) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to save profile: $err')));
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          SnackBar(content: Text('Failed to save profile: $err')),
+        );
       }
     }
   }

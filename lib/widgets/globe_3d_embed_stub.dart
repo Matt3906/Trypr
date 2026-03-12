@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 /// Non-web stub — the 3D globe is only available in the browser.
 class Globe3DEmbed extends StatelessWidget {
   final List<Map<String, dynamic>> points;
+  final List<Map<String, dynamic>> secondaryPoints;
+  final List<Map<String, dynamic>> routeGeometry;
   final void Function(double lat, double lon)? onMapTap;
   final void Function(double distanceMeters, double durationSeconds)?
   onRouteSummary;
@@ -11,6 +13,8 @@ class Globe3DEmbed extends StatelessWidget {
   const Globe3DEmbed({
     super.key,
     this.points = const [],
+    this.secondaryPoints = const [],
+    this.routeGeometry = const [],
     this.onMapTap,
     this.onRouteSummary,
     this.transportMode = 'DRIVING',

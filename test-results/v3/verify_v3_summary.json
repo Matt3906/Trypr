@@ -1,0 +1,61 @@
+{
+  "totalRequests": 8,
+  "totalResponses": 8,
+  "osrmRequests": 0,
+  "apiRouteResponses": [
+    {
+      "mode": "train",
+      "status": 403,
+      "method": "POST"
+    },
+    {
+      "mode": "walk",
+      "status": 403,
+      "method": "POST"
+    },
+    {
+      "mode": "bike",
+      "status": 403,
+      "method": "POST"
+    },
+    {
+      "mode": "hiking",
+      "status": 403,
+      "method": "POST"
+    },
+    {
+      "mode": "hiking",
+      "status": 403,
+      "method": "POST"
+    },
+    {
+      "mode": "hiking",
+      "status": 403,
+      "method": "POST"
+    }
+  ],
+  "overpassResponses": [],
+  "mapsJsRequests": [
+    {
+      "status": 200,
+      "url": "https://maps.googleapis.com/maps/api/js?key=AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw&libraries=places&loading=async"
+    }
+  ],
+  "strictErrors": [
+    "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=car segType=calculated",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=rail mode=train status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=rail mode=train err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=rail mode=train status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-walking mode=walk status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-walking mode=walk err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-walking mode=walk status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=cycling mode=bike status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=cycling mode=bike err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=cycling mode=bike status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+    "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=gas_stops segType=calculated",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+    "STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=0 mode=car segType=calculated",
+    "STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403",
+    "STRICT_ROUTING_HARD_ERROR routeProxy request_failed provider=ors profile=foot-hiking mode=hiking err=Bad state: STRICT_ROUTING_HARD_ERROR routeProxy non_200 provider=ors profile=foot-hiking mode=hiking status=403"
+  ]
+}

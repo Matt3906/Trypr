@@ -33,8 +33,43 @@ class _GlobeWidgetState extends State<GlobeWidget> {
   bool _globeReady = false;
   StreamSubscription? _messageSub;
 
-  // Get Google Maps API key from environment
-  static const _mapsKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+  String _postTargetOrigin() {
+    try {
+      final origin = Uri.base.origin;
+      if (origin.isNotEmpty && origin != 'null') return origin;
+    } catch (_) {}
+    return '*';
+  }
+
+  bool _isTrustedMessage(html.MessageEvent event) {
+    final expectedWindow = _iframe?.contentWindow;
+    if (expectedWindow != null && event.source != expectedWindow) {
+      return false;
+    }
+
+    try {
+      final origin = Uri.base.origin;
+      if (origin.isNotEmpty && origin != 'null' && event.origin != origin) {
+        return false;
+      }
+    } catch (_) {}
+
+    return true;
+  }
+
+  String _resolvedMapsKey() {
+    const fromDefine = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+    if (fromDefine.isNotEmpty) return fromDefine;
+
+    try {
+      final meta = html.document.querySelector(
+        'meta[name="google-maps-api-key"]',
+      );
+      return meta?.getAttribute('content')?.trim() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
 
   @override
   void initState() {
@@ -47,7 +82,7 @@ class _GlobeWidgetState extends State<GlobeWidget> {
     ui_web.platformViewRegistry.registerViewFactory(_viewId, (int viewId) {
       // Build the iframe pointing at the dedicated map.html file
       // (lives in web/ and gets copied to build/web/ by `flutter build web`).
-      final keyParam = Uri.encodeComponent(_mapsKey);
+      final keyParam = Uri.encodeComponent(_resolvedMapsKey());
       _iframe =
           html.IFrameElement()
             ..style.border = 'none'
@@ -71,6 +106,7 @@ class _GlobeWidgetState extends State<GlobeWidget> {
 
       // Listen for messages from the iframe
       _messageSub = html.window.onMessage.listen((event) {
+        if (!_isTrustedMessage(event)) return;
         if (event.data is Map) {
           final data = Map<String, dynamic>.from(event.data as Map);
           if (data['type'] == 'tripSelected' && data['tripId'] != null) {
@@ -119,14 +155,14 @@ class _GlobeWidgetState extends State<GlobeWidget> {
       'type': 'updateTrips',
       'trips': sanitizedTrips,
     });
-    _iframe!.contentWindow!.postMessage(message, '*');
+    _iframe!.contentWindow!.postMessage(message, _postTargetOrigin());
   }
 
   void _focusTrip(Map<String, dynamic>? trip) {
     if (_iframe?.contentWindow == null) return;
     final sanitizedTrip = trip != null ? _sanitizeForJson(trip) : null;
     final message = jsonEncode({'type': 'focusTrip', 'trip': sanitizedTrip});
-    _iframe!.contentWindow!.postMessage(message, '*');
+    _iframe!.contentWindow!.postMessage(message, _postTargetOrigin());
   }
 
   /// Recursively convert Firestore Timestamps and other non-JSON types to serializable values
@@ -152,7 +188,7 @@ class _GlobeWidgetState extends State<GlobeWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (_mapsKey.isEmpty) {
+    if (_resolvedMapsKey().isEmpty) {
       // Show fallback UI when no API key
       return Container(
         decoration: BoxDecoration(

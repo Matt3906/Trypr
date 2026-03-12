@@ -72,12 +72,18 @@ service cloud.firestore {
       // User's trips
       match /trips/{tripId} {
         allow create: if isSelf(userId);
-        // Admins can read all trips for management
-        allow read: if canReadTrip(userId, tripId) || isAdmin();
+        // Admins can read all trips for management.
+        // Anyone (even unauthenticated) can read a trip if shareLinkEnabled == true,
+        // so share-link recipients get a read-only preview without signing in.
+        allow read: if canReadTrip(userId, tripId)
+                     || isAdmin()
+                     || resource.data.shareLinkEnabled == true;
 
-        // Default to owner-only writes for safety.
-        // If you want collaborative editing, we can tighten this later with roles.
-        allow update, delete: if isSelf(userId);
+        // Owner and shared collaborators can update trips.
+        // Shared users (friends) get full editing access.
+        allow update: if isSelf(userId) || isTripSharedWith(userId, tripId);
+        // Only the owner can delete a trip.
+        allow delete: if isSelf(userId);
 
         // Messages subcollection (chat)
         match /messages/{msgId} {

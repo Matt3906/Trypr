@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 
 class CompleteProfileScreen extends StatefulWidget {
@@ -32,7 +33,7 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     final uid = _user?.uid;
     if (uid == null) return;
     if (_nameCtl.text.trim().isEmpty || _cityCtl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(content: Text('Please fill name and city')),
       );
       return;
@@ -57,7 +58,7 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+        ).showTryprSnackBar(SnackBar(content: Text('Save failed: $e')));
       }
       // Ensure saving flag is cleared and return early since write failed.
       if (mounted) setState(() => _saving = false);
@@ -70,7 +71,7 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
     if (mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Profile completed')));
+      ).showTryprSnackBar(const SnackBar(content: Text('Profile completed')));
     }
 
     try {
@@ -84,7 +85,7 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
         print('Navigation failed after profile save: $e\n$st');
       }
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(context).showTryprSnackBar(
           SnackBar(content: Text('Saved but navigation failed: $e')),
         );
       }
