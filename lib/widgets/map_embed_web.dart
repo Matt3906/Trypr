@@ -115,6 +115,20 @@ class _ModeOverlays {
   });
 }
 
+class _AdventureViewportFocus {
+  final gmaps.LatLng center;
+  final List<gmaps.LatLng> hikingAnchors;
+  final double portagingPadDegrees;
+  final String signature;
+
+  const _AdventureViewportFocus({
+    required this.center,
+    required this.hikingAnchors,
+    required this.portagingPadDegrees,
+    required this.signature,
+  });
+}
+
 class _StyledRouteSegment {
   final List<gmaps.LatLng> path;
   final Color color;
@@ -183,6 +197,102 @@ class _TrailCandidate {
   const _TrailCandidate({required this.index, required this.meters});
 }
 
+class _TrailSpatialIndex {
+  static const double _metersPerDegree = 111320.0;
+
+  final double cellMeters;
+  final double lonScale;
+  final List<double> projectedX;
+  final List<double> projectedY;
+  final Map<String, List<int>> buckets;
+
+  const _TrailSpatialIndex({
+    required this.cellMeters,
+    required this.lonScale,
+    required this.projectedX,
+    required this.projectedY,
+    required this.buckets,
+  });
+
+  factory _TrailSpatialIndex.fromNodes(
+    List<gmaps.LatLng> nodes, {
+    double cellMeters = 1800.0,
+  }) {
+    final safeCellMeters = cellMeters.clamp(300.0, 5000.0).toDouble();
+    if (nodes.isEmpty) {
+      return _TrailSpatialIndex(
+        cellMeters: safeCellMeters,
+        lonScale: 1.0,
+        projectedX: const <double>[],
+        projectedY: const <double>[],
+        buckets: const <String, List<int>>{},
+      );
+    }
+
+    var meanLat = 0.0;
+    for (final node in nodes) {
+      meanLat += node.latitude;
+    }
+    meanLat /= nodes.length;
+    final lonScale =
+        math.cos(meanLat * (math.pi / 180.0)).abs().clamp(0.2, 1.0).toDouble();
+
+    final projectedX = List<double>.filled(nodes.length, 0.0);
+    final projectedY = List<double>.filled(nodes.length, 0.0);
+    final buckets = <String, List<int>>{};
+
+    for (var i = 0; i < nodes.length; i++) {
+      final node = nodes[i];
+      final x = node.longitude * _metersPerDegree * lonScale;
+      final y = node.latitude * _metersPerDegree;
+      projectedX[i] = x;
+      projectedY[i] = y;
+      final bucketX = (x / safeCellMeters).floor();
+      final bucketY = (y / safeCellMeters).floor();
+      final key = '$bucketX,$bucketY';
+      buckets.putIfAbsent(key, () => <int>[]).add(i);
+    }
+
+    return _TrailSpatialIndex(
+      cellMeters: safeCellMeters,
+      lonScale: lonScale,
+      projectedX: projectedX,
+      projectedY: projectedY,
+      buckets: buckets,
+    );
+  }
+
+  List<int> indicesWithinRadius(gmaps.LatLng target, double radiusMeters) {
+    if (projectedX.isEmpty || radiusMeters <= 0) return const <int>[];
+    final x = target.longitude * _metersPerDegree * lonScale;
+    final y = target.latitude * _metersPerDegree;
+    final paddedRadius = math.max(radiusMeters + 180.0, radiusMeters * 1.08);
+    final bucketRadius = math.max(1, (paddedRadius / cellMeters).ceil());
+    final bucketX = (x / cellMeters).floor();
+    final bucketY = (y / cellMeters).floor();
+    final radiusSq = paddedRadius * paddedRadius;
+    final out = <int>[];
+
+    for (var dx = -bucketRadius; dx <= bucketRadius; dx++) {
+      for (var dy = -bucketRadius; dy <= bucketRadius; dy++) {
+        final key = '${bucketX + dx},${bucketY + dy}';
+        final bucket = buckets[key];
+        if (bucket == null || bucket.isEmpty) continue;
+        for (final index in bucket) {
+          final deltaX = projectedX[index] - x;
+          final deltaY = projectedY[index] - y;
+          final approxSq = deltaX * deltaX + deltaY * deltaY;
+          if (approxSq <= radiusSq) {
+            out.add(index);
+          }
+        }
+      }
+    }
+
+    return out;
+  }
+}
+
 class _PortageGraphCandidate {
   final int index;
   final double searchMeters;
@@ -244,15 +354,53 @@ class _PortageLegSolution {
   });
 }
 
+class _PortageWaterFirstLegSolution {
+  final List<gmaps.LatLng> path;
+  final double distanceMeters;
+
+  const _PortageWaterFirstLegSolution({
+    required this.path,
+    required this.distanceMeters,
+  });
+}
+
+class _PortageWaterFirstEdge {
+  final int to;
+  final double meters;
+  final List<gmaps.LatLng> path;
+  final bool isCarry;
+
+  const _PortageWaterFirstEdge({
+    required this.to,
+    required this.meters,
+    required this.path,
+    required this.isCarry,
+  });
+}
+
+class _LineProjection {
+  final gmaps.LatLng point;
+  final int segmentIndex;
+  final double anchorMeters;
+
+  const _LineProjection({
+    required this.point,
+    required this.segmentIndex,
+    required this.anchorMeters,
+  });
+}
+
 class _TrailGraphCacheEntry {
   final DateTime fetchedAt;
   final List<gmaps.LatLng> nodes;
   final List<List<_TrailEdge>> adjacency;
+  final _TrailSpatialIndex spatialIndex;
 
   const _TrailGraphCacheEntry({
     required this.fetchedAt,
     required this.nodes,
     required this.adjacency,
+    required this.spatialIndex,
   });
 }
 
@@ -329,6 +477,7 @@ class _RouteComputation {
   final List<gmaps.PatternItem> patterns;
   final List<_StyledRouteSegment> styledSegments;
   final List<String> instructions;
+  final List<Map<String, dynamic>> stepDetails;
   final Map<String, dynamic>? arrivalStop;
 
   const _RouteComputation({
@@ -342,6 +491,7 @@ class _RouteComputation {
     this.patterns = const [],
     this.styledSegments = const [],
     this.instructions = const [],
+    this.stepDetails = const [],
     this.arrivalStop,
   });
 }
@@ -354,9 +504,15 @@ class MapEmbed extends StatelessWidget {
   onRouteSummary;
   final void Function(List<Map<String, dynamic>> geometry)? onRouteGeometry;
   final void Function(List<String> lines)? onRouteInstructions;
+  final void Function(List<Map<String, dynamic>> segments)?
+  onRouteSegmentDetails;
   final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final void Function(bool isComputing)? onRouteComputingChanged;
+  final void Function(String message)? onRouteError;
+  final Map<String, dynamic>? focusedRouteStep;
   final List<Map<String, dynamic>> initialRouteGeometry;
   final List<String> initialRouteInstructions;
+  final List<Map<String, dynamic>> initialRouteSegmentDetails;
   final bool preferInitialRouteData;
   final String transportMode;
   final List<String> segmentTransportModes;
@@ -366,6 +522,7 @@ class MapEmbed extends StatelessWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final void Function(Map<String, dynamic> campsite)? onHikingCampsiteTap;
+  final void Function(Map<String, dynamic> accessPoint)? onPortageAccessTap;
   final List<Map<String, dynamic>> secondaryPoints;
   final bool disableDefaultUi;
   final bool disableGestures;
@@ -382,9 +539,14 @@ class MapEmbed extends StatelessWidget {
     this.onRouteSummary,
     this.onRouteGeometry,
     this.onRouteInstructions,
+    this.onRouteSegmentDetails,
     this.onTransitArrivalStop,
+    this.onRouteComputingChanged,
+    this.onRouteError,
+    this.focusedRouteStep,
     this.initialRouteGeometry = const [],
     this.initialRouteInstructions = const [],
+    this.initialRouteSegmentDetails = const [],
     this.preferInitialRouteData = false,
     this.transportMode = 'car',
     this.segmentTransportModes = const [],
@@ -394,6 +556,7 @@ class MapEmbed extends StatelessWidget {
     this.onViaDragEnd,
     this.onViaTapDelete,
     this.onHikingCampsiteTap,
+    this.onPortageAccessTap,
     this.secondaryPoints = const [],
     this.disableDefaultUi = false,
     this.disableGestures = false,
@@ -444,9 +607,14 @@ class MapEmbed extends StatelessWidget {
       onRouteSummary: onRouteSummary,
       onRouteGeometry: onRouteGeometry,
       onRouteInstructions: onRouteInstructions,
+      onRouteSegmentDetails: onRouteSegmentDetails,
       onTransitArrivalStop: onTransitArrivalStop,
+      onRouteComputingChanged: onRouteComputingChanged,
+      onRouteError: onRouteError,
+      focusedRouteStep: focusedRouteStep,
       initialRouteGeometry: initialRouteGeometry,
       initialRouteInstructions: initialRouteInstructions,
+      initialRouteSegmentDetails: initialRouteSegmentDetails,
       preferInitialRouteData: preferInitialRouteData,
       transportMode: transportMode,
       segmentTransportModes: segmentTransportModes,
@@ -456,6 +624,7 @@ class MapEmbed extends StatelessWidget {
       onViaDragEnd: onViaDragEnd,
       onViaTapDelete: onViaTapDelete,
       onHikingCampsiteTap: onHikingCampsiteTap,
+      onPortageAccessTap: onPortageAccessTap,
       mapsKey: mapsKey,
       disableDefaultUi: disableDefaultUi,
       disableGestures: disableGestures,
@@ -477,9 +646,15 @@ class _MapEmbedWebStateful extends StatefulWidget {
   onRouteSummary;
   final void Function(List<Map<String, dynamic>> geometry)? onRouteGeometry;
   final void Function(List<String> lines)? onRouteInstructions;
+  final void Function(List<Map<String, dynamic>> segments)?
+  onRouteSegmentDetails;
   final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final void Function(bool isComputing)? onRouteComputingChanged;
+  final void Function(String message)? onRouteError;
+  final Map<String, dynamic>? focusedRouteStep;
   final List<Map<String, dynamic>> initialRouteGeometry;
   final List<String> initialRouteInstructions;
+  final List<Map<String, dynamic>> initialRouteSegmentDetails;
   final bool preferInitialRouteData;
   final String transportMode;
   final List<String> segmentTransportModes;
@@ -489,6 +664,7 @@ class _MapEmbedWebStateful extends StatefulWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final void Function(Map<String, dynamic> campsite)? onHikingCampsiteTap;
+  final void Function(Map<String, dynamic> accessPoint)? onPortageAccessTap;
   final String mapsKey;
   final bool disableDefaultUi;
   final bool disableGestures;
@@ -506,9 +682,14 @@ class _MapEmbedWebStateful extends StatefulWidget {
     required this.onRouteSummary,
     required this.onRouteGeometry,
     required this.onRouteInstructions,
+    required this.onRouteSegmentDetails,
     required this.onTransitArrivalStop,
+    required this.onRouteComputingChanged,
+    required this.onRouteError,
+    required this.focusedRouteStep,
     required this.initialRouteGeometry,
     required this.initialRouteInstructions,
+    required this.initialRouteSegmentDetails,
     required this.preferInitialRouteData,
     required this.transportMode,
     required this.segmentTransportModes,
@@ -518,6 +699,7 @@ class _MapEmbedWebStateful extends StatefulWidget {
     required this.onViaDragEnd,
     required this.onViaTapDelete,
     required this.onHikingCampsiteTap,
+    required this.onPortageAccessTap,
     required this.mapsKey,
     required this.disableDefaultUi,
     required this.disableGestures,
@@ -539,6 +721,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Set<gmaps.Polyline> _polylines = const {};
   Set<gmaps.Marker> _modeSpecificMarkers = const {};
   Set<gmaps.Polyline> _modeSpecificPolylines = const {};
+  Set<gmaps.Marker> _routeComputingMarkers = const {};
+  Set<gmaps.Polyline> _routeComputingPolylines = const {};
   bool _mapsReady = false;
   bool _isRouteComputing = false;
 
@@ -554,6 +738,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   String _secondarySig = '';
   int _rebuildSeq = 0;
   String _lastRouteCalcSig = '';
+  String _lastRouteErrorSig = '';
+  bool _lastRouteHadBlockingGaps = false;
 
   List<String> _lastInstructions = const [];
 
@@ -571,6 +757,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   static final Map<String, List<Map<String, dynamic>>> _gasOverlayCache = {};
   static final Set<String> _routingProxyUnavailableUrls = <String>{};
   static final Set<String> _overpassUnavailableEndpoints = <String>{};
+  static final Map<String, DateTime> _overpassEndpointCooldownUntil =
+      <String, DateTime>{};
   html.DivElement? _placesHost;
   Object? _placesService;
   bool _didLogRuntimeKeyPresence = false;
@@ -583,6 +771,22 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Offset? _previewOffset;
   Size _mapSize = Size.zero;
   Timer? _previewUpdateTimer;
+  Timer? _routeComputingOverlayUpdateTimer;
+  Timer? _routeComputingHideTimer;
+  Timer? _routeComputingAnimationTimer;
+  DateTime? _routeComputingShownAt;
+  Offset? _routeComputingStartOffset;
+  Offset? _routeComputingTargetOffset;
+  double _routeComputingCurveSeed = 0.5;
+  double _routeComputingAnimationPhase = 0.0;
+  Set<gmaps.Marker> _focusedStepMarkers = const {};
+  Set<gmaps.Polyline> _focusedStepPolylines = const {};
+  Timer? _focusedStepHighlightTimer;
+  String _lastFocusedRouteStepSig = '';
+
+  static const Duration _routeComputingMinVisible = Duration(
+    milliseconds: 1100,
+  );
 
   // ── Garmin-style ghost via marker (route hover + drag) ──
   gmaps.LatLng? _ghostViaLatLng; // snapped onto the polyline
@@ -592,6 +796,13 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   double _currentZoom = 2.0;
   bool _isDraggingGhost = false;
   Offset? _ghostDragScreenOffset; // follows cursor during drag
+  Timer? _adventureOverlayRefreshTimer;
+  String _lastAdventureOverlayCameraSig = '';
+  String _pendingAdventureOverlayCameraSig = '';
+  String _lastAdventureOverlayAutoLoadSig = '';
+  bool _showAdventureOverlayLoadButton = false;
+  bool _isAdventureOverlayLoading = false;
+  _PortagingOverlayCacheEntry? _lastVisiblePortagingOverlayEntry;
 
   String _normalizeTransportMode(String raw) {
     var mode = raw.trim().toLowerCase();
@@ -634,8 +845,15 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   }
 
   String _segmentRoutingSignature(List<String> types) {
-    if (types.isEmpty) return '';
-    return types.map((t) => t.trim().toLowerCase()).join(',');
+    final segments = math.max(0, widget.points.length - 1);
+    if (segments <= 0) return '';
+    return List<String>.generate(segments, (index) {
+      final raw = index < types.length ? types[index] : '';
+      return _normalizeSegmentRoutingType(
+        raw,
+        mode: _segmentTransportModeFor(index),
+      );
+    }).join(',');
   }
 
   String _segmentTransportSignature(List<String> types) {
@@ -650,11 +868,41 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return _normalizeTransportMode(widget.segmentTransportModes[segmentIndex]);
   }
 
+  String _defaultRoutingTypeForMode(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
+  String _normalizeSegmentRoutingType(String raw, {required String mode}) {
+    final normalizedMode = _normalizeTransportMode(mode);
+    final value = raw.trim().toLowerCase();
+    if (value == 'direct') return 'direct';
+    switch (normalizedMode) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
   String _segmentRoutingTypeFor(int segmentIndex) {
     if (segmentIndex < 0) return 'calculated';
-    if (segmentIndex >= widget.segmentRoutingTypes.length) return 'calculated';
-    final v = widget.segmentRoutingTypes[segmentIndex].trim().toLowerCase();
-    return (v == 'direct') ? 'direct' : 'calculated';
+    final mode = _segmentTransportModeFor(segmentIndex);
+    if (segmentIndex >= widget.segmentRoutingTypes.length) {
+      return _defaultRoutingTypeForMode(mode);
+    }
+    return _normalizeSegmentRoutingType(
+      widget.segmentRoutingTypes[segmentIndex],
+      mode: mode,
+    );
   }
 
   Color _standardRouteColor(String mode) {
@@ -926,7 +1174,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   @override
   void dispose() {
     _previewUpdateTimer?.cancel();
+    _routeComputingOverlayUpdateTimer?.cancel();
+    _routeComputingHideTimer?.cancel();
+    _routeComputingAnimationTimer?.cancel();
+    _focusedStepHighlightTimer?.cancel();
     _ghostHoverTimer?.cancel();
+    _adventureOverlayRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -956,6 +1209,10 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             _geometrySignature(oldWidget.initialRouteGeometry) ||
         _instructionsSignature(widget.initialRouteInstructions) !=
             _instructionsSignature(oldWidget.initialRouteInstructions) ||
+        _routeSegmentDetailsSignature(widget.initialRouteSegmentDetails) !=
+            _routeSegmentDetailsSignature(
+              oldWidget.initialRouteSegmentDetails,
+            ) ||
         widget.preferInitialRouteData != oldWidget.preferInitialRouteData;
     final shouldUseLateInitialRoute =
         initialRouteChanged &&
@@ -971,6 +1228,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         newSegModes != oldSegModes ||
         newVia != oldVia ||
         newSeg != oldSeg) {
+      _lastAdventureOverlayCameraSig = '';
+      _lastAdventureOverlayAutoLoadSig = '';
       _mainSig = newMain;
       _secondarySig = newSecondary;
       if (modeChanged || overlayModeChanged) {
@@ -985,9 +1244,37 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       }
       _rebuild();
     }
+
+    final nextFocusedStepSig = _focusedRouteStepSignature(
+      widget.focusedRouteStep,
+    );
+    if (nextFocusedStepSig != _lastFocusedRouteStepSig) {
+      _lastFocusedRouteStepSig = nextFocusedStepSig;
+      if (widget.focusedRouteStep == null || nextFocusedStepSig.isEmpty) {
+        _clearFocusedRouteStepHighlight();
+      } else {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          unawaited(
+            _applyFocusedRouteStep(
+              Map<String, dynamic>.from(widget.focusedRouteStep!),
+            ),
+          );
+        });
+      }
+    }
+
+    if (_isRouteComputing) {
+      _scheduleRouteComputingOverlayRefresh();
+    }
   }
 
   void _clearModeSpecificLayers() {
+    _lastAdventureOverlayCameraSig = '';
+    _pendingAdventureOverlayCameraSig = '';
+    _lastAdventureOverlayAutoLoadSig = '';
+    _showAdventureOverlayLoadButton = false;
+    _isAdventureOverlayLoading = false;
     _modeSpecificMarkers = const {};
     _modeSpecificPolylines = const {};
   }
@@ -1028,6 +1315,210 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   String _instructionsSignature(List<String> lines) {
     if (lines.isEmpty) return '';
     return lines.map((line) => line.trim()).join('\n');
+  }
+
+  String _routeSegmentDetailsSignature(List<Map<String, dynamic>> details) {
+    if (details.isEmpty) return '';
+    final b = StringBuffer();
+    for (final detail in details) {
+      final segmentIndex = (detail['segmentIndex'] as num?)?.toInt() ?? -1;
+      b
+        ..write(segmentIndex)
+        ..write(':')
+        ..write((detail['mode'] ?? '').toString().trim())
+        ..write(':');
+      final steps = detail['steps'];
+      if (steps is List) {
+        for (final rawStep in steps) {
+          if (rawStep is! Map) continue;
+          b
+            ..write((rawStep['tabLabel'] ?? '').toString().trim())
+            ..write('|')
+            ..write((rawStep['headline'] ?? '').toString().trim())
+            ..write('|')
+            ..write((rawStep['detail'] ?? '').toString().trim())
+            ..write('|')
+            ..write((rawStep['caption'] ?? '').toString().trim())
+            ..write(';');
+        }
+      }
+      b.write('\n');
+    }
+    return b.toString();
+  }
+
+  String _focusedRouteStepSignature(Map<String, dynamic>? step) {
+    if (step == null || step.isEmpty) return '';
+    final requestId = (step['requestId'] ?? '').toString().trim();
+    final headline = (step['headline'] ?? '').toString().trim();
+    final focusLat = _toDouble(step['focusLat'] ?? step['lat']);
+    final focusLon = _toDouble(step['focusLon'] ?? step['lon'] ?? step['lng']);
+    final pathLen = step['path'] is List ? (step['path'] as List).length : 0;
+    return [
+      requestId,
+      headline,
+      focusLat.toStringAsFixed(5),
+      focusLon.toStringAsFixed(5),
+      pathLen.toString(),
+    ].join('|');
+  }
+
+  List<gmaps.LatLng> _routeStepPath(Map<String, dynamic> step) {
+    final raw = step['path'];
+    if (raw is! List) return const <gmaps.LatLng>[];
+    final out = <gmaps.LatLng>[];
+    for (final point in raw) {
+      if (point is! Map) continue;
+      final lat = _toDouble(point['lat']);
+      final lon = _toDouble(point['lon'] ?? point['lng']);
+      if (!lat.isFinite || !lon.isFinite) continue;
+      if (out.isNotEmpty) {
+        final last = out.last;
+        if ((last.latitude - lat).abs() < 1e-7 &&
+            (last.longitude - lon).abs() < 1e-7) {
+          continue;
+        }
+      }
+      out.add(gmaps.LatLng(lat, lon));
+    }
+    return out;
+  }
+
+  gmaps.LatLng? _routeStepFocusPoint(
+    Map<String, dynamic> step, {
+    List<gmaps.LatLng>? path,
+  }) {
+    final focusLat = _toDouble(step['focusLat'] ?? step['lat']);
+    final focusLon = _toDouble(step['focusLon'] ?? step['lon'] ?? step['lng']);
+    if (focusLat.isFinite && focusLon.isFinite) {
+      return gmaps.LatLng(focusLat, focusLon);
+    }
+    final resolvedPath = path ?? _routeStepPath(step);
+    if (resolvedPath.isEmpty) return null;
+    return resolvedPath[resolvedPath.length ~/ 2];
+  }
+
+  Color? _parseRouteStepColor(String raw) {
+    final hex = raw.trim().replaceAll('#', '');
+    if (hex.length != 6) return null;
+    try {
+      return Color(int.parse('FF$hex', radix: 16));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  gmaps.LatLngBounds? _boundsForPath(List<gmaps.LatLng> path) {
+    if (path.isEmpty) return null;
+    var minLat = path.first.latitude;
+    var maxLat = path.first.latitude;
+    var minLon = path.first.longitude;
+    var maxLon = path.first.longitude;
+    for (final point in path.skip(1)) {
+      minLat = math.min(minLat, point.latitude);
+      maxLat = math.max(maxLat, point.latitude);
+      minLon = math.min(minLon, point.longitude);
+      maxLon = math.max(maxLon, point.longitude);
+    }
+    return gmaps.LatLngBounds(
+      southwest: gmaps.LatLng(minLat, minLon),
+      northeast: gmaps.LatLng(maxLat, maxLon),
+    );
+  }
+
+  void _clearFocusedRouteStepHighlight() {
+    _focusedStepHighlightTimer?.cancel();
+    if (_focusedStepMarkers.isEmpty && _focusedStepPolylines.isEmpty) return;
+    if (!mounted) return;
+    setState(() {
+      _focusedStepMarkers = const {};
+      _focusedStepPolylines = const {};
+    });
+  }
+
+  Future<void> _applyFocusedRouteStep(Map<String, dynamic> step) async {
+    final focusPath = _routeStepPath(step);
+    final focusPoint = _routeStepFocusPoint(step, path: focusPath);
+    if (focusPoint == null) {
+      _clearFocusedRouteStepHighlight();
+      return;
+    }
+
+    final mode = _normalizeTransportMode((step['mode'] ?? '').toString());
+    final accent =
+        _parseRouteStepColor((step['lineColor'] ?? '').toString()) ??
+        _standardRouteColor(mode);
+    final highlightPolylines =
+        focusPath.length >= 2
+            ? <gmaps.Polyline>{
+              gmaps.Polyline(
+                polylineId: gmaps.PolylineId('${_instanceId}_focus_step_path'),
+                points: focusPath,
+                color: accent.withValues(alpha: 0.96),
+                width: 8,
+                zIndex: 70,
+              ),
+            }
+            : const <gmaps.Polyline>{};
+    final highlightMarkers = <gmaps.Marker>{
+      gmaps.Marker(
+        markerId: gmaps.MarkerId('${_instanceId}_focus_step_marker'),
+        position: focusPoint,
+        zIndex: 71,
+        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+          _hueFor('route_step', mode),
+        ),
+      ),
+    };
+
+    if (mounted) {
+      setState(() {
+        _focusedStepPolylines = highlightPolylines;
+        _focusedStepMarkers = highlightMarkers;
+      });
+    }
+
+    final c = _controller;
+    if (c != null) {
+      final requestedZoom = _toDouble(step['focusZoom']);
+      final zoom = (requestedZoom > 0 ? requestedZoom : 14.0).clamp(
+        widget.minZoom,
+        widget.maxZoom,
+      );
+      final bounds = focusPath.length >= 2 ? _boundsForPath(focusPath) : null;
+      final focusDistanceMeters = _pathDistanceMeters(focusPath);
+      final shouldFitBounds =
+          bounds != null &&
+          focusDistanceMeters > 140.0 &&
+          ((bounds.northeast.latitude - bounds.southwest.latitude).abs() >
+                  1e-4 ||
+              (bounds.northeast.longitude - bounds.southwest.longitude).abs() >
+                  1e-4);
+      try {
+        if (shouldFitBounds) {
+          await c.animateCamera(gmaps.CameraUpdate.newLatLngBounds(bounds, 72));
+        } else {
+          await c.animateCamera(
+            gmaps.CameraUpdate.newLatLngZoom(focusPoint, zoom),
+          );
+        }
+      } catch (_) {
+        try {
+          if (shouldFitBounds) {
+            await c.moveCamera(gmaps.CameraUpdate.newLatLngBounds(bounds, 72));
+          } else {
+            await c.moveCamera(
+              gmaps.CameraUpdate.newLatLngZoom(focusPoint, zoom),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
+    _focusedStepHighlightTimer?.cancel();
+    _focusedStepHighlightTimer = Timer(const Duration(milliseconds: 1500), () {
+      _clearFocusedRouteStepHighlight();
+    });
   }
 
   List<gmaps.LatLng> _decodedInitialRoutePath() {
@@ -1127,6 +1618,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
     final totalDistance = _pathDistanceMeters(path);
 
+    widget.onRouteInstructions?.call(instructions);
+    widget.onRouteSegmentDetails?.call(widget.initialRouteSegmentDetails);
+
     if (!mounted || seq != _rebuildSeq) return true;
     setState(() {
       _polylines =
@@ -1150,6 +1644,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       widget.onRouteSummary?.call(totalDistance, 0);
     }
     _lastRouteCalcSig = _routeCalculationSignature();
+    _lastRouteHadBlockingGaps = false;
+    _lastRouteErrorSig = '';
     _setRouteComputing(false, seq: seq);
     return true;
   }
@@ -1617,6 +2113,25 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     );
   }
 
+  bool _boolish(dynamic value, {required bool fallback}) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      if (normalized == 'true' || normalized == 'yes' || normalized == '1') {
+        return true;
+      }
+      if (normalized == 'false' || normalized == 'no' || normalized == '0') {
+        return false;
+      }
+    }
+    return fallback;
+  }
+
+  bool _pointUsesStopBadge(Map<String, dynamic> point) {
+    return _boolish(point['isStop'], fallback: true);
+  }
+
   Future<void> _rebuild() async {
     final seq = ++_rebuildSeq;
     final main = widget.points;
@@ -1634,10 +2149,23 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
     final viaIconFuture = _markerIconCache.viaDot(dpr: dpr);
 
-    Future<gmaps.BitmapDescriptor> buildMainIcon(int index) async {
+    final stopNumbers = <int?>[];
+    var nextStopNumber = 1;
+    for (final point in main) {
+      if (_pointUsesStopBadge(point)) {
+        stopNumbers.add(nextStopNumber++);
+      } else {
+        stopNumbers.add(null);
+      }
+    }
+
+    Future<gmaps.BitmapDescriptor> buildMainIcon(int? stopNumber) async {
+      if (stopNumber == null) {
+        return viaIconFuture;
+      }
       try {
         return await _markerIconCache.numbered(
-          number: index + 1,
+          number: stopNumber,
           color: mainBadgeColor,
           dpr: dpr,
         );
@@ -1667,7 +2195,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
     final mainIconFutures = <Future<gmaps.BitmapDescriptor>>[];
     for (var i = 0; i < main.length; i++) {
-      mainIconFutures.add(buildMainIcon(i));
+      mainIconFutures.add(buildMainIcon(stopNumbers[i]));
     }
 
     final secondaryIconFutures = <Future<gmaps.BitmapDescriptor>>[];
@@ -1691,12 +2219,17 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final lon = _lonOf(p);
       final kind = (p['kind'] ?? '').toString();
       final category = (p['category'] ?? '').toString();
+      final stopNumber = stopNumbers[i];
+      final name = (p['name'] ?? '').toString().trim();
       markers.add(
         gmaps.Marker(
           markerId: gmaps.MarkerId('${_instanceId}_main_$i'),
           position: gmaps.LatLng(lat, lon),
           infoWindow: gmaps.InfoWindow(
-            title: 'Stop ${i + 1}',
+            title:
+                name.isNotEmpty
+                    ? name
+                    : (stopNumber != null ? 'Stop $stopNumber' : 'Waypoint'),
             snippet:
                 category.isNotEmpty
                     ? category
@@ -1706,7 +2239,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           anchor: const Offset(0.5, 0.5),
           onTap: () {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             _focusPoint(gmaps.LatLng(lat, lon));
             _showPreviewForPoint(p);
             widget.onPointTap?.call(p);
@@ -1740,7 +2273,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           ),
           onTap: () {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             _focusPoint(gmaps.LatLng(lat, lon));
             _showPreviewForPoint(p);
             widget.onPointTap?.call(p);
@@ -1768,7 +2301,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           anchor: const Offset(0.5, 0.5),
           onDragEnd: (p) {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             // If the marker barely moved, treat it as a tap → delete.
             final dLat = (p.latitude - origin.latitude).abs();
             final dLon = (p.longitude - origin.longitude).abs();
@@ -1781,7 +2314,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           },
           onTap: () {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             widget.onViaTapDelete?.call(i);
             _hidePreview();
           },
@@ -1798,6 +2331,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     await _updateRoutePolyline(seq: seq);
     if (!mounted || seq != _rebuildSeq) return;
     await _fitCamera();
+    if (!mounted || seq != _rebuildSeq) return;
+    _scheduleAdventureOverlayRefresh(force: true);
   }
 
   String _activeMapStyle() {
@@ -1879,22 +2414,860 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
   void _setRouteComputing(bool value, {required int seq}) {
     if (!mounted || seq != _rebuildSeq) return;
-    if (_isRouteComputing == value) return;
-    setState(() => _isRouteComputing = value);
+    if (value) {
+      _routeComputingHideTimer?.cancel();
+      _routeComputingHideTimer = null;
+      _routeComputingShownAt = DateTime.now();
+      if (_isRouteComputing) {
+        _scheduleRouteComputingOverlayRefresh();
+        return;
+      }
+      setState(() => _isRouteComputing = true);
+      widget.onRouteComputingChanged?.call(true);
+      _scheduleRouteComputingOverlayRefresh(
+        delay: const Duration(milliseconds: 140),
+      );
+      return;
+    }
+
+    if (!_isRouteComputing) {
+      _routeComputingShownAt = null;
+      return;
+    }
+
+    final shownAt = _routeComputingShownAt;
+    final elapsed =
+        shownAt == null
+            ? _routeComputingMinVisible
+            : DateTime.now().difference(shownAt);
+    final remaining = _routeComputingMinVisible - elapsed;
+    if (remaining > Duration.zero) {
+      _routeComputingHideTimer?.cancel();
+      _routeComputingHideTimer = Timer(remaining, () {
+        if (!mounted) return;
+        _routeComputingHideTimer = null;
+        _routeComputingShownAt = null;
+        if (!_isRouteComputing) return;
+        setState(() {
+          _isRouteComputing = false;
+          _routeComputingStartOffset = null;
+          _routeComputingTargetOffset = null;
+        });
+        widget.onRouteComputingChanged?.call(false);
+      });
+      return;
+    }
+
+    _routeComputingHideTimer?.cancel();
+    _routeComputingHideTimer = null;
+    _routeComputingShownAt = null;
+    setState(() {
+      _isRouteComputing = false;
+      _routeComputingStartOffset = null;
+      _routeComputingTargetOffset = null;
+    });
+    widget.onRouteComputingChanged?.call(false);
   }
 
-  Set<gmaps.Polyline> _existingHikingPolylines() {
+  void _scheduleRouteComputingOverlayRefresh({
+    Duration delay = const Duration(milliseconds: 60),
+  }) {
+    _routeComputingOverlayUpdateTimer?.cancel();
+    if (!_isRouteComputing) return;
+    _routeComputingOverlayUpdateTimer = Timer(delay, () {
+      unawaited(_updateRouteComputingOverlayAnchors());
+    });
+  }
+
+  void _clearRouteComputingOverlayAnchors({bool rebuild = true}) {
+    _routeComputingOverlayUpdateTimer?.cancel();
+    if (_routeComputingStartOffset == null &&
+        _routeComputingTargetOffset == null) {
+      return;
+    }
+    if (!rebuild || !mounted) {
+      _routeComputingStartOffset = null;
+      _routeComputingTargetOffset = null;
+      return;
+    }
+    setState(() {
+      _routeComputingStartOffset = null;
+      _routeComputingTargetOffset = null;
+    });
+  }
+
+  double _routeComputingSeedFor(gmaps.LatLng start, gmaps.LatLng target) {
+    final basis =
+        (start.latitude.abs() * 13.0) +
+        (start.longitude.abs() * 7.0) +
+        (target.latitude.abs() * 5.0) +
+        (target.longitude.abs() * 11.0);
+    final fractional = basis - basis.floorToDouble();
+    return (fractional.clamp(0.14, 0.86) as num).toDouble();
+  }
+
+  Future<void> _updateRouteComputingOverlayAnchors() async {
+    final c = _controller;
+    if (c == null ||
+        !mounted ||
+        !_isRouteComputing ||
+        _mapSize == Size.zero ||
+        widget.points.length < 2) {
+      _clearRouteComputingOverlayAnchors();
+      return;
+    }
+
+    final startLat = _latOf(widget.points[0]);
+    final startLon = _lonOf(widget.points[0]);
+    final targetLat = _latOf(widget.points[1]);
+    final targetLon = _lonOf(widget.points[1]);
+    if (!startLat.isFinite ||
+        !startLon.isFinite ||
+        !targetLat.isFinite ||
+        !targetLon.isFinite) {
+      _clearRouteComputingOverlayAnchors();
+      return;
+    }
+
+    try {
+      final startLatLng = gmaps.LatLng(startLat, startLon);
+      final targetLatLng = gmaps.LatLng(targetLat, targetLon);
+      final startScreen = await c.getScreenCoordinate(startLatLng);
+      final targetScreen = await c.getScreenCoordinate(targetLatLng);
+      if (!mounted || !_isRouteComputing) return;
+
+      final startOffset = Offset(
+        startScreen.x.toDouble().clamp(18.0, _mapSize.width - 18.0),
+        startScreen.y.toDouble().clamp(18.0, _mapSize.height - 18.0),
+      );
+      final targetOffset = Offset(
+        targetScreen.x.toDouble().clamp(18.0, _mapSize.width - 18.0),
+        targetScreen.y.toDouble().clamp(18.0, _mapSize.height - 18.0),
+      );
+      final nextSeed = _routeComputingSeedFor(startLatLng, targetLatLng);
+
+      if (_routeComputingStartOffset == startOffset &&
+          _routeComputingTargetOffset == targetOffset &&
+          _routeComputingCurveSeed == nextSeed) {
+        return;
+      }
+
+      setState(() {
+        _routeComputingStartOffset = startOffset;
+        _routeComputingTargetOffset = targetOffset;
+        _routeComputingCurveSeed = nextSeed;
+      });
+    } catch (_) {
+      _clearRouteComputingOverlayAnchors();
+    }
+  }
+
+  void _startRouteComputingNativeAnimation() {
+    _routeComputingAnimationTimer?.cancel();
+    _routeComputingAnimationPhase = 0.0;
+    _rebuildRouteComputingNativeOverlay();
+    _routeComputingAnimationTimer = Timer.periodic(
+      const Duration(milliseconds: 90),
+      (_) {
+        if (!mounted || !_isRouteComputing) {
+          _routeComputingAnimationTimer?.cancel();
+          _routeComputingAnimationTimer = null;
+          return;
+        }
+        _routeComputingAnimationPhase =
+            (_routeComputingAnimationPhase + 0.08) % 1.0;
+        _rebuildRouteComputingNativeOverlay();
+      },
+    );
+  }
+
+  void _stopRouteComputingNativeAnimation() {
+    _routeComputingAnimationTimer?.cancel();
+    _routeComputingAnimationTimer = null;
+    _routeComputingAnimationPhase = 0.0;
+    if (_routeComputingMarkers.isEmpty && _routeComputingPolylines.isEmpty) {
+      return;
+    }
+    setState(() {
+      _routeComputingMarkers = const {};
+      _routeComputingPolylines = const {};
+    });
+  }
+
+  List<gmaps.LatLng> _routeComputingArcPoints(
+    gmaps.LatLng start,
+    gmaps.LatLng end,
+  ) {
+    final dx = end.longitude - start.longitude;
+    final dy = end.latitude - start.latitude;
+    final distance = math.sqrt((dx * dx) + (dy * dy));
+    if (distance <= 0.000001) return [start, end];
+
+    final normalX = -dy / distance;
+    final normalY = dx / distance;
+    final directionSign = _routeComputingCurveSeed >= 0.5 ? 1.0 : -1.0;
+    final curveStrength = distance * (0.12 + (0.08 * _routeComputingCurveSeed));
+    final control = gmaps.LatLng(
+      ((start.latitude + end.latitude) / 2) + (normalY * curveStrength * directionSign),
+      ((start.longitude + end.longitude) / 2) + (normalX * curveStrength * directionSign),
+    );
+
+    return List<gmaps.LatLng>.generate(24, (index) {
+      final t = index / 23.0;
+      final omt = 1.0 - t;
+      return gmaps.LatLng(
+        (omt * omt * start.latitude) +
+            (2 * omt * t * control.latitude) +
+            (t * t * end.latitude),
+        (omt * omt * start.longitude) +
+            (2 * omt * t * control.longitude) +
+            (t * t * end.longitude),
+      );
+    });
+  }
+
+  gmaps.LatLng _interpolateLatLng(gmaps.LatLng a, gmaps.LatLng b, double t) {
+    return gmaps.LatLng(
+      a.latitude + ((b.latitude - a.latitude) * t),
+      a.longitude + ((b.longitude - a.longitude) * t),
+    );
+  }
+
+  List<gmaps.LatLng> _routeComputingBeamPoints(
+    List<gmaps.LatLng> path,
+    double progress,
+  ) {
+    if (path.length < 2) return path;
+    final headPosition = (path.length - 1) * (0.14 + (0.82 * progress));
+    final tailSpan = math.max(2.0, (path.length - 1) * 0.22);
+    final startPosition = math.max(0.0, headPosition - tailSpan);
+    final startIndex = startPosition.floor();
+    final endIndex = math.min(path.length - 1, headPosition.ceil());
+    final out = <gmaps.LatLng>[
+      _interpolateLatLng(
+        path[startIndex],
+        path[math.min(path.length - 1, startIndex + 1)],
+        startPosition - startIndex,
+      ),
+    ];
+    for (var i = startIndex + 1; i <= endIndex; i++) {
+      out.add(path[i]);
+    }
+    if (out.length == 1) {
+      out.add(
+        _interpolateLatLng(
+          path[endIndex],
+          path[math.min(path.length - 1, endIndex + 1)],
+          headPosition - endIndex.floorToDouble(),
+        ),
+      );
+    }
+    return out;
+  }
+
+  void _rebuildRouteComputingNativeOverlay() {
+    if (!mounted || !_isRouteComputing || widget.points.length < 2) {
+      if (_routeComputingMarkers.isNotEmpty || _routeComputingPolylines.isNotEmpty) {
+        setState(() {
+          _routeComputingMarkers = const {};
+          _routeComputingPolylines = const {};
+        });
+      }
+      return;
+    }
+
+    final start = gmaps.LatLng(_latOf(widget.points[0]), _lonOf(widget.points[0]));
+    final target = gmaps.LatLng(_latOf(widget.points[1]), _lonOf(widget.points[1]));
+    final path = _routeComputingArcPoints(start, target);
+    final beam = _routeComputingBeamPoints(path, _routeComputingAnimationPhase);
+    final head = beam.isNotEmpty ? beam.last : target;
+
+    final faintColor =
+        Color.lerp(
+          const Color(0x4438BDF8),
+          const Color(0x3A2DD4BF),
+          _routeComputingAnimationPhase.clamp(0.0, 1.0),
+        )!;
+    final glowColor =
+        Color.lerp(
+          const Color(0xFF38BDF8),
+          const Color(0xFF2DD4BF),
+          _routeComputingAnimationPhase.clamp(0.0, 1.0),
+        )!;
+
+    final polylines = <gmaps.Polyline>{
+      gmaps.Polyline(
+        polylineId: gmaps.PolylineId('${_instanceId}_route_probe_track'),
+        points: path,
+        color: faintColor,
+        width: 4,
+        zIndex: 990,
+      ),
+      if (beam.length >= 2)
+        gmaps.Polyline(
+          polylineId: gmaps.PolylineId('${_instanceId}_route_probe_beam'),
+          points: beam,
+          color: glowColor,
+          width: 6,
+          zIndex: 995,
+        ),
+    };
+
+    final markers = <gmaps.Marker>{
+      gmaps.Marker(
+        markerId: gmaps.MarkerId('${_instanceId}_route_probe_start'),
+        position: start,
+        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+          gmaps.BitmapDescriptor.hueAzure,
+        ),
+        zIndex: 990,
+      ),
+      gmaps.Marker(
+        markerId: gmaps.MarkerId('${_instanceId}_route_probe_target'),
+        position: target,
+        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+          gmaps.BitmapDescriptor.hueGreen,
+        ),
+        zIndex: 990,
+      ),
+      gmaps.Marker(
+        markerId: gmaps.MarkerId('${_instanceId}_route_probe_head'),
+        position: head,
+        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
+          gmaps.BitmapDescriptor.hueCyan,
+        ),
+        zIndex: 999,
+      ),
+    };
+
+    setState(() {
+      _routeComputingPolylines = polylines;
+      _routeComputingMarkers = markers;
+    });
+  }
+
+  double _adventureOverlayMinZoom(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'portaging':
+        return 10.8;
+      case 'hiking':
+        return 11.5;
+      default:
+        return double.infinity;
+    }
+  }
+
+  bool _shouldRenderAdventureOverlayMode(String mode) {
+    final normalized = _normalizeTransportMode(mode);
+    if (!_modeMatchesAnySegment(normalized)) return false;
+    return _currentZoom >= _adventureOverlayMinZoom(normalized);
+  }
+
+  bool _canOfferAdventureOverlayLoad() {
+    if (!widget.showNearbyContextOverlays) return false;
+    return _shouldRenderAdventureOverlayMode('hiking') ||
+        _shouldRenderAdventureOverlayMode('portaging');
+  }
+
+  bool _isAdventurePolylineId(String id) {
+    return id.contains('_trail_') ||
+        id.contains('_portage_water_') ||
+        id.contains('_portage_trail_');
+  }
+
+  bool _isAdventureMarkerId(String id) {
+    return id.contains('_camp_') ||
+        id.contains('_trailhead_') ||
+        id.contains('_p_camp_') ||
+        id.contains('_p_access_');
+  }
+
+  Set<gmaps.Polyline> _existingAdventurePolylines() {
     return _modeSpecificPolylines.where((polyline) {
-      final id = polyline.polylineId.value;
-      return id.contains('_trail_');
+      return _isAdventurePolylineId(polyline.polylineId.value);
     }).toSet();
   }
 
-  Set<gmaps.Marker> _existingHikingMarkers() {
+  Set<gmaps.Marker> _existingAdventureMarkers() {
+    return _modeSpecificMarkers.where((marker) {
+      return _isAdventureMarkerId(marker.markerId.value);
+    }).toSet();
+  }
+
+  Set<gmaps.Polyline> _existingNonAdventurePolylines() {
+    return _modeSpecificPolylines.where((polyline) {
+      return !_isAdventurePolylineId(polyline.polylineId.value);
+    }).toSet();
+  }
+
+  Set<gmaps.Marker> _existingNonAdventureMarkers() {
+    return _modeSpecificMarkers.where((marker) {
+      return !_isAdventureMarkerId(marker.markerId.value);
+    }).toSet();
+  }
+
+  void _clearAdventureOverlayLayers({bool resetLoadedSignature = false}) {
+    final nextPolylines = _existingNonAdventurePolylines();
+    final nextMarkers = _existingNonAdventureMarkers();
+    if (!mounted) {
+      if (resetLoadedSignature) {
+        _lastAdventureOverlayCameraSig = '';
+        _lastAdventureOverlayAutoLoadSig = '';
+      }
+      _pendingAdventureOverlayCameraSig = '';
+      _showAdventureOverlayLoadButton = false;
+      _isAdventureOverlayLoading = false;
+      _modeSpecificPolylines = nextPolylines;
+      _modeSpecificMarkers = nextMarkers;
+      return;
+    }
+    setState(() {
+      if (resetLoadedSignature) {
+        _lastAdventureOverlayCameraSig = '';
+        _lastAdventureOverlayAutoLoadSig = '';
+      }
+      _pendingAdventureOverlayCameraSig = '';
+      _showAdventureOverlayLoadButton = false;
+      _isAdventureOverlayLoading = false;
+      _modeSpecificPolylines = nextPolylines;
+      _modeSpecificMarkers = nextMarkers;
+    });
+  }
+
+  Set<gmaps.Polyline> _existingHikingAdventurePolylines() {
+    return _modeSpecificPolylines.where((polyline) {
+      return polyline.polylineId.value.contains('_trail_');
+    }).toSet();
+  }
+
+  Set<gmaps.Marker> _existingHikingAdventureMarkers() {
     return _modeSpecificMarkers.where((marker) {
       final id = marker.markerId.value;
       return id.contains('_camp_') || id.contains('_trailhead_');
     }).toSet();
+  }
+
+  Set<gmaps.Polyline> _existingPortagingAdventurePolylines() {
+    return _modeSpecificPolylines.where((polyline) {
+      final id = polyline.polylineId.value;
+      return id.contains('_portage_water_') || id.contains('_portage_trail_');
+    }).toSet();
+  }
+
+  Set<gmaps.Marker> _existingPortagingAdventureMarkers() {
+    return _modeSpecificMarkers.where((marker) {
+      final id = marker.markerId.value;
+      return id.contains('_p_camp_') || id.contains('_p_access_');
+    }).toSet();
+  }
+
+  int _countGasMarkers(Set<gmaps.Marker> markers) {
+    return markers
+        .where((marker) => marker.markerId.value.contains('_gas_'))
+        .length;
+  }
+
+  gmaps.LatLng? _fallbackAdventureFocusPoint() {
+    if (_markers.isNotEmpty) {
+      return _markers.first.position;
+    }
+    final segments = _segmentGeometry.keys.toList()..sort();
+    for (final seg in segments) {
+      final path = _segmentGeometry[seg];
+      if (path != null && path.isNotEmpty) {
+        return path.first;
+      }
+    }
+    return null;
+  }
+
+  Future<_AdventureViewportFocus?> _currentAdventureViewportFocus() async {
+    final fallback = _fallbackAdventureFocusPoint();
+    final c = _controller;
+    if (c == null) {
+      if (fallback == null) return null;
+      return _AdventureViewportFocus(
+        center: fallback,
+        hikingAnchors: <gmaps.LatLng>[fallback],
+        portagingPadDegrees: 0.12,
+        signature:
+            '${_hikingCacheKey(<gmaps.LatLng>[fallback])}|'
+            '${_portagingFocusCacheKey(fallback, padDegrees: 0.12)}',
+      );
+    }
+
+    try {
+      final bounds = await c.getVisibleRegion();
+      final sw = bounds.southwest;
+      final ne = bounds.northeast;
+      final center = gmaps.LatLng(
+        (sw.latitude + ne.latitude) / 2.0,
+        (sw.longitude + ne.longitude) / 2.0,
+      );
+      final latSpan = (ne.latitude - sw.latitude).abs();
+      var lonSpan = (ne.longitude - sw.longitude).abs();
+      if (lonSpan > 180.0) {
+        lonSpan = 360.0 - lonSpan;
+      }
+      final portagingPadDegrees = _quantizedOverlayPadDegrees(
+        (math.max(latSpan, lonSpan) * 0.75).clamp(0.08, 0.18).toDouble(),
+      );
+      final hikingAnchors = <gmaps.LatLng>[sw, center, ne];
+      return _AdventureViewportFocus(
+        center: center,
+        hikingAnchors: hikingAnchors,
+        portagingPadDegrees: portagingPadDegrees,
+        signature:
+            '${_hikingCacheKey(hikingAnchors)}|'
+            '${_portagingFocusCacheKey(center, padDegrees: portagingPadDegrees)}',
+      );
+    } catch (_) {
+      if (fallback == null) return null;
+      return _AdventureViewportFocus(
+        center: fallback,
+        hikingAnchors: <gmaps.LatLng>[fallback],
+        portagingPadDegrees: 0.12,
+        signature:
+            '${_hikingCacheKey(<gmaps.LatLng>[fallback])}|'
+            '${_portagingFocusCacheKey(fallback, padDegrees: 0.12)}',
+      );
+    }
+  }
+
+  Future<void> _updateAdventureOverlayLoadPrompt({bool force = false}) async {
+    final hasAdventureMode =
+        _modeMatchesAnySegment('hiking') || _modeMatchesAnySegment('portaging');
+    if (!widget.showNearbyContextOverlays || !hasAdventureMode) {
+      if (_showAdventureOverlayLoadButton ||
+          _pendingAdventureOverlayCameraSig.isNotEmpty ||
+          _isAdventurePolylineIdSetVisible() ||
+          _isAdventureMarkerIdSetVisible()) {
+        _clearAdventureOverlayLayers(resetLoadedSignature: true);
+      } else if (_lastAdventureOverlayCameraSig.isNotEmpty) {
+        _lastAdventureOverlayCameraSig = '';
+        _lastAdventureOverlayAutoLoadSig = '';
+      }
+      return;
+    }
+
+    final canOffer = _canOfferAdventureOverlayLoad();
+    if (!canOffer) {
+      if (!mounted) {
+        _pendingAdventureOverlayCameraSig = '';
+        _lastAdventureOverlayAutoLoadSig = '';
+        _showAdventureOverlayLoadButton = false;
+        return;
+      }
+      if (_showAdventureOverlayLoadButton ||
+          _pendingAdventureOverlayCameraSig.isNotEmpty) {
+        setState(() {
+          _pendingAdventureOverlayCameraSig = '';
+          _lastAdventureOverlayAutoLoadSig = '';
+          _showAdventureOverlayLoadButton = false;
+        });
+      }
+      return;
+    }
+
+    final viewport = await _currentAdventureViewportFocus();
+    if (!mounted) return;
+    final nextSig =
+        '${_shouldRenderAdventureOverlayMode('hiking') ? 1 : 0}|'
+        '${_shouldRenderAdventureOverlayMode('portaging') ? 1 : 0}|'
+        '${viewport?.signature ?? 'none'}';
+    final shouldOffer =
+        viewport != null && nextSig != _lastAdventureOverlayCameraSig;
+    final shouldAutoLoad =
+        shouldOffer &&
+        !_isAdventureOverlayLoading &&
+        nextSig != _lastAdventureOverlayAutoLoadSig;
+    if (!force &&
+        nextSig == _pendingAdventureOverlayCameraSig &&
+        _showAdventureOverlayLoadButton == (shouldOffer && !shouldAutoLoad)) {
+      return;
+    }
+    setState(() {
+      _pendingAdventureOverlayCameraSig = nextSig;
+      _showAdventureOverlayLoadButton = shouldOffer && !shouldAutoLoad;
+    });
+    if (shouldAutoLoad) {
+      _lastAdventureOverlayAutoLoadSig = nextSig;
+      unawaited(_loadAdventureOverlaysForViewport());
+    }
+  }
+
+  void _scheduleAdventureOverlayRefresh({bool force = false}) {
+    _adventureOverlayRefreshTimer?.cancel();
+    _adventureOverlayRefreshTimer = Timer(
+      const Duration(milliseconds: 120),
+      () {
+        unawaited(_updateAdventureOverlayLoadPrompt(force: force));
+      },
+    );
+  }
+
+  bool _isAdventurePolylineIdSetVisible() {
+    return _modeSpecificPolylines.any(
+      (polyline) => _isAdventurePolylineId(polyline.polylineId.value),
+    );
+  }
+
+  bool _isAdventureMarkerIdSetVisible() {
+    return _modeSpecificMarkers.any(
+      (marker) => _isAdventureMarkerId(marker.markerId.value),
+    );
+  }
+
+  _PortagingOverlayCacheEntry? _nearestCachedPortagingFocusEntry(
+    gmaps.LatLng focusPoint, {
+    double maxDegreesDelta = 0.22,
+  }) {
+    _PortagingOverlayCacheEntry? bestEntry;
+    var bestDistance = double.infinity;
+    var bestFreshness = false;
+
+    for (final cacheEntry in _portagingOverlayCache.entries) {
+      final key = cacheEntry.key.trim();
+      if (!key.startsWith('focus:')) continue;
+      final value = cacheEntry.value;
+      if (value.waterLines.isEmpty && value.portageLines.isEmpty) continue;
+      final parts = key.split(':');
+      if (parts.length < 3) continue;
+      final latLon = parts[1].split(',');
+      if (latLon.length != 2) continue;
+      final lat = double.tryParse(latLon[0]);
+      final lon = double.tryParse(latLon[1]);
+      if (lat == null || lon == null) continue;
+      final latDelta = (focusPoint.latitude - lat).abs();
+      final lonDelta = (focusPoint.longitude - lon).abs();
+      if (latDelta > maxDegreesDelta || lonDelta > maxDegreesDelta) {
+        continue;
+      }
+      final distance = latDelta + lonDelta;
+      final isFresh = _isFresh(value.fetchedAt, _overlayCacheTtl);
+      final isBetter =
+          bestEntry == null ||
+          (isFresh && !bestFreshness) ||
+          (isFresh == bestFreshness && distance < bestDistance);
+      if (!isBetter) continue;
+      bestEntry = value;
+      bestDistance = distance;
+      bestFreshness = isFresh;
+    }
+
+    return bestEntry;
+  }
+
+  void _primePortagingRouteCaches(
+    _PortagingOverlayCacheEntry entry, {
+    required bool preferFocusOnly,
+  }) {
+    _lastVisiblePortagingOverlayEntry = entry;
+    if (preferFocusOnly) return;
+
+    final primedKeys = <String>{};
+    void primeKey(String key) {
+      final trimmed = key.trim();
+      if (trimmed.isEmpty || !primedKeys.add(trimmed)) return;
+      _portagingOverlayCache[trimmed] = entry;
+    }
+
+    final routeAnchors = _anchorPathForMode('portaging');
+    if (routeAnchors.length >= 2) {
+      final baseKey = _portagingRouteCacheKey(routeAnchors);
+      primeKey(baseKey);
+      primeKey('$baseKey:route-lite');
+    }
+
+    for (var seg = 0; seg + 1 < widget.points.length; seg++) {
+      if (_normalizeTransportMode(_segmentTransportModeFor(seg)) !=
+          'portaging') {
+        continue;
+      }
+      final segPoints = _segmentPoints(afterIndex: seg);
+      final anchors = _segmentLatLngs(segPoints);
+      if (anchors.length < 2) continue;
+      final baseKey = _portagingRouteCacheKey(anchors);
+      primeKey(baseKey);
+      primeKey('$baseKey:route-lite');
+    }
+  }
+
+  Future<void> _loadAdventureOverlaysForViewport() async {
+    if (_isAdventureOverlayLoading || !_canOfferAdventureOverlayLoad()) return;
+    if (mounted) {
+      setState(() => _isAdventureOverlayLoading = true);
+    }
+    try {
+      await _refreshAdventureOverlays(force: true);
+      if (!mounted) return;
+      if (widget.points.length > 1 &&
+          (_modeMatchesAnySegment('hiking') ||
+              _modeMatchesAnySegment('portaging'))) {
+        _lastRouteCalcSig = '';
+        await _updateRoutePolyline(seq: _rebuildSeq);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isAdventureOverlayLoading = false);
+      }
+      unawaited(_updateAdventureOverlayLoadPrompt(force: true));
+    }
+  }
+
+  Future<void> _refreshAdventureOverlays({bool force = false}) async {
+    final showNearbyContextOverlays = widget.showNearbyContextOverlays;
+    final showHiking =
+        showNearbyContextOverlays &&
+        _shouldRenderAdventureOverlayMode('hiking');
+    final showPortaging =
+        showNearbyContextOverlays &&
+        _shouldRenderAdventureOverlayMode('portaging');
+    final viewport =
+        (showHiking || showPortaging)
+            ? await _currentAdventureViewportFocus()
+            : null;
+    if (!mounted) return;
+
+    final nextSig =
+        '${showHiking ? 1 : 0}|${showPortaging ? 1 : 0}|'
+        '${viewport?.signature ?? 'none'}';
+    if (!force && _lastAdventureOverlayCameraSig == nextSig) {
+      return;
+    }
+
+    final seq = _rebuildSeq;
+    var overlayPolylines = _existingNonAdventurePolylines();
+    var overlayMarkers = _existingNonAdventureMarkers();
+    var campsiteOverlayMarkers = <gmaps.Marker>{};
+    var trailSegmentCount = 0;
+    var campsiteMarkerCount = 0;
+    var trailheadMarkerCount = 0;
+    final gasMarkerCount = _countGasMarkers(overlayMarkers);
+
+    if (showHiking && viewport != null) {
+      try {
+        final hiking = await _buildHikingOverlays(
+          _segmentGeometry,
+          overlayAnchors: viewport.hikingAnchors,
+        );
+        if (!mounted || seq != _rebuildSeq) return;
+        if (hiking.polylines.isEmpty && hiking.markers.isEmpty) {
+          final previousTrailPolylines = _existingHikingAdventurePolylines();
+          final previousTrailMarkers = _existingHikingAdventureMarkers();
+          overlayPolylines = {...overlayPolylines, ...previousTrailPolylines};
+          overlayMarkers = {...overlayMarkers, ...previousTrailMarkers};
+          campsiteOverlayMarkers = {
+            ...campsiteOverlayMarkers,
+            ...previousTrailMarkers,
+          };
+          trailSegmentCount += previousTrailPolylines.length;
+          campsiteMarkerCount +=
+              previousTrailMarkers
+                  .where((marker) => marker.markerId.value.contains('_camp_'))
+                  .length;
+          trailheadMarkerCount +=
+              previousTrailMarkers
+                  .where(
+                    (marker) => marker.markerId.value.contains('_trailhead_'),
+                  )
+                  .length;
+          if (previousTrailPolylines.isNotEmpty ||
+              previousTrailMarkers.isNotEmpty) {
+            debugPrint('hikingOverlays reused_previous_layers');
+          }
+        } else {
+          overlayPolylines = {...overlayPolylines, ...hiking.polylines};
+          overlayMarkers = {...overlayMarkers, ...hiking.markers};
+          campsiteOverlayMarkers = {
+            ...campsiteOverlayMarkers,
+            ...hiking.markers,
+          };
+          trailSegmentCount += hiking.trailSegments;
+          campsiteMarkerCount += hiking.campsiteMarkers;
+          trailheadMarkerCount += hiking.trailheadMarkers;
+        }
+      } catch (e) {
+        debugPrint('hikingOverlays camera_refresh_failed err=$e');
+      }
+    }
+
+    if (showPortaging && viewport != null) {
+      try {
+        final portaging = await _buildPortagingOverlays(
+          _segmentGeometry,
+          focusPointOverride: viewport.center,
+          focusPadDegreesOverride: viewport.portagingPadDegrees,
+          preferFocusOnly: true,
+        );
+        if (!mounted || seq != _rebuildSeq) return;
+        if (portaging.polylines.isEmpty && portaging.markers.isEmpty) {
+          final previousPortagingPolylines =
+              _existingPortagingAdventurePolylines();
+          final previousPortagingMarkers = _existingPortagingAdventureMarkers();
+          overlayPolylines = {
+            ...overlayPolylines,
+            ...previousPortagingPolylines,
+          };
+          overlayMarkers = {...overlayMarkers, ...previousPortagingMarkers};
+          campsiteOverlayMarkers = {
+            ...campsiteOverlayMarkers,
+            ...previousPortagingMarkers,
+          };
+          trailSegmentCount += previousPortagingPolylines.length;
+          campsiteMarkerCount +=
+              previousPortagingMarkers
+                  .where((marker) => marker.markerId.value.contains('_p_camp_'))
+                  .length;
+          trailheadMarkerCount +=
+              previousPortagingMarkers
+                  .where(
+                    (marker) => marker.markerId.value.contains('_p_access_'),
+                  )
+                  .length;
+          if (previousPortagingPolylines.isNotEmpty ||
+              previousPortagingMarkers.isNotEmpty) {
+            debugPrint('portagingOverlays reused_previous_layers');
+          }
+        } else {
+          overlayPolylines = {...overlayPolylines, ...portaging.polylines};
+          overlayMarkers = {...overlayMarkers, ...portaging.markers};
+          campsiteOverlayMarkers = {
+            ...campsiteOverlayMarkers,
+            ...portaging.markers,
+          };
+          trailSegmentCount += portaging.trailSegments;
+          campsiteMarkerCount += portaging.campsiteMarkers;
+          trailheadMarkerCount += portaging.trailheadMarkers;
+        }
+      } catch (e) {
+        debugPrint('portagingOverlays camera_refresh_failed err=$e');
+      }
+    }
+
+    if (!showNearbyContextOverlays || (!showHiking && !showPortaging)) {
+      _didAttemptCampsiteInfoOpen = false;
+    }
+
+    if (!mounted || seq != _rebuildSeq) return;
+    setState(() {
+      _modeSpecificPolylines = overlayPolylines;
+      _modeSpecificMarkers = overlayMarkers;
+      _pendingAdventureOverlayCameraSig = nextSig;
+      _showAdventureOverlayLoadButton = false;
+    });
+    if (showNearbyContextOverlays && campsiteOverlayMarkers.isNotEmpty) {
+      _maybeOpenCampsiteInfoWindow(campsiteOverlayMarkers);
+    }
+    _logLayerCounts(
+      mode: _normalizeTransportMode(widget.transportMode),
+      routePolylines: _polylines.length,
+      trailSegments: trailSegmentCount,
+      campsiteMarkers: campsiteMarkerCount,
+      trailheadMarkers: trailheadMarkerCount,
+      gasMarkers: gasMarkerCount,
+    );
+    _lastAdventureOverlayCameraSig = nextSig;
   }
 
   Never _strictRoutingHardError(String message) {
@@ -1923,6 +3296,16 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         .map((p) => <double>[_lonOf(p), _latOf(p)])
         .toList(growable: false);
 
+    Future<_RouteComputation?> directOrsFallback(String reason) async {
+      if (provider != 'ors') return null;
+      return _routeViaDirectOpenRouteService(
+        coordinates,
+        profile: profile,
+        mode: mode,
+        reason: reason,
+      );
+    }
+
     try {
       final uri = Uri.parse(_resolveRoutingProxyUrl());
       final uriKey = uri.toString();
@@ -1930,7 +3313,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         debugPrint(
           'routeProxy skipped_unavailable provider=$provider profile=$profile mode=$mode url=$uriKey',
         );
-        return null;
+        return directOrsFallback('proxy_unavailable');
       }
       final resp = await http
           .post(
@@ -1954,7 +3337,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         }
         if (_strictRouting) _strictRoutingHardError(msg);
         debugPrint(msg);
-        return null;
+        return await directOrsFallback('proxy_status_${resp.statusCode}');
       }
 
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -1998,6 +3381,92 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           'routeProxy request_failed provider=$provider profile=$profile mode=$mode err=$e';
       if (_strictRouting) _strictRoutingHardError(msg);
       debugPrint(msg);
+      return directOrsFallback('proxy_request_failed');
+    }
+  }
+
+  Future<_RouteComputation?> _routeViaDirectOpenRouteService(
+    List<List<double>> coordinates, {
+    required String profile,
+    required String mode,
+    required String reason,
+  }) async {
+    final key = _resolveOpenRouteServiceKey().trim();
+    if (key.isEmpty || coordinates.length < 2) return null;
+
+    final uri = Uri.parse(
+      'https://api.openrouteservice.org/v2/directions/$profile/geojson',
+    );
+    try {
+      final resp = await http
+          .post(
+            uri,
+            headers: <String, String>{
+              'Authorization': key,
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(<String, dynamic>{'coordinates': coordinates}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (resp.statusCode != 200) {
+        debugPrint(
+          'routeProxy direct_ors_failed profile=$profile mode=$mode '
+          'status=${resp.statusCode} reason=$reason',
+        );
+        return null;
+      }
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final features = (data['features'] as List<dynamic>?) ?? const [];
+      if (features.isEmpty) return null;
+      final feature = (features.first as Map).cast<String, dynamic>();
+      final geometry =
+          (feature['geometry'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final rawPath = (geometry['coordinates'] as List<dynamic>?) ?? const [];
+      final path = <gmaps.LatLng>[];
+      for (final pair in rawPath) {
+        if (pair is! List || pair.length < 2) continue;
+        final lon = (pair[0] as num?)?.toDouble();
+        final lat = (pair[1] as num?)?.toDouble();
+        if (lat == null || lon == null) continue;
+        path.add(gmaps.LatLng(lat, lon));
+      }
+      if (path.length < 2) return null;
+
+      final props =
+          (feature['properties'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final summary =
+          (props['summary'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final instructions = <String>[];
+      final segments = (props['segments'] as List<dynamic>?) ?? const [];
+      for (final segment in segments) {
+        final segmentMap = (segment as Map?)?.cast<String, dynamic>();
+        final steps = (segmentMap?['steps'] as List<dynamic>?) ?? const [];
+        for (final step in steps) {
+          final instruction =
+              ((step as Map?)?['instruction'] ?? '').toString().trim();
+          if (instruction.isNotEmpty) instructions.add(instruction);
+        }
+      }
+
+      debugPrint(
+        'routeProxy direct_ors_ok profile=$profile mode=$mode '
+        'points=${path.length} reason=$reason',
+      );
+      return _RouteComputation(
+        path: path,
+        distanceMeters: (summary['distance'] as num?)?.toDouble() ?? 0.0,
+        durationSeconds: (summary['duration'] as num?)?.toDouble() ?? 0.0,
+        color: _standardRouteColor(mode),
+        width: (mode == 'hiking' || mode == 'portaging') ? 6 : 5,
+        zIndex: (mode == 'hiking' || mode == 'portaging') ? 18 : 12,
+        instructions: instructions,
+      );
+    } catch (e) {
+      debugPrint(
+        'routeProxy direct_ors_error profile=$profile mode=$mode '
+        'reason=$reason err=$e',
+      );
       return null;
     }
   }
@@ -2033,6 +3502,93 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return DateTime.now().difference(fetchedAt) <= ttl;
   }
 
+  double _roundToStep(double value, double step) {
+    if (!value.isFinite || step <= 0) return value;
+    return (value / step).roundToDouble() * step;
+  }
+
+  double _floorToStep(double value, double step) {
+    if (!value.isFinite || step <= 0) return value;
+    return (value / step).floorToDouble() * step;
+  }
+
+  double _ceilToStep(double value, double step) {
+    if (!value.isFinite || step <= 0) return value;
+    return (value / step).ceilToDouble() * step;
+  }
+
+  double _quantizedOverlayPadDegrees(double padDegrees) {
+    final normalized = padDegrees.clamp(0.04, 0.24).toDouble();
+    return _roundToStep(normalized, 0.02);
+  }
+
+  bool _isOverpassEndpointTemporarilyBlocked(String endpoint) {
+    final until = _overpassEndpointCooldownUntil[endpoint];
+    if (until == null) return false;
+    if (DateTime.now().isAfter(until)) {
+      _overpassEndpointCooldownUntil.remove(endpoint);
+      return false;
+    }
+    return true;
+  }
+
+  void _markOverpassEndpointUnavailable(String endpoint) {
+    _overpassUnavailableEndpoints.add(endpoint);
+    _overpassEndpointCooldownUntil.remove(endpoint);
+  }
+
+  void _coolDownOverpassEndpoint(String endpoint, Duration duration) {
+    if (_overpassUnavailableEndpoints.contains(endpoint) ||
+        duration <= Duration.zero) {
+      return;
+    }
+    final nextUntil = DateTime.now().add(duration);
+    final existing = _overpassEndpointCooldownUntil[endpoint];
+    if (existing == null || existing.isBefore(nextUntil)) {
+      _overpassEndpointCooldownUntil[endpoint] = nextUntil;
+    }
+  }
+
+  Duration _overpassCooldownForStatus(
+    String endpoint,
+    int statusCode, {
+    required bool isProxy,
+  }) {
+    final lowerEndpoint = endpoint.toLowerCase();
+    if (isProxy && (statusCode == 404 || statusCode == 405)) {
+      _markOverpassEndpointUnavailable(endpoint);
+      return Duration.zero;
+    }
+    if (lowerEndpoint.contains('maps.mail.ru') && statusCode == 403) {
+      _markOverpassEndpointUnavailable(endpoint);
+      return Duration.zero;
+    }
+    if (statusCode == 429) return const Duration(minutes: 3);
+    if (statusCode == 408 || statusCode == 504) {
+      return const Duration(minutes: 2);
+    }
+    if (statusCode >= 500) return const Duration(minutes: 1);
+    if (statusCode == 403) return const Duration(minutes: 30);
+    return const Duration(seconds: 45);
+  }
+
+  Duration _overpassCooldownForError(
+    String endpoint,
+    Object error, {
+    required bool isProxy,
+  }) {
+    final err = error.toString();
+    if (err.contains('TimeoutException')) return const Duration(minutes: 2);
+    if (err.contains('Failed to fetch')) {
+      if (isProxy) {
+        _markOverpassEndpointUnavailable(endpoint);
+        return Duration.zero;
+      }
+      return const Duration(minutes: 10);
+    }
+    return const Duration(minutes: 1);
+  }
+
   String _routePointSignature() {
     final b = StringBuffer();
     for (final p in widget.points) {
@@ -2043,6 +3599,36 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         ..write(';');
     }
     return b.toString();
+  }
+
+  String _pointLabel(Map<String, dynamic> point, {String fallback = 'Stop'}) {
+    final name = (point['name'] ?? point['title'] ?? '').toString().trim();
+    if (name.isNotEmpty) return name;
+    final lat = _latOf(point);
+    final lon = _lonOf(point);
+    if (lat == 0.0 && lon == 0.0) return fallback;
+    return '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}';
+  }
+
+  String _portageInaccessibleMessage(List<Map<String, dynamic>> segPoints) {
+    final startLabel =
+        segPoints.isNotEmpty
+            ? _pointLabel(segPoints.first, fallback: 'start point')
+            : 'start point';
+    final endLabel =
+        segPoints.length >= 2
+            ? _pointLabel(segPoints.last, fallback: 'destination')
+            : 'destination';
+    return 'Site inaccessible: no mapped waterway or portage connection could be found from $startLabel to $endLabel.';
+  }
+
+  void _emitRouteErrorOnce({
+    required String signature,
+    required String message,
+  }) {
+    if (signature.isEmpty || signature == _lastRouteErrorSig) return;
+    _lastRouteErrorSig = signature;
+    widget.onRouteError?.call(message);
   }
 
   String _routeCalculationSignature() {
@@ -2059,8 +3645,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     final normalized = _normalizeTransportMode(mode);
     switch (normalized) {
       case 'portaging':
+        return const Duration(seconds: 24);
       case 'hiking':
-        return const Duration(seconds: 16);
+        return const Duration(seconds: 22);
       case 'train':
         return const Duration(seconds: 14);
       case 'walk':
@@ -2069,7 +3656,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       case 'car':
       case 'gas_stops':
       default:
-        return const Duration(seconds: 10);
+        return const Duration(seconds: 18);
     }
   }
 
@@ -2115,40 +3702,74 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return sampled;
   }
 
+  bool _shouldUseRelativeOverpassProxy(String endpoint) {
+    final trimmed = endpoint.trim();
+    if (!trimmed.startsWith('/')) return true;
+    try {
+      final location = html.window.location;
+      final host = location.hostname.toString().trim().toLowerCase();
+      final port = location.port.toString().trim();
+      final isLocalHost = host == 'localhost' || host == '127.0.0.1';
+      // `flutter run -d web-server` serves the app directly and does not apply
+      // Firebase Hosting rewrites for `/api/*`, so the relative proxy 404s.
+      if (isLocalHost && port == '3000') {
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
+
   Future<Map<String, dynamic>?> _fetchOverpassData({
     required String query,
     required String logPrefix,
     Duration requestTimeout = const Duration(seconds: 9),
+    bool ignoreCooldown = false,
   }) async {
-    const endpoints = <({String endpoint, bool isProxy})>[
-      (endpoint: _overpassProxyUrlDefine, isProxy: true),
+    final endpoints = <({String endpoint, bool isProxy})>[
+      if (_overpassProxyUrlDefine.trim().isNotEmpty &&
+          _shouldUseRelativeOverpassProxy(_overpassProxyUrlDefine))
+        (endpoint: _overpassProxyUrlDefine, isProxy: true),
       (endpoint: 'https://overpass-api.de/api/interpreter', isProxy: false),
       (endpoint: 'https://lz4.overpass-api.de/api/interpreter', isProxy: false),
+      (
+        endpoint: 'https://overpass.private.coffee/api/interpreter',
+        isProxy: false,
+      ),
       (
         endpoint: 'https://overpass.kumi.systems/api/interpreter',
         isProxy: false,
       ),
     ];
+    final deadline = DateTime.now().add(
+      Duration(seconds: math.max(requestTimeout.inSeconds + 4, 14)),
+    );
+    var attemptedAny = false;
 
-    final completer = Completer<Map<String, dynamic>?>();
-    var finished = 0;
+    for (final endpointConfig in endpoints) {
+      final endpoint = endpointConfig.endpoint.trim();
+      if (endpoint.isEmpty) continue;
+      if (_overpassUnavailableEndpoints.contains(endpoint)) {
+        debugPrint(
+          '$logPrefix endpoint_skipped endpoint=$endpoint '
+          'proxy=${endpointConfig.isProxy} reason=unavailable',
+        );
+        continue;
+      }
+      if (!ignoreCooldown && _isOverpassEndpointTemporarilyBlocked(endpoint)) {
+        debugPrint(
+          '$logPrefix endpoint_skipped endpoint=$endpoint '
+          'proxy=${endpointConfig.isProxy} reason=cooldown',
+        );
+        continue;
+      }
 
-    Future<void> runEndpoint(
-      ({String endpoint, bool isProxy}) endpointConfig,
-      int index,
-    ) async {
-      final endpoint = endpointConfig.endpoint;
-      if (!endpointConfig.isProxy &&
-          _overpassUnavailableEndpoints.contains(endpoint)) {
-        finished++;
-        if (finished >= endpoints.length && !completer.isCompleted) {
-          completer.complete(null);
-        }
-        return;
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= const Duration(milliseconds: 250)) {
+        break;
       }
-      if (index > 0) {
-        await Future<void>.delayed(Duration(milliseconds: 300 * index));
-      }
+
+      attemptedAny = true;
+      final timeout = remaining < requestTimeout ? remaining : requestTimeout;
       final startedAt = DateTime.now();
       try {
         late final http.Response resp;
@@ -2161,7 +3782,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
                 },
                 body: jsonEncode(<String, dynamic>{'query': query}),
               )
-              .timeout(requestTimeout);
+              .timeout(timeout);
         } else {
           resp = await http
               .post(
@@ -2171,19 +3792,26 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
                 },
                 body: 'data=${Uri.encodeQueryComponent(query)}',
               )
-              .timeout(requestTimeout);
+              .timeout(timeout);
         }
-        if (completer.isCompleted) return;
         final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
         if (resp.statusCode != 200) {
+          final cooldown = _overpassCooldownForStatus(
+            endpoint,
+            resp.statusCode,
+            isProxy: endpointConfig.isProxy,
+          );
+          if (cooldown > Duration.zero) {
+            _coolDownOverpassEndpoint(endpoint, cooldown);
+          }
           debugPrint(
             '$logPrefix endpoint_failed endpoint=$endpoint '
             'proxy=${endpointConfig.isProxy} '
             'status=${resp.statusCode} elapsed_ms=$elapsedMs',
           );
-          return;
+          continue;
         }
-        if (completer.isCompleted) return;
+
         final decoded = jsonDecode(resp.body);
         if (decoded is Map<String, dynamic>) {
           debugPrint(
@@ -2191,8 +3819,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             'proxy=${endpointConfig.isProxy} '
             'bytes=${resp.bodyBytes.length} elapsed_ms=$elapsedMs',
           );
-          if (!completer.isCompleted) completer.complete(decoded);
-          return;
+          return decoded;
         }
         if (decoded is Map) {
           debugPrint(
@@ -2200,46 +3827,32 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             'proxy=${endpointConfig.isProxy} '
             'bytes=${resp.bodyBytes.length} elapsed_ms=$elapsedMs',
           );
-          if (!completer.isCompleted) {
-            completer.complete((decoded).cast<String, dynamic>());
-          }
+          return (decoded).cast<String, dynamic>();
         }
       } catch (e) {
         final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
-        final err = e.toString();
-        if (!endpointConfig.isProxy && err.contains('Failed to fetch')) {
-          _overpassUnavailableEndpoints.add(endpoint);
+        final cooldown = _overpassCooldownForError(
+          endpoint,
+          e,
+          isProxy: endpointConfig.isProxy,
+        );
+        if (cooldown > Duration.zero) {
+          _coolDownOverpassEndpoint(endpoint, cooldown);
         }
         debugPrint(
           '$logPrefix endpoint_error endpoint=$endpoint '
           'proxy=${endpointConfig.isProxy} '
           'elapsed_ms=$elapsedMs err=$e',
         );
-      } finally {
-        finished++;
-        if (finished >= endpoints.length && !completer.isCompleted) {
-          completer.complete(null);
-        }
       }
     }
 
-    for (var i = 0; i < endpoints.length; i++) {
-      unawaited(runEndpoint(endpoints[i], i));
-    }
-
-    final data = await completer.future.timeout(
-      const Duration(seconds: 12),
-      onTimeout: () {
-        if (!completer.isCompleted) {
-          completer.complete(null);
-        }
-        return null;
-      },
+    debugPrint(
+      attemptedAny
+          ? '$logPrefix all_endpoints_failed'
+          : '$logPrefix all_endpoints_unavailable',
     );
-    if (data == null) {
-      debugPrint('$logPrefix all_endpoints_failed');
-    }
-    return data;
+    return null;
   }
 
   double _adaptivePortageRoutePadDegrees(List<gmaps.LatLng> anchors) {
@@ -2255,7 +3868,45 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       maxLon = math.max(maxLon, p.longitude);
     }
     final span = math.max(maxLat - minLat, maxLon - minLon);
-    return (0.02 + (span * 0.18)).clamp(0.025, 0.06).toDouble();
+    // Keep route fetches compact, but give canoe/backcountry legs enough
+    // breathing room to capture nearby lakes, carries, and shoreline detours.
+    return (0.03 + (span * 0.22)).clamp(0.05, 0.12).toDouble();
+  }
+
+  gmaps.LatLng _routeBoundsCenter(List<gmaps.LatLng> anchors) {
+    if (anchors.isEmpty) return const gmaps.LatLng(0, 0);
+    var minLat = double.infinity;
+    var maxLat = -double.infinity;
+    var minLon = double.infinity;
+    var maxLon = -double.infinity;
+    for (final p in anchors) {
+      minLat = math.min(minLat, p.latitude);
+      maxLat = math.max(maxLat, p.latitude);
+      minLon = math.min(minLon, p.longitude);
+      maxLon = math.max(maxLon, p.longitude);
+    }
+    return gmaps.LatLng((minLat + maxLat) / 2.0, (minLon + maxLon) / 2.0);
+  }
+
+  double _routeFocusPadDegrees(
+    List<gmaps.LatLng> anchors, {
+    required double minPad,
+    required double maxPad,
+    required double edgePadding,
+  }) {
+    if (anchors.isEmpty) return minPad;
+    var minLat = double.infinity;
+    var maxLat = -double.infinity;
+    var minLon = double.infinity;
+    var maxLon = -double.infinity;
+    for (final p in anchors) {
+      minLat = math.min(minLat, p.latitude);
+      maxLat = math.max(maxLat, p.latitude);
+      minLon = math.min(minLon, p.longitude);
+      maxLon = math.max(maxLon, p.longitude);
+    }
+    final span = math.max(maxLat - minLat, maxLon - minLon);
+    return (edgePadding + (span / 2.0)).clamp(minPad, maxPad).toDouble();
   }
 
   _RouteComputation _straightRoute({
@@ -2357,6 +4008,52 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       entry.portageLines,
     );
     return nearestPortageLine <= 40.0;
+  }
+
+  bool _isOpenWaterLandingPoint(
+    gmaps.LatLng point,
+    _PortagingOverlayCacheEntry entry, {
+    double lineThresholdMeters = 90.0,
+  }) {
+    for (final polygon in entry.waterPolygons) {
+      if (_pointInPolygon(point, polygon)) return true;
+    }
+    return _nearestDistanceToLinesMeters(point, entry.waterLines) <=
+        lineThresholdMeters;
+  }
+
+  bool _isValidPortageConnectorToGraphAnchor({
+    required gmaps.LatLng anchor,
+    required gmaps.LatLng graphAnchor,
+    required _PortagingOverlayCacheEntry entry,
+    required bool allowAccessStraightToWater,
+  }) {
+    final connectorMeters = _haversineMeters(anchor, graphAnchor);
+    if (!connectorMeters.isFinite || connectorMeters < 0.0) return false;
+    if (connectorMeters <= 6.0) return true;
+
+    final anchorOnNetwork = _isLikelyWaterPoint(
+      anchor,
+      entry,
+      lineThresholdMeters: 120.0,
+    );
+    if (anchorOnNetwork) {
+      return _isWaterSafeDirectSegment(
+        anchor,
+        graphAnchor,
+        entry,
+        maxSamples: 18,
+      );
+    }
+
+    if (!allowAccessStraightToWater &&
+        _isLikelyWaterPoint(graphAnchor, entry, lineThresholdMeters: 90.0) &&
+        connectorMeters <= 80.0) {
+      return true;
+    }
+    if (!allowAccessStraightToWater) return false;
+    if (!_isOpenWaterLandingPoint(graphAnchor, entry)) return false;
+    return connectorMeters <= 1200.0;
   }
 
   bool _isWaterSafeDirectSegment(
@@ -2560,9 +4257,11 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         width: mode == 'gas_stops' ? 6 : 5,
         zIndex: 12,
         instructions: result.instructions,
+        stepDetails: result.stepDetails,
         arrivalStop: result.transitArrivalStop,
       );
-    } catch (_) {
+    } catch (e) {
+      debugPrint('_routeViaGoogleDirections exception mode=$mode err=$e');
       return null;
     }
   }
@@ -2655,8 +4354,10 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     required String segType,
   }) async {
     final normalizedMode = _normalizeTransportMode(mode);
-    final normalizedType =
-        segType.trim().toLowerCase() == 'direct' ? 'direct' : 'calculated';
+    final normalizedType = _normalizeSegmentRoutingType(
+      segType,
+      mode: normalizedMode,
+    );
     final shouldMemoize =
         normalizedType != 'direct' && normalizedMode != 'plane';
     if (!shouldMemoize) {
@@ -2816,6 +4517,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
 
     if (mode == 'hiking') {
+      if (segType == 'trails') {
+        return _routeViaTrailGraph(segPoints, modeContext: mode);
+      }
       _RouteComputation? route;
       final hasOrsKey = _resolveOpenRouteServiceKey().trim().isNotEmpty;
       final hasGraphHopperKey = _resolveGraphHopperKey().trim().isNotEmpty;
@@ -2846,21 +4550,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     if (mode == 'portaging') {
       final networkRoute = await _routeViaPortageGraph(segPoints);
       if (networkRoute != null) return networkRoute;
-
-      final ors =
-          await _routeViaOpenRouteService(
-            segPoints,
-            profile: 'foot-hiking',
-            mode: mode,
-          ) ??
-          await _routeViaOpenRouteService(
-            segPoints,
-            profile: 'foot-walking',
-            mode: mode,
-          );
-      if (ors != null) return ors;
       debugPrint(
-        'portageRoute unavailable_after_fallbacks points=${segPoints.length}',
+        'portageRoute unavailable_after_network_only points=${segPoints.length}',
       );
       return null;
     }
@@ -2956,7 +4647,21 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return anchors;
   }
 
-  String _hikingCacheKey(List<gmaps.LatLng> routePath) {
+  double _trailRoutePadDegreesForMode(
+    String modeContext, {
+    bool expanded = false,
+  }) {
+    final normalized = _normalizeTransportMode(modeContext);
+    if (normalized == 'portaging') {
+      return expanded ? 0.16 : 0.10;
+    }
+    return expanded ? 0.14 : 0.08;
+  }
+
+  String _hikingCacheKey(
+    List<gmaps.LatLng> routePath, {
+    double padDegrees = 0.08,
+  }) {
     var minLat = double.infinity;
     var maxLat = -double.infinity;
     var minLon = double.infinity;
@@ -2967,12 +4672,13 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       minLon = math.min(minLon, p.longitude);
       maxLon = math.max(maxLon, p.longitude);
     }
-    const pad = 0.08;
-    final s = (minLat - pad).toStringAsFixed(2);
-    final w = (minLon - pad).toStringAsFixed(2);
-    final n = (maxLat + pad).toStringAsFixed(2);
-    final e = (maxLon + pad).toStringAsFixed(2);
-    return '$s,$w,$n,$e';
+    final bucketSize = math.max(0.02, padDegrees / 2.0);
+    final south = _floorToStep(minLat - padDegrees, bucketSize);
+    final west = _floorToStep(minLon - padDegrees, bucketSize);
+    final north = _ceilToStep(maxLat + padDegrees, bucketSize);
+    final east = _ceilToStep(maxLon + padDegrees, bucketSize);
+    return '${south.toStringAsFixed(3)},${west.toStringAsFixed(3)},'
+        '${north.toStringAsFixed(3)},${east.toStringAsFixed(3)}';
   }
 
   double _distanceMetersToPath(gmaps.LatLng point, List<gmaps.LatLng> path) {
@@ -3004,6 +4710,730 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     final tailDist = _distanceMetersToPath(tail, path);
     if (tailDist < best) best = tailDist;
     return best;
+  }
+
+  _LineProjection? _nearestProjectionOnLine(
+    gmaps.LatLng anchor,
+    List<gmaps.LatLng> line, {
+    double maxAnchorMeters = double.infinity,
+  }) {
+    if (line.length < 2) return null;
+    _LineProjection? best;
+    var bestMeters = double.infinity;
+    for (var i = 0; i + 1 < line.length; i++) {
+      final projected = _projectOnSegment(anchor, line[i], line[i + 1]);
+      final meters = _haversineMeters(anchor, projected);
+      if (!meters.isFinite || meters >= bestMeters) continue;
+      bestMeters = meters;
+      best = _LineProjection(
+        point: projected,
+        segmentIndex: i,
+        anchorMeters: meters,
+      );
+    }
+    if (best == null || best.anchorMeters > maxAnchorMeters) {
+      return null;
+    }
+    return best;
+  }
+
+  List<gmaps.LatLng> _sliceLineBetweenProjections(
+    List<gmaps.LatLng> line,
+    _LineProjection start,
+    _LineProjection end,
+  ) {
+    if (line.length < 2) return const <gmaps.LatLng>[];
+    final out = <gmaps.LatLng>[];
+
+    void appendDistinct(gmaps.LatLng point) {
+      if (out.isNotEmpty) {
+        final last = out.last;
+        if ((last.latitude - point.latitude).abs() < 1e-7 &&
+            (last.longitude - point.longitude).abs() < 1e-7) {
+          return;
+        }
+      }
+      out.add(point);
+    }
+
+    appendDistinct(start.point);
+    if (start.segmentIndex == end.segmentIndex) {
+      appendDistinct(end.point);
+      return out;
+    }
+
+    if (start.segmentIndex < end.segmentIndex) {
+      for (var i = start.segmentIndex + 1; i <= end.segmentIndex; i++) {
+        appendDistinct(line[i]);
+      }
+      appendDistinct(end.point);
+      return out;
+    }
+
+    for (var i = start.segmentIndex; i > end.segmentIndex; i--) {
+      appendDistinct(line[i]);
+    }
+    appendDistinct(end.point);
+    return out;
+  }
+
+  ({List<gmaps.LatLng> path, double distanceMeters})?
+  _fastTrailRouteAlongSameLine({
+    required gmaps.LatLng start,
+    required gmaps.LatLng end,
+    required List<List<gmaps.LatLng>> trailLines,
+    double maxAnchorMeters = 1200.0,
+    double maxLineDistanceMeters = 1600.0,
+    double maxTotalMeters = 36000.0,
+  }) {
+    final directMeters = _haversineMeters(start, end);
+    if (!directMeters.isFinite || directMeters <= 0.0) return null;
+
+    ({List<gmaps.LatLng> path, double distanceMeters})? best;
+    for (final line in trailLines) {
+      if (line.length < 2) continue;
+      final lineDistance = _distanceLineToPathMeters(line, <gmaps.LatLng>[
+        start,
+        end,
+      ], maxSamples: 8);
+      if (!lineDistance.isFinite || lineDistance > maxLineDistanceMeters) {
+        continue;
+      }
+
+      final startProjection = _nearestProjectionOnLine(
+        start,
+        line,
+        maxAnchorMeters: maxAnchorMeters,
+      );
+      if (startProjection == null) continue;
+      final endProjection = _nearestProjectionOnLine(
+        end,
+        line,
+        maxAnchorMeters: maxAnchorMeters,
+      );
+      if (endProjection == null) continue;
+
+      final linePath = _sliceLineBetweenProjections(
+        line,
+        startProjection,
+        endProjection,
+      );
+      if (linePath.length < 2) continue;
+
+      final fullPath = <gmaps.LatLng>[];
+      void appendDistinct(gmaps.LatLng point) {
+        if (fullPath.isNotEmpty) {
+          final last = fullPath.last;
+          if ((last.latitude - point.latitude).abs() < 1e-7 &&
+              (last.longitude - point.longitude).abs() < 1e-7) {
+            return;
+          }
+        }
+        fullPath.add(point);
+      }
+
+      appendDistinct(start);
+      for (final point in linePath) {
+        appendDistinct(point);
+      }
+      appendDistinct(end);
+
+      final totalMeters = _polylineDistanceMeters(fullPath);
+      if (!totalMeters.isFinite || totalMeters <= 0.0) continue;
+      if (totalMeters > maxTotalMeters) continue;
+      if (totalMeters > math.max(directMeters * 4.5, directMeters + 5000.0)) {
+        continue;
+      }
+
+      if (best == null || totalMeters < best.distanceMeters) {
+        best = (path: fullPath, distanceMeters: totalMeters);
+      }
+    }
+
+    return best;
+  }
+
+  ({List<gmaps.LatLng> path, double distanceMeters, String lineKind})?
+  _fastPortageRouteAlongSameLine({
+    required gmaps.LatLng start,
+    required gmaps.LatLng end,
+    required List<List<gmaps.LatLng>> waterLines,
+    required List<List<gmaps.LatLng>> portageLines,
+    required _PortagingOverlayCacheEntry entry,
+    double maxAnchorMeters = 2200.0,
+    double maxLineDistanceMeters = 2800.0,
+    double maxTotalMeters = 42000.0,
+  }) {
+    final directMeters = _haversineMeters(start, end);
+    if (!directMeters.isFinite || directMeters <= 0.0) return null;
+
+    ({List<gmaps.LatLng> path, double distanceMeters, String lineKind})? best;
+    final sources = <({String kind, List<List<gmaps.LatLng>> lines})>[
+      (kind: 'water', lines: waterLines),
+      (kind: 'portage', lines: portageLines),
+    ];
+
+    for (final source in sources) {
+      for (final line in source.lines) {
+        if (line.length < 2) continue;
+        final lineDistance = _distanceLineToPathMeters(line, <gmaps.LatLng>[
+          start,
+          end,
+        ], maxSamples: 8);
+        if (!lineDistance.isFinite || lineDistance > maxLineDistanceMeters) {
+          continue;
+        }
+
+        final startProjection = _nearestProjectionOnLine(
+          start,
+          line,
+          maxAnchorMeters: maxAnchorMeters,
+        );
+        if (startProjection == null) continue;
+        final endProjection = _nearestProjectionOnLine(
+          end,
+          line,
+          maxAnchorMeters: maxAnchorMeters,
+        );
+        if (endProjection == null) continue;
+
+        if (startProjection.anchorMeters > 40.0 &&
+            !_isWaterSafeDirectSegment(
+              start,
+              startProjection.point,
+              entry,
+              maxSamples: 14,
+            )) {
+          continue;
+        }
+        if (endProjection.anchorMeters > 40.0 &&
+            !_isWaterSafeDirectSegment(
+              endProjection.point,
+              end,
+              entry,
+              maxSamples: 14,
+            )) {
+          continue;
+        }
+
+        final linePath = _sliceLineBetweenProjections(
+          line,
+          startProjection,
+          endProjection,
+        );
+        if (linePath.length < 2) continue;
+
+        final fullPath = <gmaps.LatLng>[];
+        void appendDistinct(gmaps.LatLng point) {
+          if (fullPath.isNotEmpty) {
+            final last = fullPath.last;
+            if ((last.latitude - point.latitude).abs() < 1e-7 &&
+                (last.longitude - point.longitude).abs() < 1e-7) {
+              return;
+            }
+          }
+          fullPath.add(point);
+        }
+
+        appendDistinct(start);
+        for (final point in linePath) {
+          appendDistinct(point);
+        }
+        appendDistinct(end);
+
+        final totalMeters = _polylineDistanceMeters(fullPath);
+        if (!totalMeters.isFinite || totalMeters <= 0.0) continue;
+        if (totalMeters > maxTotalMeters) continue;
+        if (totalMeters > math.max(directMeters * 4.0, directMeters + 6000.0)) {
+          continue;
+        }
+
+        if (best == null || totalMeters < best.distanceMeters) {
+          best = (
+            path: fullPath,
+            distanceMeters: totalMeters,
+            lineKind: source.kind,
+          );
+        }
+      }
+    }
+
+    return best;
+  }
+
+  bool _isLikelyWaterEndpointForPortage(
+    gmaps.LatLng point,
+    _PortagingOverlayCacheEntry entry,
+  ) {
+    for (final polygon in entry.waterPolygons) {
+      if (_pointInPolygon(point, polygon)) return true;
+    }
+    return _nearestDistanceToLinesMeters(point, entry.waterLines) <= 240.0;
+  }
+
+  List<({gmaps.LatLng point, double connectorMeters})>
+  _portageWaterEntryCandidatesForAnchor({
+    required gmaps.LatLng anchor,
+    required gmaps.LatLng destination,
+    required List<List<gmaps.LatLng>> waterLines,
+    required _PortagingOverlayCacheEntry entry,
+    int maxCandidates = 8,
+    double maxAnchorMeters = 6500.0,
+    double maxLineDistanceMeters = 9000.0,
+  }) {
+    final byKey = <String, ({gmaps.LatLng point, double connectorMeters})>{};
+
+    void addCandidate(gmaps.LatLng point, double connectorMeters) {
+      if (!connectorMeters.isFinite || connectorMeters < 0) return;
+      if (connectorMeters > maxAnchorMeters) return;
+      final key = _latLngMergeKey(point, decimals: 5);
+      final existing = byKey[key];
+      if (existing == null || connectorMeters < existing.connectorMeters) {
+        byKey[key] = (point: point, connectorMeters: connectorMeters);
+      }
+    }
+
+    if (_isLikelyWaterPoint(anchor, entry, lineThresholdMeters: 180.0)) {
+      addCandidate(anchor, 0.0);
+    }
+
+    final shortlisted = <({List<gmaps.LatLng> line, double distance})>[];
+    for (final line in waterLines) {
+      if (line.length < 2) continue;
+      final lineDistance = _distanceMetersToPath(anchor, line);
+      if (!lineDistance.isFinite || lineDistance > maxLineDistanceMeters) {
+        continue;
+      }
+      shortlisted.add((line: line, distance: lineDistance));
+    }
+    shortlisted.sort((a, b) => a.distance.compareTo(b.distance));
+
+    final lineCap = math.max(maxCandidates * 2, 12);
+    for (var i = 0; i < shortlisted.length && i < lineCap; i++) {
+      final projection = _nearestProjectionOnLine(
+        anchor,
+        shortlisted[i].line,
+        maxAnchorMeters: maxAnchorMeters,
+      );
+      if (projection == null) continue;
+      addCandidate(projection.point, projection.anchorMeters);
+    }
+
+    final out = byKey.values.toList(growable: false)..sort((a, b) {
+      final scoreA =
+          a.connectorMeters + (_haversineMeters(a.point, destination) * 0.08);
+      final scoreB =
+          b.connectorMeters + (_haversineMeters(b.point, destination) * 0.08);
+      return scoreA.compareTo(scoreB);
+    });
+    if (out.length > maxCandidates) {
+      return out.sublist(0, maxCandidates);
+    }
+    return out;
+  }
+
+  ({List<gmaps.LatLng> path, double distanceMeters}) _combinePortageLegPaths(
+    List<_PortageWaterFirstLegSolution> legs,
+  ) {
+    final combined = <gmaps.LatLng>[];
+    var totalMeters = 0.0;
+
+    void appendDistinct(gmaps.LatLng point) {
+      if (combined.isNotEmpty) {
+        final last = combined.last;
+        if ((last.latitude - point.latitude).abs() < 1e-7 &&
+            (last.longitude - point.longitude).abs() < 1e-7) {
+          return;
+        }
+      }
+      combined.add(point);
+    }
+
+    for (final leg in legs) {
+      for (final point in leg.path) {
+        appendDistinct(point);
+      }
+      totalMeters += leg.distanceMeters;
+    }
+
+    return (path: combined, distanceMeters: totalMeters);
+  }
+
+  _PortageWaterFirstLegSolution? _solveWaterFirstPortageLeg({
+    required gmaps.LatLng start,
+    required gmaps.LatLng end,
+    required List<List<gmaps.LatLng>> waterLines,
+    required List<List<gmaps.LatLng>> portageLines,
+    required _PortagingOverlayCacheEntry entry,
+  }) {
+    final directMeters = _haversineMeters(start, end);
+    if (!directMeters.isFinite || directMeters <= 0.0) return null;
+
+    final filteredWaterLines = <List<gmaps.LatLng>>[
+      for (final line in waterLines)
+        if (line.length >= 2) line,
+    ];
+    final filteredPortageLines = <List<gmaps.LatLng>>[
+      for (final line in portageLines)
+        if (line.length >= 2 &&
+            _isLikelyWaterEndpointForPortage(line.first, entry) &&
+            _isLikelyWaterEndpointForPortage(line.last, entry))
+          line,
+    ];
+
+    final startWaterEntries = _portageWaterEntryCandidatesForAnchor(
+      anchor: start,
+      destination: end,
+      waterLines: filteredWaterLines,
+      entry: entry,
+    );
+    final endWaterEntries = _portageWaterEntryCandidatesForAnchor(
+      anchor: end,
+      destination: start,
+      waterLines: filteredWaterLines,
+      entry: entry,
+    );
+
+    final networkLines = <List<gmaps.LatLng>>[
+      ...filteredWaterLines,
+      ...filteredPortageLines,
+    ];
+    if (networkLines.isEmpty) {
+      if (startWaterEntries.isNotEmpty &&
+          endWaterEntries.isNotEmpty &&
+          _isWaterSafeDirectSegment(start, end, entry, maxSamples: 18)) {
+        return _PortageWaterFirstLegSolution(
+          path: <gmaps.LatLng>[start, end],
+          distanceMeters: directMeters,
+        );
+      }
+      return null;
+    }
+
+    final nodes = <gmaps.LatLng>[];
+    final nodeIndexByKey = <String, int>{};
+    final typedAdjacency = <List<_PortageWaterFirstEdge>>[];
+
+    int ensureNode(gmaps.LatLng point) {
+      final key = _trailNodeKey(point);
+      final existing = nodeIndexByKey[key];
+      if (existing != null) return existing;
+      final nextIndex = nodes.length;
+      nodes.add(point);
+      nodeIndexByKey[key] = nextIndex;
+      typedAdjacency.add(<_PortageWaterFirstEdge>[]);
+      return nextIndex;
+    }
+
+    void addBidirectionalSegment(
+      gmaps.LatLng fromPoint,
+      gmaps.LatLng toPoint, {
+      required bool isCarry,
+    }) {
+      final from = ensureNode(fromPoint);
+      final to = ensureNode(toPoint);
+      if (from == to) return;
+      final meters = _haversineMeters(fromPoint, toPoint);
+      if (!meters.isFinite || meters <= 0.5) return;
+      typedAdjacency[from].add(
+        _PortageWaterFirstEdge(
+          to: to,
+          meters: meters,
+          path: <gmaps.LatLng>[fromPoint, toPoint],
+          isCarry: isCarry,
+        ),
+      );
+      typedAdjacency[to].add(
+        _PortageWaterFirstEdge(
+          to: from,
+          meters: meters,
+          path: <gmaps.LatLng>[toPoint, fromPoint],
+          isCarry: isCarry,
+        ),
+      );
+    }
+
+    for (final line in filteredWaterLines) {
+      var previous = line.first;
+      ensureNode(previous);
+      for (var i = 1; i < line.length; i++) {
+        final current = line[i];
+        addBidirectionalSegment(previous, current, isCarry: false);
+        previous = current;
+      }
+    }
+    for (final line in filteredPortageLines) {
+      var previous = line.first;
+      ensureNode(previous);
+      for (var i = 1; i < line.length; i++) {
+        final current = line[i];
+        addBidirectionalSegment(previous, current, isCarry: true);
+        previous = current;
+      }
+    }
+
+    if (nodes.length < 2) {
+      if (startWaterEntries.isNotEmpty &&
+          endWaterEntries.isNotEmpty &&
+          filteredPortageLines.isEmpty &&
+          _isWaterSafeDirectSegment(start, end, entry, maxSamples: 18)) {
+        return _PortageWaterFirstLegSolution(
+          path: <gmaps.LatLng>[start, end],
+          distanceMeters: directMeters,
+        );
+      }
+      return null;
+    }
+
+    final weightedAdjacency = typedAdjacency
+        .map(
+          (edges) => edges
+              .map(
+                (edge) => _TrailEdge(
+                  to: edge.to,
+                  meters:
+                      edge.isCarry ? (edge.meters * 1.55) + 120.0 : edge.meters,
+                ),
+              )
+              .toList(growable: false),
+        )
+        .toList(growable: false);
+    final spatialIndex = _TrailSpatialIndex.fromNodes(nodes);
+    final accessCoords = <gmaps.LatLng>[
+      for (final access in entry.accessPoints)
+        if ((access['lat'] as num?)?.toDouble() != null &&
+            (access['lon'] as num?)?.toDouble() != null)
+          gmaps.LatLng(
+            (access['lat'] as num).toDouble(),
+            (access['lon'] as num).toDouble(),
+          ),
+    ];
+    final startAnchor = _resolvePortagingGraphAnchor(
+      start,
+      nodes,
+      spatialIndex,
+      accessCoords,
+    );
+    final endAnchor = _resolvePortagingGraphAnchor(
+      end,
+      nodes,
+      spatialIndex,
+      accessCoords,
+    );
+    final candidateRadii = <double>[2500, 5000, 9000, 15000];
+    final startCandidates = _mergePortageCandidateGroups([
+      _portageGraphCandidatesForAnchor(
+        anchor: start,
+        nodes: nodes,
+        spatialIndex: spatialIndex,
+        accessPoints: accessCoords,
+        entry: entry,
+        limit: 5,
+        radiiMeters: candidateRadii,
+        maxGlobalFallbackMeters: 10000,
+      ),
+      _snapPortageCandidatesToSegments(
+        anchor: start,
+        lines: networkLines,
+        nodeIndexByKey: nodeIndexByKey,
+        entry: entry,
+        limit: 5,
+        maxAnchorMeters: 9500.0,
+        maxLineDistanceMeters: 10000.0,
+        maxAlongSegmentMeters: 20000.0,
+        resolvedAnchor: startAnchor,
+      ),
+    ], softLimit: 10);
+    final endCandidates = _mergePortageCandidateGroups([
+      _portageGraphCandidatesForAnchor(
+        anchor: end,
+        nodes: nodes,
+        spatialIndex: spatialIndex,
+        accessPoints: accessCoords,
+        entry: entry,
+        limit: 5,
+        radiiMeters: candidateRadii,
+        maxGlobalFallbackMeters: 10000,
+      ),
+      _snapPortageCandidatesToSegments(
+        anchor: end,
+        lines: networkLines,
+        nodeIndexByKey: nodeIndexByKey,
+        entry: entry,
+        limit: 5,
+        maxAnchorMeters: 9500.0,
+        maxLineDistanceMeters: 10000.0,
+        maxAlongSegmentMeters: 20000.0,
+        resolvedAnchor: endAnchor,
+      ),
+    ], softLimit: 10);
+
+    if (startCandidates.isEmpty || endCandidates.isEmpty) {
+      final sameLineRoute = _fastPortageRouteAlongSameLine(
+        start: start,
+        end: end,
+        waterLines: filteredWaterLines,
+        portageLines: filteredPortageLines,
+        entry: entry,
+        maxAnchorMeters: 3200.0,
+        maxLineDistanceMeters: 3600.0,
+        maxTotalMeters: math.max(directMeters * 4.0, directMeters + 7000.0),
+      );
+      if (sameLineRoute != null) {
+        return _PortageWaterFirstLegSolution(
+          path: sameLineRoute.path,
+          distanceMeters: sameLineRoute.distanceMeters,
+        );
+      }
+      if (filteredPortageLines.isEmpty &&
+          startWaterEntries.isNotEmpty &&
+          endWaterEntries.isNotEmpty &&
+          _isWaterSafeDirectSegment(start, end, entry, maxSamples: 18)) {
+        return _PortageWaterFirstLegSolution(
+          path: <gmaps.LatLng>[start, end],
+          distanceMeters: directMeters,
+        );
+      }
+      return null;
+    }
+
+    List<int>? bestPrev;
+    _PortageGraphCandidate? bestStartCandidate;
+    _PortageGraphCandidate? bestEndCandidate;
+    var bestStartNode = -1;
+    var bestEndNode = -1;
+    var bestWeightedScore = double.infinity;
+    final endNodeSet =
+        endCandidates.map((candidate) => candidate.index).toSet();
+
+    for (final startCandidate in startCandidates) {
+      final tree = _shortestTrailTreeFromSource(
+        startCandidate.index,
+        weightedAdjacency,
+        stopNodes: endNodeSet,
+      );
+      for (final endCandidate in endCandidates) {
+        final weightedMeters = tree.dist[endCandidate.index];
+        if (!weightedMeters.isFinite) continue;
+        final weightedScore =
+            startCandidate.totalConnectorMeters +
+            weightedMeters +
+            endCandidate.totalConnectorMeters;
+        if (weightedScore < bestWeightedScore) {
+          bestWeightedScore = weightedScore;
+          bestPrev = tree.prev;
+          bestStartCandidate = startCandidate;
+          bestEndCandidate = endCandidate;
+          bestStartNode = startCandidate.index;
+          bestEndNode = endCandidate.index;
+        }
+      }
+    }
+
+    if (bestPrev == null ||
+        bestStartCandidate == null ||
+        bestEndCandidate == null ||
+        bestStartNode < 0 ||
+        bestEndNode < 0) {
+      final sameLineRoute = _fastPortageRouteAlongSameLine(
+        start: start,
+        end: end,
+        waterLines: filteredWaterLines,
+        portageLines: filteredPortageLines,
+        entry: entry,
+        maxAnchorMeters: 3200.0,
+        maxLineDistanceMeters: 3600.0,
+        maxTotalMeters: math.max(directMeters * 4.0, directMeters + 7000.0),
+      );
+      if (sameLineRoute != null) {
+        return _PortageWaterFirstLegSolution(
+          path: sameLineRoute.path,
+          distanceMeters: sameLineRoute.distanceMeters,
+        );
+      }
+      if (filteredPortageLines.isEmpty &&
+          startWaterEntries.isNotEmpty &&
+          endWaterEntries.isNotEmpty &&
+          _isWaterSafeDirectSegment(start, end, entry, maxSamples: 18)) {
+        return _PortageWaterFirstLegSolution(
+          path: <gmaps.LatLng>[start, end],
+          distanceMeters: directMeters,
+        );
+      }
+      return null;
+    }
+    if (!_isValidPortageConnectorToGraphAnchor(
+          anchor: start,
+          graphAnchor: bestStartCandidate.graphAnchor,
+          entry: entry,
+          allowAccessStraightToWater: bestStartCandidate.usedAccess,
+        ) ||
+        !_isValidPortageConnectorToGraphAnchor(
+          anchor: end,
+          graphAnchor: bestEndCandidate.graphAnchor,
+          entry: entry,
+          allowAccessStraightToWater: bestEndCandidate.usedAccess,
+        )) {
+      return null;
+    }
+
+    final nodePath = _reconstructTrailNodePath(
+      bestStartNode,
+      bestEndNode,
+      bestPrev,
+    );
+    if (nodePath == null || nodePath.isEmpty) return null;
+    final graphPath = nodePath
+        .map((nodeIndex) => nodes[nodeIndex])
+        .toList(growable: false);
+    final graphMeters = _polylineDistanceMeters(graphPath);
+    if (!graphMeters.isFinite || graphMeters <= 0.0) return null;
+
+    final path = <gmaps.LatLng>[];
+    void appendDistinct(gmaps.LatLng point) {
+      if (path.isNotEmpty) {
+        final last = path.last;
+        if ((last.latitude - point.latitude).abs() < 1e-7 &&
+            (last.longitude - point.longitude).abs() < 1e-7) {
+          return;
+        }
+      }
+      path.add(point);
+    }
+
+    appendDistinct(start);
+    if (_haversineMeters(start, bestStartCandidate.graphAnchor) > 5.0) {
+      appendDistinct(bestStartCandidate.graphAnchor);
+    }
+    for (final point in graphPath) {
+      appendDistinct(point);
+    }
+    if (_haversineMeters(bestEndCandidate.graphAnchor, end) > 5.0) {
+      appendDistinct(bestEndCandidate.graphAnchor);
+    }
+    appendDistinct(end);
+
+    final totalMeters =
+        bestStartCandidate.totalConnectorMeters +
+        graphMeters +
+        bestEndCandidate.totalConnectorMeters;
+
+    if (path.length < 2 || !totalMeters.isFinite || totalMeters <= 0.0) {
+      return null;
+    }
+
+    final maxReasonableMeters = math.max(
+      directMeters * 5.5,
+      directMeters + 12000.0,
+    );
+    if (totalMeters > maxReasonableMeters) {
+      return null;
+    }
+
+    return _PortageWaterFirstLegSolution(
+      path: path,
+      distanceMeters: totalMeters,
+    );
   }
 
   double _segmentDistanceToPathMeters(
@@ -3145,6 +5575,94 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return out.length >= 2 ? out : const [];
   }
 
+  List<List<gmaps.LatLng>> _selectGraphLinesForAnchors(
+    List<List<gmaps.LatLng>> lines,
+    List<gmaps.LatLng> anchors, {
+    required int maxLines,
+    required double bboxPadDegrees,
+    required String debugLabel,
+    int distanceSamples = 8,
+  }) {
+    if (lines.length <= maxLines || anchors.isEmpty || maxLines <= 0) {
+      return lines;
+    }
+
+    var minLat = double.infinity;
+    var maxLat = -double.infinity;
+    var minLon = double.infinity;
+    var maxLon = -double.infinity;
+    for (final anchor in anchors) {
+      if (anchor.latitude < minLat) minLat = anchor.latitude;
+      if (anchor.latitude > maxLat) maxLat = anchor.latitude;
+      if (anchor.longitude < minLon) minLon = anchor.longitude;
+      if (anchor.longitude > maxLon) maxLon = anchor.longitude;
+    }
+    minLat -= bboxPadDegrees;
+    maxLat += bboxPadDegrees;
+    minLon -= bboxPadDegrees;
+    maxLon += bboxPadDegrees;
+
+    final inBox = <int>[];
+    final outBox = <({int index, double dist})>[];
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.length < 2) continue;
+      var inside = false;
+      for (final point in line) {
+        if (point.latitude >= minLat &&
+            point.latitude <= maxLat &&
+            point.longitude >= minLon &&
+            point.longitude <= maxLon) {
+          inside = true;
+          break;
+        }
+      }
+      if (inside) {
+        inBox.add(i);
+      } else {
+        outBox.add((
+          index: i,
+          dist: _distanceLineToPathMeters(
+            line,
+            anchors,
+            maxSamples: distanceSamples,
+          ),
+        ));
+      }
+    }
+
+    List<int> selectedInBox = inBox;
+    if (selectedInBox.length > maxLines) {
+      final scoredInBox = selectedInBox
+        .map(
+          (index) => (
+            index: index,
+            dist: _distanceLineToPathMeters(
+              lines[index],
+              anchors,
+              maxSamples: distanceSamples,
+            ),
+          ),
+        )
+        .toList(growable: false)..sort((a, b) => a.dist.compareTo(b.dist));
+      selectedInBox = [for (var i = 0; i < maxLines; i++) scoredInBox[i].index];
+    }
+
+    outBox.sort((a, b) => a.dist.compareTo(b.dist));
+    final remaining = math.max(0, maxLines - selectedInBox.length);
+    final selected = <List<gmaps.LatLng>>[
+      for (final index in selectedInBox) lines[index],
+      for (var i = 0; i < outBox.length && i < remaining; i++)
+        lines[outBox[i].index],
+    ];
+
+    debugPrint(
+      '$debugLabel selected_graph_lines used=${selected.length} '
+      'inBox=${selectedInBox.length} total=${lines.length}',
+    );
+    return selected;
+  }
+
   String _trailNodeKey(gmaps.LatLng point) {
     return '${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}';
   }
@@ -3152,11 +5670,17 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   List<_TrailCandidate> _nearestTrailCandidates(
     gmaps.LatLng target,
     List<gmaps.LatLng> nodes, {
+    _TrailSpatialIndex? spatialIndex,
     int limit = 6,
     double maxMeters = 3000.0,
   }) {
     final candidates = <_TrailCandidate>[];
-    for (var i = 0; i < nodes.length; i++) {
+    final indices =
+        spatialIndex != null
+            ? spatialIndex.indicesWithinRadius(target, maxMeters)
+            : List<int>.generate(nodes.length, (i) => i);
+    if (indices.isEmpty) return const [];
+    for (final i in indices) {
       final meters = _haversineMeters(target, nodes[i]);
       if (meters <= maxMeters) {
         candidates.add(_TrailCandidate(index: i, meters: meters));
@@ -3173,6 +5697,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   List<_TrailCandidate> _nearestTrailCandidatesAdaptive(
     gmaps.LatLng target,
     List<gmaps.LatLng> nodes, {
+    _TrailSpatialIndex? spatialIndex,
     int limit = 6,
     List<double> radiiMeters = const <double>[3000, 6000, 10000, 18000],
     bool allowGlobalFallback = true,
@@ -3185,6 +5710,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final candidates = _nearestTrailCandidates(
         target,
         nodes,
+        spatialIndex: spatialIndex,
         limit: math.max(limit * 2, limit + 2),
         maxMeters: radius,
       );
@@ -3207,6 +5733,15 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       return merged;
     }
     if (!allowGlobalFallback) return const [];
+    if (spatialIndex != null && maxGlobalFallbackMeters != null) {
+      return _nearestTrailCandidates(
+        target,
+        nodes,
+        spatialIndex: spatialIndex,
+        limit: limit,
+        maxMeters: maxGlobalFallbackMeters,
+      );
+    }
     final all = <_TrailCandidate>[];
     for (var i = 0; i < nodes.length; i++) {
       final meters = _haversineMeters(target, nodes[i]);
@@ -3222,6 +5757,81 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       return all.sublist(0, limit);
     }
     return all;
+  }
+
+  List<_TrailCandidate> _diversifyTrailCandidatesByComponent({
+    required gmaps.LatLng anchor,
+    required List<_TrailCandidate> baseCandidates,
+    required List<gmaps.LatLng> nodes,
+    required _TrailSpatialIndex spatialIndex,
+    required List<int> componentIds,
+    required List<int> componentSizes,
+    required int limit,
+    required double nearbyRadiusMeters,
+    int maxNewComponents = 3,
+  }) {
+    if (baseCandidates.isEmpty ||
+        componentIds.length != nodes.length ||
+        componentSizes.isEmpty ||
+        nearbyRadiusMeters <= 0) {
+      return baseCandidates;
+    }
+
+    final merged = <_TrailCandidate>[...baseCandidates];
+    final seenIndices = <int>{for (final c in baseCandidates) c.index};
+    final seenComponents = <int>{
+      for (final c in baseCandidates)
+        if (c.index >= 0 && c.index < componentIds.length)
+          componentIds[c.index],
+    };
+
+    final bestByComponent = <int, _TrailCandidate>{};
+    final nearbyNodeIndices = spatialIndex.indicesWithinRadius(
+      anchor,
+      nearbyRadiusMeters,
+    );
+    for (final index in nearbyNodeIndices) {
+      if (index < 0 || index >= nodes.length || seenIndices.contains(index)) {
+        continue;
+      }
+      final componentId = componentIds[index];
+      if (seenComponents.contains(componentId)) continue;
+      final meters = _haversineMeters(anchor, nodes[index]);
+      if (!meters.isFinite || meters > nearbyRadiusMeters) continue;
+      final next = _TrailCandidate(index: index, meters: meters);
+      final existing = bestByComponent[componentId];
+      if (existing == null || next.meters < existing.meters) {
+        bestByComponent[componentId] = next;
+      }
+    }
+
+    if (bestByComponent.isEmpty) return baseCandidates;
+
+    final rankedComponents = bestByComponent.keys.toList(growable: false)
+      ..sort((a, b) {
+        final sizeA =
+            (a >= 0 && a < componentSizes.length) ? componentSizes[a] : 0;
+        final sizeB =
+            (b >= 0 && b < componentSizes.length) ? componentSizes[b] : 0;
+        final sizeCmp = sizeB.compareTo(sizeA);
+        if (sizeCmp != 0) return sizeCmp;
+        return bestByComponent[a]!.meters.compareTo(bestByComponent[b]!.meters);
+      });
+
+    for (final componentId in rankedComponents) {
+      if (merged.length >= limit + maxNewComponents) break;
+      final candidate = bestByComponent[componentId];
+      if (candidate == null) continue;
+      merged.add(candidate);
+      seenIndices.add(candidate.index);
+      seenComponents.add(componentId);
+    }
+
+    merged.sort((a, b) => a.meters.compareTo(b.meters));
+    if (merged.length > limit + maxNewComponents) {
+      return merged.sublist(0, limit + maxNewComponents);
+    }
+    return merged;
   }
 
   double _anchorConnectorLimitMeters(String modeContext) {
@@ -3248,6 +5858,161 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     if (meters <= 400.0) return meters * 2.4;
     if (meters <= 800.0) return meters * 4.5;
     return meters * 8.0;
+  }
+
+  int _comparePortageGraphCandidates(
+    _PortageGraphCandidate a,
+    _PortageGraphCandidate b,
+  ) {
+    final total = a.totalConnectorMeters.compareTo(b.totalConnectorMeters);
+    if (total != 0) return total;
+    final connector = a.connectorMeters.compareTo(b.connectorMeters);
+    if (connector != 0) return connector;
+    final search = a.searchMeters.compareTo(b.searchMeters);
+    if (search != 0) return search;
+    if (a.usedAccess != b.usedAccess) {
+      return a.usedAccess ? 1 : -1;
+    }
+    return a.index.compareTo(b.index);
+  }
+
+  List<_PortageGraphCandidate> _mergePortageCandidateGroups(
+    List<List<_PortageGraphCandidate>> groups, {
+    int softLimit = 12,
+  }) {
+    final byIndex = <int, _PortageGraphCandidate>{};
+    for (final group in groups) {
+      for (final candidate in group) {
+        final existing = byIndex[candidate.index];
+        if (existing == null ||
+            _comparePortageGraphCandidates(candidate, existing) < 0) {
+          byIndex[candidate.index] = candidate;
+        }
+      }
+    }
+
+    final merged = byIndex.values.toList(growable: false)
+      ..sort(_comparePortageGraphCandidates);
+    if (softLimit > 0 && merged.length > softLimit) {
+      return merged.sublist(0, softLimit);
+    }
+    return merged;
+  }
+
+  List<_PortageGraphCandidate> _snapPortageCandidatesToSegments({
+    required gmaps.LatLng anchor,
+    required List<List<gmaps.LatLng>> lines,
+    required Map<String, int> nodeIndexByKey,
+    required _PortagingOverlayCacheEntry entry,
+    required int limit,
+    double maxAnchorMeters = 12000.0,
+    double maxLineDistanceMeters = 14000.0,
+    double maxAlongSegmentMeters = 22000.0,
+    ({gmaps.LatLng graphAnchor, double connectorMeters, bool usedAccess})?
+    resolvedAnchor,
+  }) {
+    if (lines.isEmpty || nodeIndexByKey.isEmpty || limit <= 0) {
+      return const <_PortageGraphCandidate>[];
+    }
+
+    final byIndex = <int, _PortageGraphCandidate>{};
+
+    void scanSource(
+      gmaps.LatLng sourcePoint, {
+      required double baseConnectorMeters,
+      required bool usedAccess,
+    }) {
+      final shortlisted = <({List<gmaps.LatLng> line, double distance})>[];
+      for (final line in lines) {
+        if (line.length < 2) continue;
+        final lineDistance = _distanceMetersToPath(sourcePoint, line);
+        if (!lineDistance.isFinite || lineDistance > maxLineDistanceMeters) {
+          continue;
+        }
+        shortlisted.add((line: line, distance: lineDistance));
+      }
+      shortlisted.sort((a, b) => a.distance.compareTo(b.distance));
+
+      final lineCap = math.max(limit * 3, 24);
+      for (
+        var lineIndex = 0;
+        lineIndex < shortlisted.length && lineIndex < lineCap;
+        lineIndex++
+      ) {
+        final line = shortlisted[lineIndex].line;
+        for (var i = 0; i + 1 < line.length; i++) {
+          final a = line[i];
+          final b = line[i + 1];
+          final startIndex = nodeIndexByKey[_trailNodeKey(a)];
+          final endIndex = nodeIndexByKey[_trailNodeKey(b)];
+          if (startIndex == null || endIndex == null) continue;
+
+          final projected = _projectOnSegment(sourcePoint, a, b);
+          final toProjected = _haversineMeters(sourcePoint, projected);
+          if (!toProjected.isFinite || toProjected > maxAnchorMeters) {
+            continue;
+          }
+          if (!_isValidPortageConnectorToGraphAnchor(
+            anchor: sourcePoint,
+            graphAnchor: projected,
+            entry: entry,
+            allowAccessStraightToWater: usedAccess,
+          )) {
+            continue;
+          }
+
+          final metersToStart = _haversineMeters(projected, a);
+          if (metersToStart.isFinite &&
+              metersToStart <= maxAlongSegmentMeters) {
+            final candidate = _PortageGraphCandidate(
+              index: startIndex,
+              searchMeters: metersToStart,
+              connectorMeters: baseConnectorMeters + toProjected,
+              graphAnchor: projected,
+              usedAccess: usedAccess,
+            );
+            final existing = byIndex[startIndex];
+            if (existing == null ||
+                _comparePortageGraphCandidates(candidate, existing) < 0) {
+              byIndex[startIndex] = candidate;
+            }
+          }
+
+          final metersToEnd = _haversineMeters(projected, b);
+          if (metersToEnd.isFinite && metersToEnd <= maxAlongSegmentMeters) {
+            final candidate = _PortageGraphCandidate(
+              index: endIndex,
+              searchMeters: metersToEnd,
+              connectorMeters: baseConnectorMeters + toProjected,
+              graphAnchor: projected,
+              usedAccess: usedAccess,
+            );
+            final existing = byIndex[endIndex];
+            if (existing == null ||
+                _comparePortageGraphCandidates(candidate, existing) < 0) {
+              byIndex[endIndex] = candidate;
+            }
+          }
+        }
+      }
+    }
+
+    scanSource(anchor, baseConnectorMeters: 0.0, usedAccess: false);
+    if (resolvedAnchor != null && resolvedAnchor.usedAccess) {
+      scanSource(
+        resolvedAnchor.graphAnchor,
+        baseConnectorMeters: resolvedAnchor.connectorMeters,
+        usedAccess: true,
+      );
+    }
+
+    final merged = byIndex.values.toList(growable: false)
+      ..sort(_comparePortageGraphCandidates);
+    final softLimit = math.max(limit * 2, limit + 4);
+    if (merged.length > softLimit) {
+      return merged.sublist(0, softLimit);
+    }
+    return merged;
   }
 
   bool _waypointShouldUseAnchor({
@@ -3300,11 +6065,13 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   _resolvePortagingGraphAnchor(
     gmaps.LatLng anchor,
     List<gmaps.LatLng> nodes,
+    _TrailSpatialIndex spatialIndex,
     List<gmaps.LatLng> accessPoints,
   ) {
     final direct = _nearestTrailCandidatesAdaptive(
       anchor,
       nodes,
+      spatialIndex: spatialIndex,
       limit: 1,
       radiiMeters: const <double>[4000, 8000, 15000],
       maxGlobalFallbackMeters: 12000,
@@ -3342,7 +6109,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   List<_PortageGraphCandidate> _portageGraphCandidatesForAnchor({
     required gmaps.LatLng anchor,
     required List<gmaps.LatLng> nodes,
+    required _TrailSpatialIndex spatialIndex,
     required List<gmaps.LatLng> accessPoints,
+    required _PortagingOverlayCacheEntry entry,
     required int limit,
     required List<double> radiiMeters,
     double? maxGlobalFallbackMeters,
@@ -3380,29 +6149,39 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       }
     }
 
-    final directCandidates = _nearestTrailCandidatesAdaptive(
-      anchor,
-      nodes,
-      limit: math.max(limit, 6),
-      radiiMeters: radiiMeters,
-      maxGlobalFallbackMeters: maxGlobalFallbackMeters,
-    );
-    mergeCandidates(
-      directCandidates,
-      connectorMeters: 0.0,
-      graphAnchor: anchor,
-      usedAccess: false,
-    );
+    if (_isLikelyWaterPoint(anchor, entry, lineThresholdMeters: 120.0)) {
+      final directCandidates = _nearestTrailCandidatesAdaptive(
+        anchor,
+        nodes,
+        spatialIndex: spatialIndex,
+        limit: math.max(limit, 6),
+        radiiMeters: radiiMeters,
+        maxGlobalFallbackMeters: maxGlobalFallbackMeters,
+      );
+      mergeCandidates(
+        directCandidates,
+        connectorMeters: 0.0,
+        graphAnchor: anchor,
+        usedAccess: false,
+      );
+    }
 
     final accessAnchor = _resolvePortagingGraphAnchor(
       anchor,
       nodes,
+      spatialIndex,
       accessPoints,
     );
-    if (accessAnchor.usedAccess) {
+    if (accessAnchor.usedAccess &&
+        _isLikelyWaterPoint(
+          accessAnchor.graphAnchor,
+          entry,
+          lineThresholdMeters: 120.0,
+        )) {
       final accessCandidates = _nearestTrailCandidatesAdaptive(
         accessAnchor.graphAnchor,
         nodes,
+        spatialIndex: spatialIndex,
         limit: math.max(limit, 6),
         radiiMeters: radiiMeters,
         maxGlobalFallbackMeters: maxGlobalFallbackMeters,
@@ -3520,6 +6299,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     resolvedAnchor,
     required List<_PortageGraphCandidate> baseCandidates,
     required List<gmaps.LatLng> nodes,
+    required _TrailSpatialIndex spatialIndex,
     required _PortagingOverlayCacheEntry entry,
     required int maxExtraCandidates,
     required double maxReachMeters,
@@ -3601,7 +6381,11 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       )) {
         continue;
       }
-      for (var i = 0; i < nodes.length; i++) {
+      final nearbyNodeIndices = spatialIndex.indicesWithinRadius(
+        source.point,
+        maxReachMeters,
+      );
+      for (final i in nearbyNodeIndices) {
         final node = nodes[i];
         final meters = _haversineMeters(source.point, node);
         if (!meters.isFinite || meters <= 120.0 || meters > maxReachMeters) {
@@ -3812,7 +6596,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return _TrailPathResult(nodePath: nodePath, meters: dist[end]);
   }
 
-  ({List<gmaps.LatLng> nodes, List<List<_TrailEdge>> adjacency}) _graphForLines(
+  ({
+    List<gmaps.LatLng> nodes,
+    List<List<_TrailEdge>> adjacency,
+    _TrailSpatialIndex spatialIndex,
+  })
+  _graphForLines(
     List<List<gmaps.LatLng>> lines, {
     required String cacheKey,
     double bridgeToleranceMeters = 0.0,
@@ -3823,7 +6612,11 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         '$cacheKey|bridge=${bridgeToleranceMeters.toStringAsFixed(1)}|loop=${allowLoopBridges ? 1 : 0}|loopMax=${maxLoopBridgeMeters.toStringAsFixed(1)}';
     final existing = _trailGraphCache[fullCacheKey];
     if (existing != null && _isFresh(existing.fetchedAt, _overlayCacheTtl)) {
-      return (nodes: existing.nodes, adjacency: existing.adjacency);
+      return (
+        nodes: existing.nodes,
+        adjacency: existing.adjacency,
+        spatialIndex: existing.spatialIndex,
+      );
     }
     final graph = _buildGraphFromLines(
       lines,
@@ -3835,6 +6628,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       fetchedAt: DateTime.now(),
       nodes: graph.nodes,
       adjacency: graph.adjacency,
+      spatialIndex: graph.spatialIndex,
     );
     return graph;
   }
@@ -3842,6 +6636,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Future<_HikingOverlayCacheEntry?> _getHikingOverlayEntry({
     required String cacheKey,
     required List<gmaps.LatLng> routePath,
+    double padDegrees = 0.08,
   }) async {
     final cached = _hikingOverlayCache[cacheKey];
     if (cached != null && _isFresh(cached.fetchedAt, _overlayCacheTtl)) {
@@ -3849,16 +6644,26 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
     final inFlight = _hikingOverlayInFlight[cacheKey];
     if (inFlight != null) {
+      if (cached != null) {
+        return cached;
+      }
       return inFlight;
     }
-    final future = _fetchHikingOverlayData(routePath);
+    final future = _fetchHikingOverlayData(routePath, padDegrees: padDegrees);
     _hikingOverlayInFlight[cacheKey] = future;
     try {
       final entry = await future;
       if (entry != null) {
         _hikingOverlayCache[cacheKey] = entry;
+        return entry;
       }
-      return entry;
+      if (cached != null) {
+        debugPrint(
+          'hikingOverpass stale_cache_fallback key=$cacheKey '
+          'age_ms=${DateTime.now().difference(cached.fetchedAt).inMilliseconds}',
+        );
+      }
+      return cached;
     } finally {
       final current = _hikingOverlayInFlight[cacheKey];
       if (identical(current, future)) {
@@ -3880,6 +6685,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
     final inFlight = _portagingOverlayInFlight[cacheKey];
     if (inFlight != null) {
+      if (cached != null) {
+        return cached;
+      }
       return inFlight;
     }
     final future = _fetchPortagingOverlayData(
@@ -3893,14 +6701,215 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       final entry = await future;
       if (entry != null) {
         _portagingOverlayCache[cacheKey] = entry;
+        return entry;
       }
-      return entry;
+      if (cached != null) {
+        debugPrint(
+          'portagingOverpass stale_cache_fallback key=$cacheKey '
+          'age_ms=${DateTime.now().difference(cached.fetchedAt).inMilliseconds}',
+        );
+      }
+      return cached;
     } finally {
       final current = _portagingOverlayInFlight[cacheKey];
       if (identical(current, future)) {
         _portagingOverlayInFlight.remove(cacheKey);
       }
     }
+  }
+
+  String _latLngMergeKey(gmaps.LatLng point, {int decimals = 5}) {
+    return '${point.latitude.toStringAsFixed(decimals)},'
+        '${point.longitude.toStringAsFixed(decimals)}';
+  }
+
+  String _lineMergeKey(List<gmaps.LatLng> line, {int sample = 12}) {
+    if (line.isEmpty) return '';
+    final forward = _pathSignature(line, sample: sample);
+    final reverse = _pathSignature(
+      line.reversed.toList(growable: false),
+      sample: sample,
+    );
+    return forward.compareTo(reverse) <= 0 ? forward : reverse;
+  }
+
+  List<gmaps.LatLng> _portagingOverlayFocusPoints({
+    required List<gmaps.LatLng> routePath,
+    required List<gmaps.LatLng> modeAnchors,
+    gmaps.LatLng? focusPoint,
+    int maxPoints = 5,
+  }) {
+    if (maxPoints <= 0) return const <gmaps.LatLng>[];
+
+    final source = routePath.length >= 2 ? routePath : modeAnchors;
+    final out = <gmaps.LatLng>[];
+    final seen = <String>{};
+
+    void addPoint(gmaps.LatLng point) {
+      final key = _latLngMergeKey(point, decimals: 3);
+      if (seen.add(key)) {
+        out.add(point);
+      }
+    }
+
+    if (focusPoint != null) {
+      addPoint(focusPoint);
+    }
+    if (source.isNotEmpty) {
+      addPoint(source.first);
+      if (source.length > 2) {
+        addPoint(source[source.length ~/ 2]);
+      }
+      for (final point in _samplePath(source, target: maxPoints)) {
+        addPoint(point);
+        if (out.length >= maxPoints) break;
+      }
+      addPoint(source.last);
+    }
+
+    if (out.length <= maxPoints) {
+      return out;
+    }
+
+    final trimmed = <gmaps.LatLng>[];
+    final trimmedSeen = <String>{};
+
+    void keepPoint(gmaps.LatLng point) {
+      final key = _latLngMergeKey(point, decimals: 3);
+      if (!trimmedSeen.add(key)) return;
+      if (trimmed.length < maxPoints) {
+        trimmed.add(point);
+      }
+    }
+
+    if (focusPoint != null) {
+      keepPoint(focusPoint);
+    }
+    if (source.isNotEmpty) {
+      for (final point in _samplePath(source, target: maxPoints)) {
+        keepPoint(point);
+      }
+      keepPoint(source.last);
+    }
+    return trimmed;
+  }
+
+  _PortagingOverlayCacheEntry _mergePortagingOverlayEntries(
+    List<_PortagingOverlayCacheEntry> entries,
+  ) {
+    final waterLines = <List<gmaps.LatLng>>[];
+    final waterPolygons = <List<gmaps.LatLng>>[];
+    final portageLines = <List<gmaps.LatLng>>[];
+    final campsites = <Map<String, dynamic>>[];
+    final accessPoints = <Map<String, dynamic>>[];
+    final seenWaterLines = <String>{};
+    final seenWaterPolygons = <String>{};
+    final seenPortageLines = <String>{};
+    final seenCampsites = <String>{};
+    final seenAccessPoints = <String>{};
+    var newestFetchedAt = entries.first.fetchedAt;
+
+    for (final entry in entries) {
+      if (entry.fetchedAt.isAfter(newestFetchedAt)) {
+        newestFetchedAt = entry.fetchedAt;
+      }
+
+      for (final line in entry.waterLines) {
+        final key = _lineMergeKey(line, sample: 10);
+        if (key.isEmpty || !seenWaterLines.add(key)) continue;
+        waterLines.add(line);
+      }
+      for (final polygon in entry.waterPolygons) {
+        final key = _lineMergeKey(polygon, sample: 10);
+        if (key.isEmpty || !seenWaterPolygons.add(key)) continue;
+        waterPolygons.add(polygon);
+      }
+      for (final line in entry.portageLines) {
+        final key = _lineMergeKey(line, sample: 10);
+        if (key.isEmpty || !seenPortageLines.add(key)) continue;
+        portageLines.add(line);
+      }
+      for (final camp in entry.campsites) {
+        final lat = _toDouble(camp['lat']);
+        final lon = _toDouble(camp['lon']);
+        final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
+        if (!seenCampsites.add(key)) continue;
+        campsites.add(Map<String, dynamic>.from(camp));
+      }
+      for (final access in entry.accessPoints) {
+        final lat = _toDouble(access['lat']);
+        final lon = _toDouble(access['lon']);
+        final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
+        if (!seenAccessPoints.add(key)) continue;
+        accessPoints.add(Map<String, dynamic>.from(access));
+      }
+    }
+
+    return _PortagingOverlayCacheEntry(
+      fetchedAt: newestFetchedAt,
+      waterLines: waterLines,
+      waterPolygons: waterPolygons,
+      portageLines: portageLines,
+      campsites: campsites,
+      accessPoints: accessPoints,
+      geoJson: _toGeoJson(
+        <List<gmaps.LatLng>>[...waterLines, ...portageLines],
+        campsites,
+        accessPoints,
+      ),
+    );
+  }
+
+  Future<_PortagingOverlayCacheEntry?> _loadSegmentedPortagingOverlayEntry({
+    required List<gmaps.LatLng> routePath,
+    required List<gmaps.LatLng> modeAnchors,
+    required gmaps.LatLng focusPoint,
+    required double padDegrees,
+    bool includeCampsites = true,
+    int maxFocusQueries = 4,
+    required String logPrefix,
+  }) async {
+    final focusPoints = _portagingOverlayFocusPoints(
+      routePath: routePath,
+      modeAnchors: modeAnchors,
+      focusPoint: focusPoint,
+      maxPoints: maxFocusQueries,
+    );
+    if (focusPoints.isEmpty) return null;
+
+    final entries = <_PortagingOverlayCacheEntry>[];
+    for (final point in focusPoints) {
+      final cacheKey = _portagingFocusCacheKey(point, padDegrees: padDegrees);
+      final entry = await _getPortagingOverlayEntry(
+        cacheKey: cacheKey,
+        anchors: <gmaps.LatLng>[point],
+        focusPoint: point,
+        padDegrees: padDegrees,
+        includeCampsites: includeCampsites,
+      );
+      if (entry != null) {
+        entries.add(entry);
+      }
+    }
+    if (entries.isEmpty) return null;
+    if (entries.length == 1) {
+      debugPrint(
+        '$logPrefix segmented_focus_single samples=${focusPoints.length} '
+        'pad=${padDegrees.toStringAsFixed(2)}',
+      );
+      return entries.first;
+    }
+
+    final merged = _mergePortagingOverlayEntries(entries);
+    debugPrint(
+      '$logPrefix segmented_focus_merged samples=${entries.length} '
+      'pad=${padDegrees.toStringAsFixed(2)} '
+      'water=${merged.waterLines.length} '
+      'portage=${merged.portageLines.length} '
+      'campsites=${merged.campsites.length} '
+      'access=${merged.accessPoints.length}',
+    );
+    return merged;
   }
 
   Future<_RouteComputation?> _routeViaTrailGraph(
@@ -3910,222 +6919,401 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     if (segPoints.length < 2) return null;
     final anchors = _segmentLatLngs(segPoints);
     if (anchors.length < 2) return null;
+    final normalizedMode = _normalizeTransportMode(modeContext);
+    final cacheAnchors = anchors;
 
-    final fullModeAnchors = _anchorPathForMode(modeContext);
-    final cacheAnchors =
-        modeContext == 'portaging'
-            ? anchors
-            : (fullModeAnchors.length >= 2 ? fullModeAnchors : anchors);
-    final cacheKey = _hikingCacheKey(cacheAnchors);
-    final entry = await _getHikingOverlayEntry(
-      cacheKey: cacheKey,
-      routePath: cacheAnchors,
-    );
-    if (entry == null || entry.trailLines.isEmpty) return null;
-
-    final bridgeToleranceMeters =
-        _normalizeTransportMode(modeContext) == 'portaging' ? 280.0 : 180.0;
-    final graph = _graphForLines(
-      entry.trailLines,
-      cacheKey: 'trail_route:$modeContext:$cacheKey',
-      bridgeToleranceMeters: bridgeToleranceMeters,
-    );
-    final nodes = graph.nodes;
-    final adjacency = graph.adjacency;
-    if (nodes.length < 2) return null;
-
-    final connectorLimitMeters = _anchorConnectorLimitMeters(modeContext);
-    final radii =
-        _normalizeTransportMode(modeContext) == 'portaging'
-            ? const <double>[4000, 8000, 14000, 25000]
-            : const <double>[3000, 6000, 10000, 18000];
-    final expandedRadii =
-        _normalizeTransportMode(modeContext) == 'portaging'
-            ? const <double>[5000, 9000, 16000, 26000, 36000]
-            : const <double>[4000, 8000, 14000, 22000, 30000];
-    final globalFallbackCap =
-        _normalizeTransportMode(modeContext) == 'portaging' ? 13000.0 : 9000.0;
-    final expandedGlobalFallbackCap =
-        _normalizeTransportMode(modeContext) == 'portaging' ? 22000.0 : 16000.0;
-    final detourRetryThreshold =
-        _normalizeTransportMode(modeContext) == 'portaging' ? 7.5 : 5.0;
-    final legs = <_TrailLegSolution>[];
-    for (var leg = 0; leg + 1 < anchors.length; leg++) {
-      final start = anchors[leg];
-      final end = anchors[leg + 1];
-      final startCandidates = _nearestTrailCandidatesAdaptive(
-        start,
-        nodes,
-        limit: 6,
-        radiiMeters: radii,
-        maxGlobalFallbackMeters: globalFallbackCap,
+    _RouteComputation? solveWithEntry(
+      _HikingOverlayCacheEntry entry, {
+      required String graphCacheKey,
+    }) {
+      if (entry.trailLines.isEmpty) return null;
+      final routeTrailLines = _selectGraphLinesForAnchors(
+        entry.trailLines,
+        anchors,
+        maxLines: normalizedMode == 'portaging' ? 900 : 700,
+        bboxPadDegrees: normalizedMode == 'portaging' ? 0.06 : 0.04,
+        debugLabel: 'trailRoute',
       );
-      final endCandidates = _nearestTrailCandidatesAdaptive(
-        end,
-        nodes,
-        limit: 6,
-        radiiMeters: radii,
-        maxGlobalFallbackMeters: globalFallbackCap,
+      if (routeTrailLines.isEmpty) return null;
+      if (anchors.length == 2) {
+        final sameLineRoute = _fastTrailRouteAlongSameLine(
+          start: anchors.first,
+          end: anchors.last,
+          trailLines: routeTrailLines,
+          maxAnchorMeters: normalizedMode == 'portaging' ? 1600.0 : 1200.0,
+          maxLineDistanceMeters:
+              normalizedMode == 'portaging' ? 2200.0 : 1600.0,
+          maxTotalMeters: normalizedMode == 'portaging' ? 42000.0 : 36000.0,
+        );
+        if (sameLineRoute != null) {
+          return _RouteComputation(
+            path: sameLineRoute.path,
+            distanceMeters: sameLineRoute.distanceMeters,
+            durationSeconds: sameLineRoute.distanceMeters / 1.2,
+            color: _standardRouteColor(normalizedMode),
+            width: 6,
+            zIndex: 26,
+            instructions: <String>[
+              'Trail-aligned route (${(sameLineRoute.distanceMeters / 1000.0).toStringAsFixed(1)} km)',
+            ],
+          );
+        }
+      }
+      final bridgeToleranceMeters =
+          normalizedMode == 'portaging' ? 280.0 : 180.0;
+      final graph = _graphForLines(
+        routeTrailLines,
+        cacheKey: graphCacheKey,
+        bridgeToleranceMeters: bridgeToleranceMeters,
       );
-      if (startCandidates.isEmpty || endCandidates.isEmpty) return null;
+      final nodes = graph.nodes;
+      final adjacency = graph.adjacency;
+      final spatialIndex = graph.spatialIndex;
+      if (nodes.length < 2) return null;
+      if (nodes.length > 26000) {
+        debugPrint('trailRoute skipped_too_large nodes=${nodes.length}');
+        return null;
+      }
+      final graphComponents = _graphComponents(adjacency);
 
-      _TrailPathResult? bestPath;
-      _TrailCandidate? bestStart;
-      _TrailCandidate? bestEnd;
-      var bestLegScore = double.infinity;
-      void considerCandidates(
-        List<_TrailCandidate> starts,
-        List<_TrailCandidate> ends,
-      ) {
-        for (final s in starts) {
-          for (final e in ends) {
-            final candidate = _shortestTrailPath(s.index, e.index, adjacency);
-            if (candidate == null || candidate.nodePath.isEmpty) continue;
-            final score = s.meters + candidate.meters + e.meters;
-            if (score < bestLegScore) {
-              bestLegScore = score;
-              bestPath = candidate;
-              bestStart = s;
-              bestEnd = e;
+      final connectorLimitMeters = _anchorConnectorLimitMeters(normalizedMode);
+      final radii =
+          normalizedMode == 'portaging'
+              ? const <double>[4000, 8000, 14000, 25000]
+              : const <double>[3000, 6000, 10000, 18000];
+      final expandedRadii =
+          normalizedMode == 'portaging'
+              ? const <double>[5000, 9000, 16000, 26000, 36000]
+              : const <double>[4000, 8000, 14000, 22000, 30000];
+      final globalFallbackCap =
+          normalizedMode == 'portaging' ? 13000.0 : 9000.0;
+      final expandedGlobalFallbackCap =
+          normalizedMode == 'portaging' ? 22000.0 : 16000.0;
+      final detourRetryThreshold = normalizedMode == 'portaging' ? 7.5 : 5.0;
+      final nearbyComponentRadius =
+          normalizedMode == 'portaging' ? 4200.0 : 2600.0;
+      final expandedNearbyComponentRadius =
+          normalizedMode == 'portaging' ? 7000.0 : 4500.0;
+      final legs = <_TrailLegSolution>[];
+      for (var leg = 0; leg + 1 < anchors.length; leg++) {
+        final start = anchors[leg];
+        final end = anchors[leg + 1];
+        final startCandidates = _diversifyTrailCandidatesByComponent(
+          anchor: start,
+          baseCandidates: _nearestTrailCandidatesAdaptive(
+            start,
+            nodes,
+            spatialIndex: spatialIndex,
+            limit: 6,
+            radiiMeters: radii,
+            maxGlobalFallbackMeters: globalFallbackCap,
+          ),
+          nodes: nodes,
+          spatialIndex: spatialIndex,
+          componentIds: graphComponents.componentIds,
+          componentSizes: graphComponents.componentSizes,
+          limit: 6,
+          nearbyRadiusMeters: nearbyComponentRadius,
+        );
+        final endCandidates = _diversifyTrailCandidatesByComponent(
+          anchor: end,
+          baseCandidates: _nearestTrailCandidatesAdaptive(
+            end,
+            nodes,
+            spatialIndex: spatialIndex,
+            limit: 6,
+            radiiMeters: radii,
+            maxGlobalFallbackMeters: globalFallbackCap,
+          ),
+          nodes: nodes,
+          spatialIndex: spatialIndex,
+          componentIds: graphComponents.componentIds,
+          componentSizes: graphComponents.componentSizes,
+          limit: 6,
+          nearbyRadiusMeters: nearbyComponentRadius,
+        );
+        if (startCandidates.isEmpty || endCandidates.isEmpty) return null;
+
+        _TrailPathResult? bestPath;
+        _TrailCandidate? bestStart;
+        _TrailCandidate? bestEnd;
+        var bestLegScore = double.infinity;
+        final treeCache = <int, ({List<double> dist, List<int> prev})>{};
+        void considerCandidates(
+          List<_TrailCandidate> starts,
+          List<_TrailCandidate> ends,
+        ) {
+          if (starts.isEmpty || ends.isEmpty) return;
+          for (final s in starts) {
+            final tree = treeCache.putIfAbsent(
+              s.index,
+              () => _shortestTrailTreeFromSource(s.index, adjacency),
+            );
+            for (final e in ends) {
+              final graphMeters = tree.dist[e.index];
+              if (!graphMeters.isFinite) continue;
+              final nodePath = _reconstructTrailNodePath(
+                s.index,
+                e.index,
+                tree.prev,
+              );
+              if (nodePath == null || nodePath.isEmpty) continue;
+              final score = s.meters + graphMeters + e.meters;
+              if (score < bestLegScore) {
+                bestLegScore = score;
+                bestPath = _TrailPathResult(
+                  nodePath: nodePath,
+                  meters: graphMeters,
+                );
+                bestStart = s;
+                bestEnd = e;
+              }
             }
           }
         }
-      }
 
-      considerCandidates(startCandidates, endCandidates);
+        considerCandidates(startCandidates, endCandidates);
 
-      final directMeters = _haversineMeters(start, end);
-      final shouldRetryWithExpandedCandidates =
-          bestPath == null ||
-          (directMeters > 1200.0 &&
-              bestLegScore > directMeters * detourRetryThreshold);
-      if (shouldRetryWithExpandedCandidates) {
-        final expandedStart = _nearestTrailCandidatesAdaptive(
-          start,
-          nodes,
-          limit: 14,
-          radiiMeters: expandedRadii,
-          maxGlobalFallbackMeters: expandedGlobalFallbackCap,
-        );
-        final expandedEnd = _nearestTrailCandidatesAdaptive(
-          end,
-          nodes,
-          limit: 14,
-          radiiMeters: expandedRadii,
-          maxGlobalFallbackMeters: expandedGlobalFallbackCap,
-        );
-        if (expandedStart.isNotEmpty && expandedEnd.isNotEmpty) {
-          considerCandidates(expandedStart, expandedEnd);
-        }
-      }
-      if (bestPath == null || bestStart == null || bestEnd == null) return null;
-      final legBestPath = bestPath!;
-      final legBestStart = bestStart!;
-      final legBestEnd = bestEnd!;
-      legs.add(
-        _TrailLegSolution(
-          start: start,
-          end: end,
-          startCandidate: legBestStart,
-          endCandidate: legBestEnd,
-          nodePath: legBestPath.nodePath,
-          graphMeters: legBestPath.meters,
-        ),
-      );
-    }
-    if (legs.isEmpty) return null;
-
-    final startConnectorMetersByLeg = legs
-        .map((leg) => leg.startCandidate.meters)
-        .toList(growable: false);
-    final endConnectorMetersByLeg = legs
-        .map((leg) => leg.endCandidate.meters)
-        .toList(growable: false);
-
-    final path = <gmaps.LatLng>[];
-    void appendDistinct(gmaps.LatLng p) {
-      if (path.isNotEmpty) {
-        final last = path.last;
-        if ((last.latitude - p.latitude).abs() < 1e-7 &&
-            (last.longitude - p.longitude).abs() < 1e-7) {
-          return;
-        }
-      }
-      path.add(p);
-    }
-
-    var totalMeters = 0.0;
-    for (var legIndex = 0; legIndex < legs.length; legIndex++) {
-      final leg = legs[legIndex];
-      final includeStartAnchor = _waypointShouldUseAnchor(
-        anchorIndex: legIndex,
-        anchorCount: anchors.length,
-        connectorLimitMeters: connectorLimitMeters,
-        startConnectorMetersByLeg: startConnectorMetersByLeg,
-        endConnectorMetersByLeg: endConnectorMetersByLeg,
-      );
-      final includeEndAnchor = _waypointShouldUseAnchor(
-        anchorIndex: legIndex + 1,
-        anchorCount: anchors.length,
-        connectorLimitMeters: connectorLimitMeters,
-        startConnectorMetersByLeg: startConnectorMetersByLeg,
-        endConnectorMetersByLeg: endConnectorMetersByLeg,
-      );
-
-      if (legIndex == 0) {
-        if (includeStartAnchor) {
-          appendDistinct(leg.start);
-        } else {
-          appendDistinct(nodes[leg.startCandidate.index]);
-        }
-      } else {
-        final prevLeg = legs[legIndex - 1];
-        final prevEndNode = prevLeg.endCandidate.index;
-        final currentStartNode = leg.startCandidate.index;
-        if (includeStartAnchor) {
-          appendDistinct(leg.start);
-        } else if (prevEndNode != currentStartNode) {
-          final bridge = _shortestTrailPath(
-            prevEndNode,
-            currentStartNode,
-            adjacency,
+        final directMeters = _haversineMeters(start, end);
+        final shouldRetryWithExpandedCandidates =
+            bestPath == null ||
+            (directMeters > 1200.0 &&
+                bestLegScore > directMeters * detourRetryThreshold);
+        if (shouldRetryWithExpandedCandidates) {
+          final expandedStart = _diversifyTrailCandidatesByComponent(
+            anchor: start,
+            baseCandidates: _nearestTrailCandidatesAdaptive(
+              start,
+              nodes,
+              spatialIndex: spatialIndex,
+              limit: 14,
+              radiiMeters: expandedRadii,
+              maxGlobalFallbackMeters: expandedGlobalFallbackCap,
+            ),
+            nodes: nodes,
+            spatialIndex: spatialIndex,
+            componentIds: graphComponents.componentIds,
+            componentSizes: graphComponents.componentSizes,
+            limit: 14,
+            nearbyRadiusMeters: expandedNearbyComponentRadius,
+            maxNewComponents: 5,
           );
-          if (bridge == null || bridge.nodePath.isEmpty) return null;
-          for (final idx in bridge.nodePath) {
-            appendDistinct(nodes[idx]);
+          final expandedEnd = _diversifyTrailCandidatesByComponent(
+            anchor: end,
+            baseCandidates: _nearestTrailCandidatesAdaptive(
+              end,
+              nodes,
+              spatialIndex: spatialIndex,
+              limit: 14,
+              radiiMeters: expandedRadii,
+              maxGlobalFallbackMeters: expandedGlobalFallbackCap,
+            ),
+            nodes: nodes,
+            spatialIndex: spatialIndex,
+            componentIds: graphComponents.componentIds,
+            componentSizes: graphComponents.componentSizes,
+            limit: 14,
+            nearbyRadiusMeters: expandedNearbyComponentRadius,
+            maxNewComponents: 5,
+          );
+          if (expandedStart.isNotEmpty && expandedEnd.isNotEmpty) {
+            considerCandidates(expandedStart, expandedEnd);
           }
-          totalMeters += bridge.meters;
+        }
+        if (bestPath == null || bestStart == null || bestEnd == null) {
+          return null;
+        }
+        final legBestPath = bestPath!;
+        final legBestStart = bestStart!;
+        final legBestEnd = bestEnd!;
+        legs.add(
+          _TrailLegSolution(
+            start: start,
+            end: end,
+            startCandidate: legBestStart,
+            endCandidate: legBestEnd,
+            nodePath: legBestPath.nodePath,
+            graphMeters: legBestPath.meters,
+          ),
+        );
+      }
+      if (legs.isEmpty) return null;
+
+      final startConnectorMetersByLeg = legs
+          .map((leg) => leg.startCandidate.meters)
+          .toList(growable: false);
+      final endConnectorMetersByLeg = legs
+          .map((leg) => leg.endCandidate.meters)
+          .toList(growable: false);
+
+      final path = <gmaps.LatLng>[];
+      void appendDistinct(gmaps.LatLng p) {
+        if (path.isNotEmpty) {
+          final last = path.last;
+          if ((last.latitude - p.latitude).abs() < 1e-7 &&
+              (last.longitude - p.longitude).abs() < 1e-7) {
+            return;
+          }
+        }
+        path.add(p);
+      }
+
+      var totalMeters = 0.0;
+      for (var legIndex = 0; legIndex < legs.length; legIndex++) {
+        final leg = legs[legIndex];
+        final includeStartAnchor = _waypointShouldUseAnchor(
+          anchorIndex: legIndex,
+          anchorCount: anchors.length,
+          connectorLimitMeters: connectorLimitMeters,
+          startConnectorMetersByLeg: startConnectorMetersByLeg,
+          endConnectorMetersByLeg: endConnectorMetersByLeg,
+        );
+        final includeEndAnchor = _waypointShouldUseAnchor(
+          anchorIndex: legIndex + 1,
+          anchorCount: anchors.length,
+          connectorLimitMeters: connectorLimitMeters,
+          startConnectorMetersByLeg: startConnectorMetersByLeg,
+          endConnectorMetersByLeg: endConnectorMetersByLeg,
+        );
+
+        if (legIndex == 0) {
+          if (includeStartAnchor) {
+            appendDistinct(leg.start);
+          } else {
+            appendDistinct(nodes[leg.startCandidate.index]);
+          }
         } else {
-          appendDistinct(nodes[currentStartNode]);
+          final prevLeg = legs[legIndex - 1];
+          final prevEndNode = prevLeg.endCandidate.index;
+          final currentStartNode = leg.startCandidate.index;
+          if (includeStartAnchor) {
+            appendDistinct(leg.start);
+          } else if (prevEndNode != currentStartNode) {
+            final bridge = _shortestTrailPath(
+              prevEndNode,
+              currentStartNode,
+              adjacency,
+            );
+            if (bridge == null || bridge.nodePath.isEmpty) return null;
+            for (final idx in bridge.nodePath) {
+              appendDistinct(nodes[idx]);
+            }
+            totalMeters += bridge.meters;
+          } else {
+            appendDistinct(nodes[currentStartNode]);
+          }
+        }
+
+        if (includeStartAnchor) {
+          totalMeters += leg.startCandidate.meters;
+        }
+        for (final idx in leg.nodePath) {
+          appendDistinct(nodes[idx]);
+        }
+        totalMeters += leg.graphMeters;
+        if (includeEndAnchor) {
+          appendDistinct(leg.end);
+          totalMeters += leg.endCandidate.meters;
         }
       }
 
-      if (includeStartAnchor) {
-        totalMeters += leg.startCandidate.meters;
-      }
-      for (final idx in leg.nodePath) {
-        appendDistinct(nodes[idx]);
-      }
-      totalMeters += leg.graphMeters;
-      if (includeEndAnchor) {
-        appendDistinct(leg.end);
-        totalMeters += leg.endCandidate.meters;
+      if (path.length < 2) return null;
+
+      final routeLabel =
+          normalizedMode == 'portaging'
+              ? 'Portage-trail route'
+              : 'Trail-network route';
+
+      return _RouteComputation(
+        path: path,
+        distanceMeters: totalMeters,
+        durationSeconds: totalMeters / 1.2,
+        color: _standardRouteColor(normalizedMode),
+        width: 6,
+        zIndex: 26,
+        instructions: <String>[
+          '$routeLabel (${(totalMeters / 1000.0).toStringAsFixed(1)} km)',
+        ],
+      );
+    }
+
+    final padAttempts = <double>[
+      _trailRoutePadDegreesForMode(normalizedMode),
+      _trailRoutePadDegreesForMode(normalizedMode, expanded: true),
+    ];
+    final attemptedCacheKeys = <String>{};
+    for (
+      var attemptIndex = 0;
+      attemptIndex < padAttempts.length;
+      attemptIndex++
+    ) {
+      final padDegrees = padAttempts[attemptIndex];
+      final cacheKey = _hikingCacheKey(cacheAnchors, padDegrees: padDegrees);
+      if (!attemptedCacheKeys.add(cacheKey)) continue;
+      final entry = await _getHikingOverlayEntry(
+        cacheKey: cacheKey,
+        routePath: cacheAnchors,
+        padDegrees: padDegrees,
+      );
+      final solved =
+          entry == null
+              ? null
+              : solveWithEntry(
+                entry,
+                graphCacheKey:
+                    'trail_route:$normalizedMode:$cacheKey:pad=${padDegrees.toStringAsFixed(2)}',
+              );
+      if (solved != null) {
+        if (attemptIndex > 0) {
+          debugPrint(
+            'trailRoute expanded_bbox_success mode=$normalizedMode '
+            'pad=${padDegrees.toStringAsFixed(2)} points=${solved.path.length}',
+          );
+        }
+        return solved;
       }
     }
 
-    if (path.length < 2) return null;
-
-    return _RouteComputation(
-      path: path,
-      distanceMeters: totalMeters,
-      durationSeconds: totalMeters / 1.2,
-      color: _standardRouteColor('hiking'),
-      width: 6,
-      zIndex: 26,
-      instructions: <String>[
-        'Trail-network route (${(totalMeters / 1000.0).toStringAsFixed(1)} km)',
-      ],
+    final focusPadDegrees = _routeFocusPadDegrees(
+      anchors,
+      minPad: normalizedMode == 'portaging' ? 0.12 : 0.10,
+      maxPad: normalizedMode == 'portaging' ? 0.24 : 0.20,
+      edgePadding: normalizedMode == 'portaging' ? 0.08 : 0.06,
     );
+    final focusCandidates = <gmaps.LatLng>[
+      _routeBoundsCenter(anchors),
+      anchors.last,
+      anchors.first,
+    ];
+    final attemptedFocusKeys = <String>{};
+    for (final focus in focusCandidates) {
+      final focusPath = <gmaps.LatLng>[focus];
+      final cacheKey = _hikingCacheKey(focusPath, padDegrees: focusPadDegrees);
+      if (!attemptedFocusKeys.add(cacheKey)) continue;
+      final entry = await _getHikingOverlayEntry(
+        cacheKey: cacheKey,
+        routePath: focusPath,
+        padDegrees: focusPadDegrees,
+      );
+      final solved =
+          entry == null
+              ? null
+              : solveWithEntry(
+                entry,
+                graphCacheKey:
+                    'trail_route:$normalizedMode:$cacheKey:focus=${focusPadDegrees.toStringAsFixed(2)}',
+              );
+      if (solved != null) {
+        debugPrint(
+          'trailRoute focus_bbox_success mode=$normalizedMode '
+          'pad=${focusPadDegrees.toStringAsFixed(2)} '
+          'points=${solved.path.length}',
+        );
+        return solved;
+      }
+    }
+
+    return null;
   }
 
   String _portagingRouteCacheKey(List<gmaps.LatLng> anchors) {
@@ -4136,10 +7324,19 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     gmaps.LatLng focusPoint, {
     double padDegrees = 0.18,
   }) {
-    return 'focus:${focusPoint.latitude.toStringAsFixed(3)},${focusPoint.longitude.toStringAsFixed(3)}:${padDegrees.toStringAsFixed(2)}';
+    final quantizedPad = _quantizedOverlayPadDegrees(padDegrees);
+    final bucketSize = math.max(0.02, quantizedPad / 4.0);
+    final lat = _roundToStep(focusPoint.latitude, bucketSize);
+    final lon = _roundToStep(focusPoint.longitude, bucketSize);
+    return 'focus:${lat.toStringAsFixed(3)},${lon.toStringAsFixed(3)}:'
+        '${quantizedPad.toStringAsFixed(2)}';
   }
 
-  ({List<gmaps.LatLng> nodes, List<List<_TrailEdge>> adjacency})
+  ({
+    List<gmaps.LatLng> nodes,
+    List<List<_TrailEdge>> adjacency,
+    _TrailSpatialIndex spatialIndex,
+  })
   _buildGraphFromLines(
     List<List<gmaps.LatLng>> lines, {
     double bridgeToleranceMeters = 0.0,
@@ -4189,7 +7386,11 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       );
     }
 
-    return (nodes: nodes, adjacency: adjacency);
+    return (
+      nodes: nodes,
+      adjacency: adjacency,
+      spatialIndex: _TrailSpatialIndex.fromNodes(nodes),
+    );
   }
 
   void _connectNearbyDeadEnds({
@@ -4380,20 +7581,15 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   relation["tourism"~"camp_site|camp_pitch"]($south,$west,$north,$east);
 '''
             : '';
-    final relationWaterQuery =
-        includeCampsites
-            ? '''
+    final relationWaterQuery = '''
   relation["natural"="water"]($south,$west,$north,$east);
   relation["route"="canoe"]($south,$west,$north,$east);
-'''
-            : '';
-    final relationAccessQuery =
-        includeCampsites
-            ? '''
+''';
+    final relationAccessQuery = '''
   relation["canoe"~"put_in|take_out|yes"]($south,$west,$north,$east);
   relation["portage"~"yes|put_in|take_out"]($south,$west,$north,$east);
-'''
-            : '';
+  relation["name"~"access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing",i]($south,$west,$north,$east);
+''';
 
     final query = '''
 [out:json][timeout:25];
@@ -4410,16 +7606,64 @@ $campsiteQuery
   way["canoe"~"put_in|take_out|yes"]($south,$west,$north,$east);
   node["portage"~"yes|put_in|take_out"]($south,$west,$north,$east);
   way["portage"~"yes|put_in|take_out"]($south,$west,$north,$east);
+  node["amenity"="boat_ramp"]($south,$west,$north,$east);
+  way["amenity"="boat_ramp"]($south,$west,$north,$east);
+  node["leisure"="slipway"]($south,$west,$north,$east);
+  way["leisure"="slipway"]($south,$west,$north,$east);
+  node["name"~"access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing",i]($south,$west,$north,$east);
+  way["name"~"access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing",i]($south,$west,$north,$east);
 $relationAccessQuery
 );
 out body geom;
 ''';
 
-    final data = await _fetchOverpassData(
+    var data = await _fetchOverpassData(
       query: query,
       logPrefix: 'portagingOverpass',
       requestTimeout: const Duration(seconds: 12),
     );
+    if (data == null && focusPoint != null) {
+      final litePadDegrees = math.min(padDegrees, 0.12);
+      final liteSouth = focusPoint.latitude - litePadDegrees;
+      final liteWest = focusPoint.longitude - litePadDegrees;
+      final liteNorth = focusPoint.latitude + litePadDegrees;
+      final liteEast = focusPoint.longitude + litePadDegrees;
+      final liteCampsiteQuery =
+          includeCampsites
+              ? '''
+  node["tourism"~"camp_site|camp_pitch"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+'''
+              : '';
+      final liteQuery = '''
+[out:json][timeout:18];
+(
+  way["waterway"~"river|stream|canal|drain|ditch"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["natural"="water"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["route"="canoe"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["highway"~"path|footway|track"]["canoe"~"portage|yes"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["portage"~"yes|designated|official"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["canoe"="portage"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+$liteCampsiteQuery
+  node["canoe"~"put_in|take_out|yes"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["canoe"~"put_in|take_out|yes"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  node["portage"~"yes|put_in|take_out"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["portage"~"yes|put_in|take_out"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  node["amenity"="boat_ramp"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["amenity"="boat_ramp"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  node["leisure"="slipway"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["leisure"="slipway"]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  node["name"~"access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing",i]($liteSouth,$liteWest,$liteNorth,$liteEast);
+  way["name"~"access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing",i]($liteSouth,$liteWest,$liteNorth,$liteEast);
+);
+out body geom;
+''';
+      data = await _fetchOverpassData(
+        query: liteQuery,
+        logPrefix: 'portagingOverpassLite',
+        requestTimeout: const Duration(seconds: 8),
+        ignoreCooldown: true,
+      );
+    }
     if (data == null) return null;
 
     final elements = (data['elements'] as List<dynamic>?) ?? const [];
@@ -4481,6 +7725,9 @@ out body geom;
       bool isAccessTags(Map<String, dynamic> t) {
         final canoeTag = (t['canoe'] ?? '').toString().toLowerCase();
         final portageTag = (t['portage'] ?? '').toString().toLowerCase();
+        final amenity = (t['amenity'] ?? '').toString().toLowerCase();
+        final leisure = (t['leisure'] ?? '').toString().toLowerCase();
+        final name = (t['name'] ?? '').toString().toLowerCase();
         if (canoeTag == 'put_in' ||
             canoeTag == 'take_out' ||
             canoeTag == 'yes') {
@@ -4489,6 +7736,19 @@ out body geom;
         if (portageTag == 'put_in' ||
             portageTag == 'take_out' ||
             portageTag == 'yes') {
+          return true;
+        }
+        if (amenity == 'boat_ramp' || leisure == 'slipway') {
+          return true;
+        }
+        if (name.contains('access point') ||
+            name.contains('put in') ||
+            name.contains('put-in') ||
+            name.contains('take out') ||
+            name.contains('take-out') ||
+            name.contains('boat launch') ||
+            name.contains('canoe launch') ||
+            name.contains('landing')) {
           return true;
         }
         return false;
@@ -4563,10 +7823,33 @@ out body geom;
         required String name,
         required double lat,
         required double lon,
+        Map<String, dynamic> tags = const <String, dynamic>{},
+        String sourceType = 'campsite',
       }) {
         final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
         if (!seenCampKeys.add(key)) return;
-        campsites.add(<String, dynamic>{'name': name, 'lat': lat, 'lon': lon});
+        final camp = <String, dynamic>{
+          'name': name,
+          'lat': lat,
+          'lon': lon,
+          'sourceType': sourceType,
+        };
+        void copyTag(String sourceKey, String targetKey) {
+          final value = (tags[sourceKey] ?? '').toString().trim();
+          if (value.isNotEmpty) camp[targetKey] = value;
+        }
+
+        copyTag('operator', 'operator');
+        copyTag('access', 'access');
+        copyTag('capacity', 'capacity');
+        copyTag('description', 'description');
+        copyTag('website', 'website');
+        copyTag('url', 'website');
+        copyTag('park', 'park');
+        copyTag('park:name', 'park');
+        copyTag('addr:place', 'lakeName');
+        copyTag('loc_name', 'lakeName');
+        campsites.add(camp);
       }
 
       void addAccess({
@@ -4602,6 +7885,8 @@ out body geom;
             name: (tags['name'] ?? 'Campsite').toString(),
             lat: center.latitude,
             lon: center.longitude,
+            tags: tags,
+            sourceType: type,
           );
         }
         if (center != null && isAccessTags(tags)) {
@@ -4639,6 +7924,8 @@ out body geom;
             name: (tags['name'] ?? 'Campsite').toString(),
             lat: center.latitude,
             lon: center.longitude,
+            tags: tags,
+            sourceType: type,
           );
         }
         if (center != null && isAccessTags(tags)) {
@@ -4657,6 +7944,8 @@ out body geom;
             name: (tags['name'] ?? 'Campsite').toString(),
             lat: lat,
             lon: lon,
+            tags: tags,
+            sourceType: type,
           );
         }
         if (isAccessTags(tags)) {
@@ -4689,108 +7978,229 @@ out body geom;
   }
 
   Future<_RouteComputation?> _routeViaPortageGraph(
-    List<Map<String, dynamic>> segPoints,
-  ) async {
+    List<Map<String, dynamic>> segPoints, {
+    bool forceFocusLookup = false,
+  }) async {
     if (segPoints.length < 2) return null;
     final routeStartedAt = DateTime.now();
     final anchors = _segmentLatLngs(segPoints);
     if (anchors.length < 2) return null;
+    Future<_RouteComputation?> retryWithFocusLookup(String reason) async {
+      if (forceFocusLookup) return null;
+      debugPrint('portageRoute retry_focus_lookup reason=$reason');
+      return _routeViaPortageGraph(segPoints, forceFocusLookup: true);
+    }
 
     // Route each leg against a local graph envelope. Using the full trip anchor
     // set here causes very large graph builds on long canoe routes and can hang
     // the web tab before any route is committed.
     final routeFetchAnchors = anchors;
-    final cacheKey = '${_portagingRouteCacheKey(routeFetchAnchors)}:route-lite';
+    final routeBaseCacheKey = _portagingRouteCacheKey(routeFetchAnchors);
+    final cacheKey = '$routeBaseCacheKey:route-lite';
     final routePadDegrees = _adaptivePortageRoutePadDegrees(routeFetchAnchors);
-    final entry = await _getPortagingOverlayEntry(
-      cacheKey: cacheKey,
-      anchors: routeFetchAnchors,
-      padDegrees: routePadDegrees,
-      includeCampsites: false,
-    );
-    if (entry == null) return null;
-
-    // Cap the lines fed into the route graph to avoid O(n²)-style blowup
-    // when Overpass returns thousands of water features.
-    // Use bounding-box inclusion so mid-route waterways aren't excluded.
-    const maxRouteGraphLines = 800;
-    var routeWaterLines = entry.waterLines;
-    if (routeWaterLines.length > maxRouteGraphLines) {
-      // Compute padded bounding box of route anchors.
-      var minLat = double.infinity;
-      var maxLat = -double.infinity;
-      var minLon = double.infinity;
-      var maxLon = -double.infinity;
-      for (final a in anchors) {
-        if (a.latitude < minLat) minLat = a.latitude;
-        if (a.latitude > maxLat) maxLat = a.latitude;
-        if (a.longitude < minLon) minLon = a.longitude;
-        if (a.longitude > maxLon) maxLon = a.longitude;
-      }
-      const bboxPad = 0.06;
-      minLat -= bboxPad;
-      maxLat += bboxPad;
-      minLon -= bboxPad;
-      maxLon += bboxPad;
-
-      final inBox = <int>[];
-      final outBox = <({int index, double dist})>[];
-      for (var i = 0; i < routeWaterLines.length; i++) {
-        final line = routeWaterLines[i];
-        if (line.length < 2) continue;
-        // Check if any point of the line falls inside the bounding box.
-        var inside = false;
-        for (final p in line) {
-          if (p.latitude >= minLat &&
-              p.latitude <= maxLat &&
-              p.longitude >= minLon &&
-              p.longitude <= maxLon) {
-            inside = true;
-            break;
-          }
-        }
-        if (inside) {
-          inBox.add(i);
-        } else {
-          final d = _distanceLineToPathMeters(line, anchors, maxSamples: 8);
-          outBox.add((index: i, dist: d));
-        }
-      }
-      outBox.sort((a, b) => a.dist.compareTo(b.dist));
-      // Hard-cap in-box lines too: if there are more in-box lines than the
-      // limit, keep only the closest ones to the route anchors.
-      var selectedInBox = inBox;
-      if (inBox.length > maxRouteGraphLines) {
-        final scored = <({int index, double dist})>[];
-        for (final i in inBox) {
-          final d = _distanceLineToPathMeters(
-            entry.waterLines[i],
-            anchors,
-            maxSamples: 8,
+    _PortagingOverlayCacheEntry? entry;
+    if (!forceFocusLookup) {
+      entry = await _getPortagingOverlayEntry(
+        cacheKey: cacheKey,
+        anchors: routeFetchAnchors,
+        padDegrees: routePadDegrees,
+        includeCampsites: true,
+      );
+      if (entry == null) {
+        final cachedRouteEntry = _portagingOverlayCache[routeBaseCacheKey];
+        if (cachedRouteEntry != null) {
+          entry = cachedRouteEntry;
+          debugPrint(
+            'portageRoute using_overlay_route_cache key=$routeBaseCacheKey '
+            'water=${entry.waterLines.length} portage=${entry.portageLines.length}',
           );
-          scored.add((index: i, dist: d));
         }
-        scored.sort((a, b) => a.dist.compareTo(b.dist));
-        selectedInBox = [
-          for (var j = 0; j < maxRouteGraphLines; j++) scored[j].index,
-        ];
       }
-      final remaining = maxRouteGraphLines - selectedInBox.length;
-      routeWaterLines = [
-        for (final i in selectedInBox) entry.waterLines[i],
-        if (remaining > 0)
-          for (var j = 0; j < outBox.length && j < remaining; j++)
-            entry.waterLines[outBox[j].index],
-      ];
+    }
+    if (entry == null) {
+      final focusPadDegrees = _routeFocusPadDegrees(
+        anchors,
+        minPad: 0.12,
+        maxPad: 0.24,
+        edgePadding: 0.08,
+      );
+      final focusCandidates = _portagingOverlayFocusPoints(
+        routePath: anchors,
+        modeAnchors: anchors,
+        focusPoint: _routeBoundsCenter(anchors),
+        maxPoints: 5,
+      );
+      final attemptedFocusKeys = <String>{cacheKey};
+      for (final focus in focusCandidates) {
+        final focusCacheKey = _portagingFocusCacheKey(
+          focus,
+          padDegrees: focusPadDegrees,
+        );
+        if (!attemptedFocusKeys.add(focusCacheKey)) continue;
+        final focusEntry = await _getPortagingOverlayEntry(
+          cacheKey: focusCacheKey,
+          anchors: <gmaps.LatLng>[focus],
+          focusPoint: focus,
+          padDegrees: focusPadDegrees,
+          includeCampsites: true,
+        );
+        if (focusEntry == null) continue;
+        entry = focusEntry;
+        debugPrint(
+          'portageRoute using_focus_cache key=$focusCacheKey '
+          'pad=${focusPadDegrees.toStringAsFixed(2)}',
+        );
+        break;
+      }
+    }
+    if (entry == null && _lastVisiblePortagingOverlayEntry != null) {
+      final visibleEntry = _lastVisiblePortagingOverlayEntry!;
+      entry = visibleEntry;
       debugPrint(
-        'portageRoute capped_graph_lines used=${routeWaterLines.length} inBox=${selectedInBox.length} total=${entry.waterLines.length}',
+        'portageRoute using_visible_overlay_cache '
+        'water=${visibleEntry.waterLines.length} '
+        'portage=${visibleEntry.portageLines.length} '
+        'access=${visibleEntry.accessPoints.length}',
       );
     }
+    if (entry == null) return null;
+
+    final routeWaterLines = _selectGraphLinesForAnchors(
+      entry.waterLines,
+      anchors,
+      maxLines: 260,
+      bboxPadDegrees: 0.06,
+      debugLabel: 'portageRouteWater',
+    );
+    final routePortageLines = _selectGraphLinesForAnchors(
+      entry.portageLines,
+      anchors,
+      maxLines: 80,
+      bboxPadDegrees: 0.04,
+      debugLabel: 'portageRouteCarry',
+      distanceSamples: 6,
+    );
     final networkLines = <List<gmaps.LatLng>>[
       ...routeWaterLines,
-      ...entry.portageLines,
+      ...routePortageLines,
     ];
-    if (networkLines.isEmpty) return null;
+    if (networkLines.isEmpty) {
+      return await retryWithFocusLookup('network_lines_empty');
+    }
+
+    if (anchors.length == 2) {
+      final sameLineRoute = _fastPortageRouteAlongSameLine(
+        start: anchors.first,
+        end: anchors.last,
+        waterLines: routeWaterLines,
+        portageLines: routePortageLines,
+        entry: entry,
+      );
+      if (sameLineRoute != null) {
+        final elapsedMs =
+            DateTime.now().difference(routeStartedAt).inMilliseconds;
+        debugPrint(
+          'portageRoute same_line_fallback kind=${sameLineRoute.lineKind} '
+          'meters=${sameLineRoute.distanceMeters.toStringAsFixed(0)} '
+          'ms=$elapsedMs',
+        );
+        final styledSegments = _buildPortagingStyledSegments(
+          path: sameLineRoute.path,
+          entry: entry,
+          width: 6,
+          zIndex: 28,
+        );
+        return _RouteComputation(
+          path: sameLineRoute.path,
+          distanceMeters: sameLineRoute.distanceMeters,
+          durationSeconds: sameLineRoute.distanceMeters / 1.35,
+          color: _standardRouteColor('portaging'),
+          width: 6,
+          zIndex: 28,
+          styledSegments: styledSegments,
+          instructions: <String>[
+            'Portage-waterline route (${(sameLineRoute.distanceMeters / 1000.0).toStringAsFixed(1)} km)',
+          ],
+        );
+      }
+    }
+
+    final waterFirstLegs = <_PortageWaterFirstLegSolution>[];
+    var solvedWaterFirst = true;
+    for (var leg = 0; leg + 1 < anchors.length; leg++) {
+      final legAnchors = <gmaps.LatLng>[anchors[leg], anchors[leg + 1]];
+      final legWaterLines = _selectGraphLinesForAnchors(
+        routeWaterLines,
+        legAnchors,
+        maxLines: 120,
+        bboxPadDegrees: 0.035,
+        debugLabel: 'portageLegWater',
+      );
+      final legPortageLines = _selectGraphLinesForAnchors(
+        routePortageLines,
+        legAnchors,
+        maxLines: 42,
+        bboxPadDegrees: 0.03,
+        debugLabel: 'portageLegCarry',
+        distanceSamples: 5,
+      );
+      final legSolution = _solveWaterFirstPortageLeg(
+        start: legAnchors.first,
+        end: legAnchors.last,
+        waterLines: legWaterLines,
+        portageLines: legPortageLines,
+        entry: entry,
+      );
+      if (legSolution == null) {
+        solvedWaterFirst = false;
+        break;
+      }
+      waterFirstLegs.add(legSolution);
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    if (solvedWaterFirst && waterFirstLegs.isNotEmpty) {
+      final combined = _combinePortageLegPaths(waterFirstLegs);
+      var solvedPath = combined.path;
+      var solvedMeters = combined.distanceMeters;
+      final offRamp =
+          anchors.length == 2
+              ? _trimPortagingPathToWaterOffRamp(
+                path: solvedPath,
+                destination: anchors.last,
+                entry: entry,
+              )
+              : null;
+      if (offRamp != null) {
+        solvedPath = offRamp.path;
+        solvedMeters = offRamp.distanceMeters;
+      }
+
+      final elapsedMs =
+          DateTime.now().difference(routeStartedAt).inMilliseconds;
+      debugPrint(
+        'portageRoute solved_water_first legs=${waterFirstLegs.length} '
+        'offRampApplied=${offRamp != null} ms=$elapsedMs',
+      );
+      final styledSegments = _buildPortagingStyledSegments(
+        path: solvedPath,
+        entry: entry,
+        width: 6,
+        zIndex: 28,
+      );
+      return _RouteComputation(
+        path: solvedPath,
+        distanceMeters: solvedMeters,
+        durationSeconds: solvedMeters / 1.35,
+        color: _standardRouteColor('portaging'),
+        width: 6,
+        zIndex: 28,
+        styledSegments: styledSegments,
+        instructions: <String>[
+          'Portage-water route (${(solvedMeters / 1000.0).toStringAsFixed(1)} km)',
+        ],
+      );
+    }
 
     final graph = _graphForLines(
       networkLines,
@@ -4801,9 +8211,15 @@ out body geom;
     );
     final nodes = graph.nodes;
     final adjacency = graph.adjacency;
-    if (nodes.length < 2) return null;
+    final spatialIndex = graph.spatialIndex;
+    if (nodes.length < 2) {
+      return await retryWithFocusLookup('graph_nodes_lt_2');
+    }
+    final nodeIndexByKey = <String, int>{
+      for (var i = 0; i < nodes.length; i++) _trailNodeKey(nodes[i]): i,
+    };
     // Skip routing on excessively large graphs (would hang the UI thread).
-    if (nodes.length > 30000) {
+    if (nodes.length > 12000) {
       debugPrint('portageRoute skipped_too_large nodes=${nodes.length}');
       return null;
     }
@@ -4827,10 +8243,9 @@ out body geom;
       path.add(p);
     }
 
-    final connectorLimitMeters = _anchorConnectorLimitMeters('portaging');
     const portageRadii = <double>[5000, 9000, 16000, 26000];
     const expandedPortageRadii = <double>[6000, 11000, 19000, 30000, 42000];
-    const legTimeBudgetMs = 10000; // 10s per leg max
+    const legTimeBudgetMs = 4500; // keep slow legs from freezing the web UI
     final legs = <_PortageLegSolution>[];
     for (var leg = 0; leg + 1 < anchors.length; leg++) {
       final legStopwatch = Stopwatch()..start();
@@ -4839,23 +8254,46 @@ out body geom;
       final startAnchor = _resolvePortagingGraphAnchor(
         start,
         nodes,
+        spatialIndex,
         accessCoords,
       );
-      final endAnchor = _resolvePortagingGraphAnchor(end, nodes, accessCoords);
+      final endAnchor = _resolvePortagingGraphAnchor(
+        end,
+        nodes,
+        spatialIndex,
+        accessCoords,
+      );
 
       var startCandidates = _portageGraphCandidatesForAnchor(
         anchor: start,
         nodes: nodes,
+        spatialIndex: spatialIndex,
         accessPoints: accessCoords,
+        entry: entry,
         limit: 6,
         radiiMeters: portageRadii,
         maxGlobalFallbackMeters: 13000,
       );
+      startCandidates = _mergePortageCandidateGroups([
+        startCandidates,
+        _snapPortageCandidatesToSegments(
+          anchor: start,
+          lines: networkLines,
+          nodeIndexByKey: nodeIndexByKey,
+          entry: entry,
+          limit: 6,
+          maxAnchorMeters: 14000.0,
+          maxLineDistanceMeters: 16000.0,
+          maxAlongSegmentMeters: 24000.0,
+          resolvedAnchor: startAnchor,
+        ),
+      ], softLimit: 12);
       startCandidates = _augmentPortageCandidatesViaOpenWater(
         anchor: start,
         resolvedAnchor: startAnchor,
         baseCandidates: startCandidates,
         nodes: nodes,
+        spatialIndex: spatialIndex,
         entry: entry,
         maxExtraCandidates: 6,
         maxReachMeters: 7000.0,
@@ -4863,16 +8301,33 @@ out body geom;
       var endCandidates = _portageGraphCandidatesForAnchor(
         anchor: end,
         nodes: nodes,
+        spatialIndex: spatialIndex,
         accessPoints: accessCoords,
+        entry: entry,
         limit: 6,
         radiiMeters: portageRadii,
         maxGlobalFallbackMeters: 13000,
       );
+      endCandidates = _mergePortageCandidateGroups([
+        endCandidates,
+        _snapPortageCandidatesToSegments(
+          anchor: end,
+          lines: networkLines,
+          nodeIndexByKey: nodeIndexByKey,
+          entry: entry,
+          limit: 6,
+          maxAnchorMeters: 14000.0,
+          maxLineDistanceMeters: 16000.0,
+          maxAlongSegmentMeters: 24000.0,
+          resolvedAnchor: endAnchor,
+        ),
+      ], softLimit: 12);
       endCandidates = _augmentPortageCandidatesViaOpenWater(
         anchor: end,
         resolvedAnchor: endAnchor,
         baseCandidates: endCandidates,
         nodes: nodes,
+        spatialIndex: spatialIndex,
         entry: entry,
         maxExtraCandidates: 6,
         maxReachMeters: 7000.0,
@@ -4884,7 +8339,7 @@ out body geom;
           'startAccess=${startAnchor.usedAccess}(${startAnchor.connectorMeters.toStringAsFixed(0)}m) '
           'endAccess=${endAnchor.usedAccess}(${endAnchor.connectorMeters.toStringAsFixed(0)}m)',
         );
-        return null;
+        return await retryWithFocusLookup('leg_${leg}_unanchored');
       }
 
       List<int>? bestPrev;
@@ -4919,7 +8374,7 @@ out body geom;
           () => _isWaterSafeDirectSegment(
             nodes[a],
             nodes[b],
-            entry,
+            entry!,
             maxSamples: waterSafeSamples,
           ),
         );
@@ -5043,7 +8498,9 @@ out body geom;
         final expandedStartCandidates = _portageGraphCandidatesForAnchor(
           anchor: start,
           nodes: nodes,
+          spatialIndex: spatialIndex,
           accessPoints: accessCoords,
+          entry: entry,
           limit: expandLimit,
           radiiMeters: expandedPortageRadii,
           maxGlobalFallbackMeters: 22000,
@@ -5051,11 +8508,26 @@ out body geom;
           componentSizes: graphComponents.componentSizes,
           diversifyNearbyMeters: 3000.0,
         );
+        final expandedStartWithSnaps = _mergePortageCandidateGroups([
+          expandedStartCandidates,
+          _snapPortageCandidatesToSegments(
+            anchor: start,
+            lines: networkLines,
+            nodeIndexByKey: nodeIndexByKey,
+            entry: entry,
+            limit: expandLimit,
+            maxAnchorMeters: 22000.0,
+            maxLineDistanceMeters: 24000.0,
+            maxAlongSegmentMeters: 30000.0,
+            resolvedAnchor: startAnchor,
+          ),
+        ], softLimit: math.max(expandLimit + 6, 16));
         final expandedStartAugmented = _augmentPortageCandidatesViaOpenWater(
           anchor: start,
           resolvedAnchor: startAnchor,
-          baseCandidates: expandedStartCandidates,
+          baseCandidates: expandedStartWithSnaps,
           nodes: nodes,
+          spatialIndex: spatialIndex,
           entry: entry,
           maxExtraCandidates: augmentLimit,
           maxReachMeters: augmentReach,
@@ -5065,7 +8537,9 @@ out body geom;
         final expandedEndCandidates = _portageGraphCandidatesForAnchor(
           anchor: end,
           nodes: nodes,
+          spatialIndex: spatialIndex,
           accessPoints: accessCoords,
+          entry: entry,
           limit: expandLimit,
           radiiMeters: expandedPortageRadii,
           maxGlobalFallbackMeters: 22000,
@@ -5073,11 +8547,26 @@ out body geom;
           componentSizes: graphComponents.componentSizes,
           diversifyNearbyMeters: 3000.0,
         );
+        final expandedEndWithSnaps = _mergePortageCandidateGroups([
+          expandedEndCandidates,
+          _snapPortageCandidatesToSegments(
+            anchor: end,
+            lines: networkLines,
+            nodeIndexByKey: nodeIndexByKey,
+            entry: entry,
+            limit: expandLimit,
+            maxAnchorMeters: 22000.0,
+            maxLineDistanceMeters: 24000.0,
+            maxAlongSegmentMeters: 30000.0,
+            resolvedAnchor: endAnchor,
+          ),
+        ], softLimit: math.max(expandLimit + 6, 16));
         final expandedEndAugmented = _augmentPortageCandidatesViaOpenWater(
           anchor: end,
           resolvedAnchor: endAnchor,
-          baseCandidates: expandedEndCandidates,
+          baseCandidates: expandedEndWithSnaps,
           nodes: nodes,
+          spatialIndex: spatialIndex,
           entry: entry,
           maxExtraCandidates: augmentLimit,
           maxReachMeters: augmentReach,
@@ -5099,10 +8588,25 @@ out body geom;
           'startOptions=${startCandidates.length} endOptions=${endCandidates.length} '
           'expandedRetry=$shouldRetryWithExpandedCandidates directMeters=${directMeters.toStringAsFixed(0)}',
         );
-        return null;
+        return await retryWithFocusLookup('leg_${leg}_unsolved');
       }
       final legStartCandidate = bestStartCandidate!;
       final legEndCandidate = bestEndCandidate!;
+      final validStartConnector = _isValidPortageConnectorToGraphAnchor(
+        anchor: start,
+        graphAnchor: legStartCandidate.graphAnchor,
+        entry: entry,
+        allowAccessStraightToWater: legStartCandidate.usedAccess,
+      );
+      final validEndConnector = _isValidPortageConnectorToGraphAnchor(
+        anchor: end,
+        graphAnchor: legEndCandidate.graphAnchor,
+        entry: entry,
+        allowAccessStraightToWater: legEndCandidate.usedAccess,
+      );
+      if (!validStartConnector || !validEndConnector) {
+        return await retryWithFocusLookup('leg_${leg}_invalid_connector');
+      }
       final legPathPoints =
           bestLegPathPoints ??
           (() {
@@ -5120,7 +8624,9 @@ out body geom;
                 .map((nodeIndex) => nodes[nodeIndex])
                 .toList(growable: false);
           })();
-      if (legPathPoints.isEmpty) return null;
+      if (legPathPoints.isEmpty) {
+        return await retryWithFocusLookup('leg_${leg}_path_empty');
+      }
       if (bestLegPathPoints != null) {
         debugPrint(
           'portageRoute leg_open_water_bridge leg=$leg '
@@ -5141,91 +8647,45 @@ out body geom;
       // Yield between legs to keep the UI responsive.
       await Future<void>.delayed(Duration.zero);
     }
-    if (legs.isEmpty) return null;
+    if (legs.isEmpty) {
+      return await retryWithFocusLookup('no_legs_solved');
+    }
 
-    final startConnectorMetersByLeg = legs
-        .map((leg) => leg.startOption.totalConnectorMeters)
-        .toList(growable: false);
-    final endConnectorMetersByLeg = legs
-        .map((leg) => leg.endOption.totalConnectorMeters)
-        .toList(growable: false);
+    bool isMeaningfullyDistinct(gmaps.LatLng a, gmaps.LatLng b) {
+      return _haversineMeters(a, b) > 5.0;
+    }
 
     var totalMeters = 0.0;
-    for (var legIndex = 0; legIndex < legs.length; legIndex++) {
-      final leg = legs[legIndex];
-      final includeStartAnchor = _waypointShouldUseAnchor(
-        anchorIndex: legIndex,
-        anchorCount: anchors.length,
-        connectorLimitMeters: connectorLimitMeters,
-        startConnectorMetersByLeg: startConnectorMetersByLeg,
-        endConnectorMetersByLeg: endConnectorMetersByLeg,
-      );
-      final includeEndAnchor = _waypointShouldUseAnchor(
-        anchorIndex: legIndex + 1,
-        anchorCount: anchors.length,
-        connectorLimitMeters: connectorLimitMeters,
-        startConnectorMetersByLeg: startConnectorMetersByLeg,
-        endConnectorMetersByLeg: endConnectorMetersByLeg,
-      );
-
-      if (legIndex == 0) {
-        if (includeStartAnchor) {
-          appendDistinct(leg.start);
-          if (leg.startOption.connectorMeters > 20.0) {
-            appendDistinct(leg.startOption.graphAnchor);
-          }
-        } else {
-          appendDistinct(nodes[leg.startOption.index]);
-        }
-      } else {
-        final previousLeg = legs[legIndex - 1];
-        final prevEndNode = previousLeg.endOption.index;
-        final currentStartNode = leg.startOption.index;
-        if (includeStartAnchor) {
-          appendDistinct(leg.start);
-          if (leg.startOption.connectorMeters > 20.0) {
-            appendDistinct(leg.startOption.graphAnchor);
-          }
-        } else if (prevEndNode != currentStartNode) {
-          final bridge = _shortestTrailPath(
-            prevEndNode,
-            currentStartNode,
-            adjacency,
-          );
-          if (bridge == null || bridge.nodePath.isEmpty) return null;
-          for (final idx in bridge.nodePath) {
-            appendDistinct(nodes[idx]);
-          }
-          totalMeters += bridge.meters;
-        } else {
-          appendDistinct(nodes[currentStartNode]);
-        }
-      }
-
-      if (includeStartAnchor) {
-        totalMeters += leg.startOption.totalConnectorMeters;
+    for (final leg in legs) {
+      appendDistinct(leg.start);
+      if (isMeaningfullyDistinct(leg.start, leg.startOption.graphAnchor)) {
+        appendDistinct(leg.startOption.graphAnchor);
       }
       for (final point in leg.pathPoints) {
         appendDistinct(point);
       }
-      totalMeters += leg.graphMeters;
-      if (includeEndAnchor) {
-        if (leg.endOption.connectorMeters > 20.0) {
-          appendDistinct(leg.endOption.graphAnchor);
-        }
-        appendDistinct(leg.end);
-        totalMeters += leg.endOption.totalConnectorMeters;
+      if (isMeaningfullyDistinct(leg.endOption.graphAnchor, leg.end)) {
+        appendDistinct(leg.endOption.graphAnchor);
       }
+      appendDistinct(leg.end);
+      totalMeters += leg.startOption.totalConnectorMeters;
+      totalMeters += leg.graphMeters;
+      totalMeters += leg.endOption.totalConnectorMeters;
     }
 
-    if (path.length < 2) return null;
+    if (path.length < 2) {
+      return await retryWithFocusLookup('path_lt_2');
+    }
     var solvedPath = path;
     var solvedMeters = totalMeters;
-    final offRamp = _trimPortagingPathToWaterOffRamp(
-      path: path,
-      destination: anchors.last,
-      entry: entry,
-    );
+    final offRamp =
+        anchors.length == 2
+            ? _trimPortagingPathToWaterOffRamp(
+              path: path,
+              destination: anchors.last,
+              entry: entry,
+            )
+            : null;
     if (offRamp != null) {
       solvedPath = offRamp.path;
       solvedMeters = offRamp.distanceMeters;
@@ -5257,16 +8717,31 @@ out body geom;
   }
 
   Future<_ModeOverlays> _buildPortagingOverlays(
-    Map<int, List<gmaps.LatLng>> segGeometry,
-  ) async {
-    if (widget.points.isEmpty) return const _ModeOverlays();
-    final lastRaw = widget.points.last;
-    final focusLat = _latOf(lastRaw);
-    final focusLon = _lonOf(lastRaw);
-    if (!focusLat.isFinite || !focusLon.isFinite) return const _ModeOverlays();
-    final focus = gmaps.LatLng(focusLat, focusLon);
+    Map<int, List<gmaps.LatLng>> segGeometry, {
+    gmaps.LatLng? focusPointOverride,
+    double? focusPadDegreesOverride,
+    bool preferFocusOnly = false,
+  }) async {
+    gmaps.LatLng? fallbackFocus;
+    if (widget.points.isNotEmpty) {
+      final lastRaw = widget.points.last;
+      final focusLat = _latOf(lastRaw);
+      final focusLon = _lonOf(lastRaw);
+      fallbackFocus =
+          focusLat.isFinite && focusLon.isFinite
+              ? gmaps.LatLng(focusLat, focusLon)
+              : null;
+    }
+    final focus = focusPointOverride ?? fallbackFocus;
+    if (focus == null) return const _ModeOverlays();
 
-    final routePath = _flattenRouteForMode(segGeometry, 'portaging');
+    final fullRoutePath = _flattenRouteForMode(segGeometry, 'portaging');
+    final routePath =
+        fullRoutePath.isNotEmpty
+            ? fullRoutePath
+            : (preferFocusOnly && focusPointOverride != null
+                ? <gmaps.LatLng>[focusPointOverride]
+                : const <gmaps.LatLng>[]);
     final modeAnchors = _anchorPathForMode('portaging');
     final distancePath =
         routePath.isNotEmpty
@@ -5275,15 +8750,12 @@ out body geom;
     final routeMeters =
         distancePath.length >= 2 ? _polylineDistanceMeters(distancePath) : 0.0;
     final skipBroadOverlayQuery =
-        widget.points.length >= 5 || routeMeters > 25000.0;
-    if (skipBroadOverlayQuery) {
-      debugPrint(
-        'portagingOverlays skipped_broad_query stops=${widget.points.length} route_km=${(routeMeters / 1000.0).toStringAsFixed(1)}',
-      );
-      return const _ModeOverlays();
-    }
+        !preferFocusOnly &&
+        (widget.points.length >= 5 || routeMeters > 25000.0);
     final routeFetchAnchors =
-        modeAnchors.length >= 2
+        preferFocusOnly
+            ? const <gmaps.LatLng>[]
+            : modeAnchors.length >= 2
             ? modeAnchors
             : (routePath.length >= 2 ? routePath : const <gmaps.LatLng>[]);
     final routeCacheKey =
@@ -5291,10 +8763,43 @@ out body geom;
             ? _portagingRouteCacheKey(routeFetchAnchors)
             : '';
     const routePadDegrees = 0.12;
-    const focusPadDegrees = 0.18;
+    final focusPadDegrees = _quantizedOverlayPadDegrees(
+      focusPadDegreesOverride ?? 0.18,
+    );
 
     _PortagingOverlayCacheEntry? entry;
-    if (routeCacheKey.isNotEmpty) {
+    var overlayGraphCacheKey =
+        routeCacheKey.isNotEmpty
+            ? routeCacheKey
+            : _portagingFocusCacheKey(focus, padDegrees: focusPadDegrees);
+    final shouldUseSegmentedFocusQuery =
+        routePath.length >= 2 && (preferFocusOnly || skipBroadOverlayQuery);
+    if (shouldUseSegmentedFocusQuery) {
+      final segmentedPadDegrees = _quantizedOverlayPadDegrees(
+        (focusPadDegrees * (preferFocusOnly ? 0.78 : 0.88))
+            .clamp(0.08, 0.14)
+            .toDouble(),
+      );
+      debugPrint(
+        'portagingOverlays using_segmented_focus_query '
+        'preferFocusOnly=$preferFocusOnly '
+        'stops=${widget.points.length} '
+        'route_km=${(routeMeters / 1000.0).toStringAsFixed(1)} '
+        'pad=${segmentedPadDegrees.toStringAsFixed(2)}',
+      );
+      entry = await _loadSegmentedPortagingOverlayEntry(
+        routePath: routePath,
+        modeAnchors: modeAnchors,
+        focusPoint: focus,
+        padDegrees: segmentedPadDegrees,
+        includeCampsites: true,
+        maxFocusQueries: preferFocusOnly ? 4 : 5,
+        logPrefix: 'portagingOverlays',
+      );
+      overlayGraphCacheKey =
+          'segmented:${_pathSignature(_samplePath(distancePath, target: 6))}'
+          ':pad=${segmentedPadDegrees.toStringAsFixed(2)}';
+    } else if (routeCacheKey.isNotEmpty) {
       final routeCached = _portagingOverlayCache[routeCacheKey];
       debugPrint(
         'portagingOverpass cache_hit=${routeCached != null && _isFresh(routeCached.fetchedAt, _overlayCacheTtl)} key=$routeCacheKey',
@@ -5320,6 +8825,26 @@ out body geom;
         focusPoint: focus,
         padDegrees: focusPadDegrees,
       );
+      overlayGraphCacheKey = focusCacheKey;
+    }
+    if (entry == null) {
+      final nearbyCached = _nearestCachedPortagingFocusEntry(
+        focus,
+        maxDegreesDelta: math.max(0.12, focusPadDegrees + 0.04),
+      );
+      if (nearbyCached != null) {
+        entry = nearbyCached;
+        overlayGraphCacheKey =
+            'nearby_focus:${_roundToStep(focus.latitude, 0.02).toStringAsFixed(2)},'
+            '${_roundToStep(focus.longitude, 0.02).toStringAsFixed(2)}';
+        debugPrint(
+          'portagingOverlays reused_nearby_focus_cache '
+          'water=${nearbyCached.waterLines.length} '
+          'portage=${nearbyCached.portageLines.length} '
+          'campsites=${nearbyCached.campsites.length} '
+          'access=${nearbyCached.accessPoints.length}',
+        );
+      }
     }
     if (entry != null && entry.campsites.isEmpty && routePath.isNotEmpty) {
       final focusCacheKey = _portagingFocusCacheKey(
@@ -5335,13 +8860,11 @@ out body geom;
       if (focusEntry != null &&
           focusEntry.campsites.length > entry.campsites.length) {
         entry = focusEntry;
+        overlayGraphCacheKey = focusCacheKey;
       }
     }
     if (entry == null) return const _ModeOverlays();
-    final overlayGraphCacheKey =
-        routeCacheKey.isNotEmpty
-            ? routeCacheKey
-            : _portagingFocusCacheKey(focus, padDegrees: focusPadDegrees);
+    _primePortagingRouteCaches(entry, preferFocusOnly: preferFocusOnly);
 
     // Debug visibility: render nearby raw water + portage network lines so we
     // can verify whether source geometry exists where routing fails.
@@ -5431,118 +8954,29 @@ out body geom;
       );
     }
 
-    // Cap the number of lines fed into the graph to prevent building a graph
-    // with tens of thousands of nodes that freezes the browser.
-    // Use bounding-box inclusion so mid-route waterways aren't excluded.
-    const maxGraphLines = 600;
-    var graphWaterLines = entry.waterLines;
-    if (graphWaterLines.length > maxGraphLines) {
-      // Compute padded bounding box from distance path or focus.
-      var minLat = double.infinity;
-      var maxLat = -double.infinity;
-      var minLon = double.infinity;
-      var maxLon = -double.infinity;
-      final bboxSource =
-          distancePath.isNotEmpty ? distancePath : <gmaps.LatLng>[focus];
-      for (final p in bboxSource) {
-        if (p.latitude < minLat) minLat = p.latitude;
-        if (p.latitude > maxLat) maxLat = p.latitude;
-        if (p.longitude < minLon) minLon = p.longitude;
-        if (p.longitude > maxLon) maxLon = p.longitude;
-      }
-      const bboxPad = 0.08;
-      minLat -= bboxPad;
-      maxLat += bboxPad;
-      minLon -= bboxPad;
-      maxLon += bboxPad;
-
-      final inBox = <int>[];
-      final outBox = <({int index, double dist})>[];
-      for (var i = 0; i < graphWaterLines.length; i++) {
-        final line = graphWaterLines[i];
-        if (line.length < 2) continue;
-        var inside = false;
-        for (final p in line) {
-          if (p.latitude >= minLat &&
-              p.latitude <= maxLat &&
-              p.longitude >= minLon &&
-              p.longitude <= maxLon) {
-            inside = true;
-            break;
-          }
-        }
-        if (inside) {
-          inBox.add(i);
-        } else {
-          final d =
-              routePath.isNotEmpty
-                  ? _distanceLineToPathMeters(line, routePath, maxSamples: 10)
-                  : _distanceMetersToPath(focus, line);
-          outBox.add((index: i, dist: d));
-        }
-      }
-      outBox.sort((a, b) => a.dist.compareTo(b.dist));
-      final remaining = maxGraphLines - inBox.length;
-      graphWaterLines = [
-        for (final i in inBox) entry.waterLines[i],
-        if (remaining > 0)
-          for (var j = 0; j < outBox.length && j < remaining; j++)
-            entry.waterLines[outBox[j].index],
-      ];
-      debugPrint(
-        'portagingOverlays capped_graph_lines used=${graphWaterLines.length} inBox=${inBox.length} total=${entry.waterLines.length}',
-      );
-    }
-    final networkLines = <List<gmaps.LatLng>>[
-      ...graphWaterLines,
-      ...entry.portageLines,
+    final nearbyWaterLinesForRanking = <List<gmaps.LatLng>>[
+      for (
+        var j = 0;
+        j < waterCandidates.length &&
+            j < math.min(maxOverlayWaterPolylines, 120);
+        j++
+      )
+        entry.waterLines[waterCandidates[j].index],
     ];
-    // Yield before heavy graph construction.
-    await Future<void>.delayed(Duration.zero);
-    if (!mounted) return const _ModeOverlays();
-    final graph = _graphForLines(
-      networkLines,
-      cacheKey: 'portage_focus:$overlayGraphCacheKey',
+    final nearbyPortageLinesForRanking = <List<gmaps.LatLng>>[
+      for (
+        var j = 0;
+        j < portageCandidates.length &&
+            j < math.min(maxOverlayPortagePolylines, 50);
+        j++
+      )
+        entry.portageLines[portageCandidates[j].index],
+    ];
+    debugPrint(
+      'portagingOverlays using_simple_ranking key=$overlayGraphCacheKey '
+      'water=${nearbyWaterLinesForRanking.length} '
+      'portage=${nearbyPortageLinesForRanking.length}',
     );
-    final nodes = graph.nodes;
-    final adjacency = graph.adjacency;
-    final sampledPath = _samplePath(distancePath, target: 10);
-    final sourceIndicesSet = <int>{};
-    for (final sample in sampledPath) {
-      final nearest = _nearestTrailCandidatesAdaptive(
-        sample,
-        nodes,
-        limit: 1,
-        radiiMeters: const <double>[3000, 7000, 12000],
-        maxGlobalFallbackMeters: 11000,
-      );
-      if (nearest.isNotEmpty) {
-        sourceIndicesSet.add(nearest.first.index);
-      }
-    }
-    if (sourceIndicesSet.isEmpty) {
-      final focusFallback = _nearestTrailCandidatesAdaptive(
-        focus,
-        nodes,
-        limit: 2,
-        radiiMeters: const <double>[4000, 8000, 14000],
-        maxGlobalFallbackMeters: 13000,
-      );
-      for (final c in focusFallback) {
-        sourceIndicesSet.add(c.index);
-      }
-    }
-    final sourceIndices = sourceIndicesSet.toList(growable: false);
-    // Skip Dijkstra for very large graphs to avoid freezing the page.
-    // Fall back to simple distance-based ranking for campsites.
-    final skipDijkstra = nodes.length > 15000;
-    if (skipDijkstra) {
-      debugPrint('portagingOverlays skipped_dijkstra nodes=${nodes.length}');
-    }
-    final graphDist =
-        sourceIndices.isEmpty || skipDijkstra
-            ? List<double>.filled(nodes.length, double.infinity)
-            : _dijkstraFromSources(sourceIndices, adjacency);
 
     double dpr = 1.0;
     try {
@@ -5562,10 +8996,10 @@ out body geom;
 
     gmaps.BitmapDescriptor accessIcon;
     try {
-      accessIcon = await _markerIconCache.trailheadHikePin(dpr: dpr);
+      accessIcon = await _markerIconCache.portageAccessPin(dpr: dpr);
     } catch (_) {
       accessIcon = gmaps.BitmapDescriptor.defaultMarkerWithHue(
-        gmaps.BitmapDescriptor.hueCyan,
+        gmaps.BitmapDescriptor.hueBlue,
       );
     }
     if (!mounted) return const _ModeOverlays();
@@ -5580,24 +9014,15 @@ out body geom;
             point,
             distancePath,
           );
-          final nearestNode = _nearestTrailCandidatesAdaptive(
+          final waterMeters = _nearestDistanceToLinesMeters(
             point,
-            nodes,
-            limit: 1,
-            radiiMeters: const <double>[2500, 5000, 9000],
-            maxGlobalFallbackMeters: 12000,
+            nearbyWaterLinesForRanking,
           );
-          var networkMeters = double.infinity;
-          if (nearestNode.isNotEmpty) {
-            final idx = nearestNode.first.index;
-            final base =
-                (idx >= 0 && idx < graphDist.length)
-                    ? graphDist[idx]
-                    : double.infinity;
-            if (base.isFinite) {
-              networkMeters = base + nearestNode.first.meters;
-            }
-          }
+          final portageMeters = _nearestDistanceToLinesMeters(
+            point,
+            nearbyPortageLinesForRanking,
+          );
+          final networkMeters = math.min(waterMeters, portageMeters);
           final effectiveMeters = math.min(networkMeters, distanceToKnownRoute);
           return <String, dynamic>{
             'camp': camp,
@@ -5685,9 +9110,10 @@ out body geom;
           ),
           onTap: () {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             unawaited(_focusPoint(point));
             widget.onHikingCampsiteTap?.call(<String, dynamic>{
+              ...camp,
               'name': (camp['name'] ?? 'Campsite').toString(),
               'lat': point.latitude,
               'lon': point.longitude,
@@ -5718,13 +9144,20 @@ out body geom;
     );
 
     final accessMarkers = <gmaps.Marker>{};
+    final accessMarkerCap = hasRoutedPath ? 40 : 80;
+    final accessDistanceCutoffKm = hasRoutedPath ? 25.0 : 80.0;
+    final accessSoftCap = hasRoutedPath ? 20 : 40;
     for (var i = 0; i < sortedAccess.length; i++) {
-      if (accessMarkers.length >= 40) break;
+      if (accessMarkers.length >= accessMarkerCap) break;
       final row = sortedAccess[i];
       final km = (row['distanceKm'] as num?)?.toDouble() ?? double.infinity;
-      if (accessMarkers.length >= 20 && km > 25.0) continue;
+      if (accessMarkers.length >= accessSoftCap &&
+          km > accessDistanceCutoffKm) {
+        continue;
+      }
       final head = (row['head'] as Map).cast<String, dynamic>();
       final point = row['point'] as gmaps.LatLng;
+      final title = (head['name'] ?? 'Portage access').toString();
       accessMarkers.add(
         gmaps.Marker(
           markerId: gmaps.MarkerId('${_instanceId}_p_access_$i'),
@@ -5732,9 +9165,23 @@ out body geom;
           icon: accessIcon,
           anchor: const Offset(0.5, 0.5),
           infoWindow: gmaps.InfoWindow(
-            title: (head['name'] ?? 'Portage access').toString(),
-            snippet: '${km.toStringAsFixed(1)} km from route',
+            title: title,
+            snippet:
+                'Put-in / take-out candidate · ${km.toStringAsFixed(1)} km',
           ),
+          onTap: () {
+            _suppressMapTapUntilMs =
+                DateTime.now().millisecondsSinceEpoch + 900;
+            unawaited(_focusPoint(point));
+            widget.onPortageAccessTap?.call(<String, dynamic>{
+              ...head,
+              'name': title,
+              'lat': point.latitude,
+              'lon': point.longitude,
+              'distanceKmFromRoute': km,
+              'mode': 'portaging',
+            });
+          },
         ),
       );
     }
@@ -5805,8 +9252,9 @@ out body geom;
   }
 
   Future<_HikingOverlayCacheEntry?> _fetchHikingOverlayData(
-    List<gmaps.LatLng> routePath,
-  ) async {
+    List<gmaps.LatLng> routePath, {
+    double padDegrees = 0.08,
+  }) async {
     if (routePath.isEmpty) return null;
 
     var minLat = double.infinity;
@@ -5819,11 +9267,10 @@ out body geom;
       minLon = math.min(minLon, p.longitude);
       maxLon = math.max(maxLon, p.longitude);
     }
-    const pad = 0.08;
-    final south = minLat - pad;
-    final west = minLon - pad;
-    final north = maxLat + pad;
-    final east = maxLon + pad;
+    final south = minLat - padDegrees;
+    final west = minLon - padDegrees;
+    final north = maxLat + padDegrees;
+    final east = maxLon + padDegrees;
 
     final query = '''
 [out:json][timeout:25];
@@ -5832,9 +9279,15 @@ out body geom;
   way["highway"="footway"]($south,$west,$north,$east);
   way["route"="hiking"]($south,$west,$north,$east);
   relation["route"="hiking"]($south,$west,$north,$east);
-  node["tourism"="camp_site"]($south,$west,$north,$east);
-  node["tourism"="information"]["information"="trailhead"]($south,$west,$north,$east);
-  node["tourism"="information"]["information"="guidepost"]($south,$west,$north,$east);
+  node["tourism"~"camp_site|camp_pitch"]($south,$west,$north,$east);
+  way["tourism"~"camp_site|camp_pitch"]($south,$west,$north,$east);
+  relation["tourism"~"camp_site|camp_pitch"]($south,$west,$north,$east);
+  node["tourism"="information"]["information"~"trailhead|guidepost"]($south,$west,$north,$east);
+  way["tourism"="information"]["information"~"trailhead|guidepost"]($south,$west,$north,$east);
+  relation["tourism"="information"]["information"~"trailhead|guidepost"]($south,$west,$north,$east);
+  node["trailhead"="yes"]($south,$west,$north,$east);
+  way["trailhead"="yes"]($south,$west,$north,$east);
+  relation["trailhead"="yes"]($south,$west,$north,$east);
 );
 out body geom;
 ''';
@@ -5849,6 +9302,115 @@ out body geom;
     final trails = <List<gmaps.LatLng>>[];
     final campsites = <Map<String, dynamic>>[];
     final trailheads = <Map<String, dynamic>>[];
+    final seenCampKeys = <String>{};
+    final seenTrailheadKeys = <String>{};
+
+    bool isCampTags(Map<String, dynamic> tags) {
+      final tourism = (tags['tourism'] ?? '').toString().toLowerCase();
+      return tourism == 'camp_site' || tourism == 'camp_pitch';
+    }
+
+    bool isTrailheadTags(Map<String, dynamic> tags) {
+      final tourism = (tags['tourism'] ?? '').toString().toLowerCase();
+      final information = (tags['information'] ?? '').toString().toLowerCase();
+      final trailhead = (tags['trailhead'] ?? '').toString().toLowerCase();
+      return trailhead == 'yes' ||
+          (tourism == 'information' &&
+              (information == 'trailhead' || information == 'guidepost'));
+    }
+
+    bool isTrailTags(Map<String, dynamic> tags) {
+      final highway = (tags['highway'] ?? '').toString().toLowerCase();
+      final route = (tags['route'] ?? '').toString().toLowerCase();
+      return highway == 'path' || highway == 'footway' || route == 'hiking';
+    }
+
+    List<gmaps.LatLng> geometryToLine(List<dynamic> geom) {
+      final line = <gmaps.LatLng>[];
+      for (final g in geom) {
+        final gm = (g as Map).cast<String, dynamic>();
+        final lat = (gm['lat'] as num?)?.toDouble();
+        final lon = (gm['lon'] as num?)?.toDouble();
+        if (lat == null || lon == null) continue;
+        line.add(gmaps.LatLng(lat, lon));
+      }
+      return line;
+    }
+
+    gmaps.LatLng? centroidFromLine(List<gmaps.LatLng> line) {
+      if (line.isEmpty) return null;
+      var latSum = 0.0;
+      var lonSum = 0.0;
+      for (final point in line) {
+        latSum += point.latitude;
+        lonSum += point.longitude;
+      }
+      return gmaps.LatLng(latSum / line.length, lonSum / line.length);
+    }
+
+    gmaps.LatLng? centroidFromMembers(List<dynamic> members) {
+      var latSum = 0.0;
+      var lonSum = 0.0;
+      var count = 0;
+      for (final member in members) {
+        final mm = (member as Map).cast<String, dynamic>();
+        final geom = (mm['geometry'] as List<dynamic>?) ?? const [];
+        for (final g in geom) {
+          final gm = (g as Map).cast<String, dynamic>();
+          final lat = (gm['lat'] as num?)?.toDouble();
+          final lon = (gm['lon'] as num?)?.toDouble();
+          if (lat == null || lon == null) continue;
+          latSum += lat;
+          lonSum += lon;
+          count++;
+        }
+      }
+      if (count == 0) return null;
+      return gmaps.LatLng(latSum / count, lonSum / count);
+    }
+
+    void addCamp({
+      required String name,
+      required double lat,
+      required double lon,
+      Map<String, dynamic> tags = const <String, dynamic>{},
+      String sourceType = 'campsite',
+    }) {
+      final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
+      if (!seenCampKeys.add(key)) return;
+      final camp = <String, dynamic>{
+        'name': name,
+        'lat': lat,
+        'lon': lon,
+        'sourceType': sourceType,
+      };
+      void copyTag(String sourceKey, String targetKey) {
+        final value = (tags[sourceKey] ?? '').toString().trim();
+        if (value.isNotEmpty) camp[targetKey] = value;
+      }
+
+      copyTag('operator', 'operator');
+      copyTag('access', 'access');
+      copyTag('capacity', 'capacity');
+      copyTag('description', 'description');
+      copyTag('website', 'website');
+      copyTag('url', 'website');
+      copyTag('park', 'park');
+      copyTag('park:name', 'park');
+      copyTag('addr:place', 'lakeName');
+      copyTag('loc_name', 'lakeName');
+      campsites.add(camp);
+    }
+
+    void addTrailhead({
+      required String name,
+      required double lat,
+      required double lon,
+    }) {
+      final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
+      if (!seenTrailheadKeys.add(key)) return;
+      trailheads.add(<String, dynamic>{'name': name, 'lat': lat, 'lon': lon});
+    }
 
     for (final e in elements) {
       final m = (e as Map).cast<String, dynamic>();
@@ -5857,48 +9419,72 @@ out body geom;
 
       if (type == 'way') {
         final geom = (m['geometry'] as List<dynamic>?) ?? const [];
-        final line = <gmaps.LatLng>[];
-        for (final g in geom) {
-          final gm = (g as Map).cast<String, dynamic>();
-          final lat = (gm['lat'] as num?)?.toDouble();
-          final lon = (gm['lon'] as num?)?.toDouble();
-          if (lat == null || lon == null) continue;
-          line.add(gmaps.LatLng(lat, lon));
+        final line = geometryToLine(geom);
+        if (line.length >= 2 && isTrailTags(tags)) {
+          trails.add(line);
         }
-        if (line.length >= 2) trails.add(line);
+        final center = centroidFromLine(line);
+        if (center != null && isCampTags(tags)) {
+          addCamp(
+            name: (tags['name'] ?? 'Campsite').toString(),
+            lat: center.latitude,
+            lon: center.longitude,
+            tags: tags,
+            sourceType: type,
+          );
+        }
+        if (center != null && isTrailheadTags(tags)) {
+          addTrailhead(
+            name: (tags['name'] ?? 'Trailhead').toString(),
+            lat: center.latitude,
+            lon: center.longitude,
+          );
+        }
       } else if (type == 'relation') {
         final members = (m['members'] as List<dynamic>?) ?? const [];
-        for (final member in members) {
-          final mm = (member as Map).cast<String, dynamic>();
-          final geom = (mm['geometry'] as List<dynamic>?) ?? const [];
-          final line = <gmaps.LatLng>[];
-          for (final g in geom) {
-            final gm = (g as Map).cast<String, dynamic>();
-            final lat = (gm['lat'] as num?)?.toDouble();
-            final lon = (gm['lon'] as num?)?.toDouble();
-            if (lat == null || lon == null) continue;
-            line.add(gmaps.LatLng(lat, lon));
+        if (isTrailTags(tags)) {
+          for (final member in members) {
+            final mm = (member as Map).cast<String, dynamic>();
+            final geom = (mm['geometry'] as List<dynamic>?) ?? const [];
+            final line = geometryToLine(geom);
+            if (line.length >= 2) trails.add(line);
           }
-          if (line.length >= 2) trails.add(line);
+        }
+        final center = centroidFromMembers(members);
+        if (center != null && isCampTags(tags)) {
+          addCamp(
+            name: (tags['name'] ?? 'Campsite').toString(),
+            lat: center.latitude,
+            lon: center.longitude,
+            tags: tags,
+            sourceType: type,
+          );
+        }
+        if (center != null && isTrailheadTags(tags)) {
+          addTrailhead(
+            name: (tags['name'] ?? 'Trailhead').toString(),
+            lat: center.latitude,
+            lon: center.longitude,
+          );
         }
       } else if (type == 'node') {
         final lat = (m['lat'] as num?)?.toDouble();
         final lon = (m['lon'] as num?)?.toDouble();
         if (lat == null || lon == null) continue;
-        if (tags['tourism'] == 'camp_site') {
-          campsites.add(<String, dynamic>{
-            'name': (tags['name'] ?? 'Campsite').toString(),
-            'lat': lat,
-            'lon': lon,
-          });
-        } else if (tags['tourism'] == 'information' &&
-            (tags['information'] == 'trailhead' ||
-                tags['information'] == 'guidepost')) {
-          trailheads.add(<String, dynamic>{
-            'name': (tags['name'] ?? 'Trailhead').toString(),
-            'lat': lat,
-            'lon': lon,
-          });
+        if (isCampTags(tags)) {
+          addCamp(
+            name: (tags['name'] ?? 'Campsite').toString(),
+            lat: lat,
+            lon: lon,
+            tags: tags,
+            sourceType: type,
+          );
+        } else if (isTrailheadTags(tags)) {
+          addTrailhead(
+            name: (tags['name'] ?? 'Trailhead').toString(),
+            lat: lat,
+            lon: lon,
+          );
         }
       }
     }
@@ -5919,9 +9505,13 @@ out body geom;
   }
 
   Future<_ModeOverlays> _buildHikingOverlays(
-    Map<int, List<gmaps.LatLng>> segGeometry,
-  ) async {
-    final routePath = _hikingAnchorPath(segGeometry);
+    Map<int, List<gmaps.LatLng>> segGeometry, {
+    List<gmaps.LatLng>? overlayAnchors,
+  }) async {
+    final routePath =
+        overlayAnchors != null && overlayAnchors.isNotEmpty
+            ? overlayAnchors
+            : _hikingAnchorPath(segGeometry);
     if (routePath.isEmpty) return const _ModeOverlays();
     final cacheKey = _hikingCacheKey(routePath);
 
@@ -6015,13 +9605,15 @@ out body geom;
           ),
           onTap: () {
             _suppressMapTapUntilMs =
-                DateTime.now().millisecondsSinceEpoch + 300;
+                DateTime.now().millisecondsSinceEpoch + 900;
             unawaited(_focusPoint(point));
             widget.onHikingCampsiteTap?.call(<String, dynamic>{
+              ...camp,
               'name': (camp['name'] ?? 'Campsite').toString(),
               'lat': point.latitude,
               'lon': point.longitude,
               'distanceKmFromRoute': km,
+              'mode': 'hiking',
             });
           },
         ),
@@ -6321,6 +9913,23 @@ out body geom;
     });
   }
 
+  Future<_RouteComputation?> _retryAdventureRouteAfterCacheWarm({
+    required List<Map<String, dynamic>> segPoints,
+    required String mode,
+    required String segType,
+  }) async {
+    if (segType == 'direct') return null;
+    final normalizedMode = _normalizeTransportMode(mode);
+    switch (normalizedMode) {
+      case 'hiking':
+        return _routeViaTrailGraph(segPoints, modeContext: normalizedMode);
+      case 'portaging':
+        return _routeViaPortageGraph(segPoints);
+      default:
+        return null;
+    }
+  }
+
   Future<void> _updateRoutePolyline({required int seq}) async {
     final calculationSig = _routeCalculationSignature();
     final basePts = widget.points;
@@ -6328,7 +9937,8 @@ out body geom;
         basePts.length > 1 ? basePts.length - 1 : 0;
     if (_lastRouteCalcSig == calculationSig &&
         (expectedRoutePolylineCount == 0 ||
-            _polylines.length >= expectedRoutePolylineCount)) {
+            _polylines.length >= expectedRoutePolylineCount ||
+            _lastRouteHadBlockingGaps)) {
       return;
     }
     if (_lastRouteCalcSig == calculationSig &&
@@ -6348,66 +9958,8 @@ out body geom;
       if (basePts.length < 2) {
         _segmentGeometry = {};
         _emitRouteGeometry(<int, List<gmaps.LatLng>>{});
-
-        var overlayPolylines = <gmaps.Polyline>{};
-        var overlayMarkers = <gmaps.Marker>{};
-        var campsiteOverlayMarkers = <gmaps.Marker>{};
-        var trailSegmentCount = 0;
-        var campsiteMarkerCount = 0;
-        var trailheadMarkerCount = 0;
-
-        if (showNearbyContextOverlays &&
-            _modeMatchesAnySegment('hiking') &&
-            basePts.isNotEmpty) {
-          final hiking = await _buildHikingOverlays(
-            const <int, List<gmaps.LatLng>>{},
-          );
-          if (!mounted || seq != _rebuildSeq) return;
-          if (hiking.polylines.isEmpty && hiking.markers.isEmpty) {
-            final previousTrailPolylines = _existingHikingPolylines();
-            final previousTrailMarkers = _existingHikingMarkers();
-            overlayPolylines = {...overlayPolylines, ...previousTrailPolylines};
-            overlayMarkers = {...overlayMarkers, ...previousTrailMarkers};
-            campsiteOverlayMarkers = previousTrailMarkers;
-            trailSegmentCount += previousTrailPolylines.length;
-            campsiteMarkerCount +=
-                previousTrailMarkers
-                    .where((m) => m.markerId.value.contains('_camp_'))
-                    .length;
-            trailheadMarkerCount +=
-                previousTrailMarkers
-                    .where((m) => m.markerId.value.contains('_trailhead_'))
-                    .length;
-            debugPrint(
-              'hikingOverlays empty during single-point rebuild; reusing previous overlays.',
-            );
-          } else {
-            overlayPolylines = {...overlayPolylines, ...hiking.polylines};
-            overlayMarkers = {...overlayMarkers, ...hiking.markers};
-            campsiteOverlayMarkers = hiking.markers;
-            trailSegmentCount += hiking.trailSegments;
-            campsiteMarkerCount += hiking.campsiteMarkers;
-            trailheadMarkerCount += hiking.trailheadMarkers;
-          }
-        }
-
-        if (showNearbyContextOverlays &&
-            _modeMatchesAnySegment('portaging') &&
-            basePts.isNotEmpty) {
-          final portaging = await _buildPortagingOverlays(
-            const <int, List<gmaps.LatLng>>{},
-          );
-          if (!mounted || seq != _rebuildSeq) return;
-          overlayPolylines = {...overlayPolylines, ...portaging.polylines};
-          overlayMarkers = {...overlayMarkers, ...portaging.markers};
-          campsiteOverlayMarkers = {
-            ...campsiteOverlayMarkers,
-            ...portaging.markers,
-          };
-          trailSegmentCount += portaging.trailSegments;
-          campsiteMarkerCount += portaging.campsiteMarkers;
-          trailheadMarkerCount += portaging.trailheadMarkers;
-        }
+        final preservedAdventureMarkers = _existingAdventureMarkers();
+        final preservedAdventurePolylines = _existingAdventurePolylines();
 
         if (!showNearbyContextOverlays ||
             (!_modeMatchesAnySegment('hiking') &&
@@ -6418,34 +9970,37 @@ out body geom;
         if (!mounted || seq != _rebuildSeq) return;
         setState(() {
           _polylines = const {};
-          _modeSpecificMarkers = overlayMarkers;
-          _modeSpecificPolylines = overlayPolylines;
+          _modeSpecificMarkers = preservedAdventureMarkers;
+          _modeSpecificPolylines = preservedAdventurePolylines;
         });
-        if (showNearbyContextOverlays && campsiteOverlayMarkers.isNotEmpty) {
-          _maybeOpenCampsiteInfoWindow(campsiteOverlayMarkers);
-        }
         _logLayerCounts(
           mode: _normalizeTransportMode(widget.transportMode),
           routePolylines: 0,
-          trailSegments: trailSegmentCount,
-          campsiteMarkers: campsiteMarkerCount,
-          trailheadMarkers: trailheadMarkerCount,
+          trailSegments: 0,
+          campsiteMarkers: 0,
+          trailheadMarkers: 0,
           gasMarkers: 0,
         );
         widget.onRouteInstructions?.call(const []);
+        widget.onRouteSegmentDetails?.call(const []);
         widget.onRouteSummary?.call(0, 0);
         _lastRouteCalcSig = calculationSig;
+        _lastRouteHadBlockingGaps = false;
+        _lastRouteErrorSig = '';
         return;
       }
 
       final outPolylines = <gmaps.Polyline>{};
       final segGeometry = <int, List<gmaps.LatLng>>{};
+      final segmentDistanceMeters = <int, double>{};
+      final segmentDurationSeconds = <int, double>{};
       final instructions = <String>[];
+      final segmentDetails = <Map<String, dynamic>>[];
       var distSum = 0.0;
       var durSum = 0.0;
       Map<String, dynamic>? lastArrivalStop;
-      // Track portaging segments that fell back to straight lines so we can
-      // retry them after the overlay builder warms the Overpass cache.
+      // Track adventure segments that fell back to straight lines so we can
+      // retry them after warming the relevant trail/water overlays.
       final straightLineFallbackSegs =
           <
             int,
@@ -6453,17 +10008,21 @@ out body geom;
               List<Map<String, dynamic>> segPoints,
               String mode,
               String segType,
-              List<gmaps.LatLng> fallbackPath,
             })
           >{};
+      final unresolvedPortageSegs = <int, List<Map<String, dynamic>>>{};
 
       for (var seg = 0; seg < basePts.length - 1; seg++) {
         if (!mounted || seq != _rebuildSeq) return;
         final segPoints = _segmentPoints(afterIndex: seg);
         if (segPoints.length < 2) continue;
         final mode = _segmentTransportModeFor(seg);
+        final normalizedMode = _normalizeTransportMode(mode);
         final segType = _segmentRoutingTypeFor(seg);
         final fallbackPath = _segmentLatLngs(segPoints);
+        debugPrint(
+          'segmentRoute computing segment=$seg mode=$mode segType=$segType points=${segPoints.length}',
+        );
 
         _RouteComputation? route;
         try {
@@ -6489,6 +10048,16 @@ out body geom;
         }
         if (!mounted || seq != _rebuildSeq) return;
 
+        if (route == null) {
+          debugPrint(
+            'segmentRoute FALLBACK_TO_STRAIGHT_LINE segment=$seg mode=$mode segType=$segType',
+          );
+        } else {
+          debugPrint(
+            'segmentRoute SUCCESS segment=$seg mode=$mode pathLen=${route.path.length} dist=${route.distanceMeters}',
+          );
+        }
+
         if (route == null &&
             _strictRouting &&
             segType != 'direct' &&
@@ -6497,6 +10066,10 @@ out body geom;
             'segment_route_unavailable segment=$seg mode=$mode segType=$segType',
           );
         }
+        final hidePortageFallback =
+            route == null &&
+            normalizedMode == 'portaging' &&
+            segType != 'direct';
 
         final computed =
             route ??
@@ -6509,14 +10082,20 @@ out body geom;
               geodesic: mode == 'plane',
             );
         if (route == null &&
-            _normalizeTransportMode(mode) == 'portaging' &&
+            (normalizedMode == 'portaging' || normalizedMode == 'hiking') &&
             segType != 'direct') {
           straightLineFallbackSegs[seg] = (
             segPoints: segPoints,
             mode: mode,
             segType: segType,
-            fallbackPath: fallbackPath,
           );
+        }
+        if (hidePortageFallback) {
+          unresolvedPortageSegs[seg] = List<Map<String, dynamic>>.from(
+            segPoints,
+          );
+          segGeometry[seg] = fallbackPath;
+          continue;
         }
 
         if (computed.styledSegments.isNotEmpty) {
@@ -6555,9 +10134,22 @@ out body geom;
           );
         }
         segGeometry[seg] = computed.path;
+        segmentDistanceMeters[seg] = computed.distanceMeters;
+        segmentDurationSeconds[seg] = computed.durationSeconds;
         distSum += computed.distanceMeters;
         durSum += computed.durationSeconds;
         instructions.addAll(computed.instructions);
+        if (computed.stepDetails.isNotEmpty) {
+          segmentDetails.add({
+            'segmentIndex': seg,
+            'mode': _normalizeTransportMode(mode),
+            'distanceMeters': computed.distanceMeters,
+            'durationSeconds': computed.durationSeconds,
+            'steps': computed.stepDetails,
+            if (computed.arrivalStop != null)
+              'arrivalStop': computed.arrivalStop,
+          });
+        }
         if (computed.arrivalStop != null) {
           lastArrivalStop = computed.arrivalStop;
         }
@@ -6565,7 +10157,9 @@ out body geom;
 
       _segmentGeometry = segGeometry;
       _emitRouteGeometry(segGeometry);
-      if (outPolylines.isEmpty && basePts.length >= 2) {
+      if (outPolylines.isEmpty &&
+          basePts.length >= 2 &&
+          unresolvedPortageSegs.isEmpty) {
         final fallbackMode = _normalizeTransportMode(widget.transportMode);
         final fallback = _straightRoute(
           path: basePts.map((p) => gmaps.LatLng(_latOf(p), _lonOf(p))).toList(),
@@ -6595,25 +10189,27 @@ out body geom;
           'points=${basePts.length} mode=$fallbackMode',
         );
       }
+      var hasBlockingPortageGap = unresolvedPortageSegs.isNotEmpty;
+      final deferRouteSummary =
+          straightLineFallbackSegs.isNotEmpty || hasBlockingPortageGap;
 
       _lastInstructions = instructions.take(8).toList(growable: false);
       widget.onRouteInstructions?.call(_lastInstructions);
-      if (lastArrivalStop != null) {
-        widget.onTransitArrivalStop?.call(lastArrivalStop);
-      }
+      widget.onRouteSegmentDetails?.call(
+        segmentDetails.toList(growable: false),
+      );
+      widget.onTransitArrivalStop?.call(
+        lastArrivalStop ?? const <String, dynamic>{},
+      );
 
       if (!mounted || seq != _rebuildSeq) return;
       setState(() {
         _polylines = outPolylines;
       });
 
-      if (distSum > 0) {
+      if (!deferRouteSummary && distSum > 0) {
         widget.onRouteSummary?.call(distSum, durSum);
       }
-
-      // Keep route interaction responsive once the actual route is ready.
-      // Optional context overlays may continue to load afterward.
-      _setRouteComputing(false, seq: seq);
 
       var overlayPolylines = <gmaps.Polyline>{};
       var overlayMarkers = <gmaps.Marker>{};
@@ -6628,33 +10224,44 @@ out body geom;
           final hiking = await _buildHikingOverlays(segGeometry);
           if (!mounted || seq != _rebuildSeq) return;
           if (hiking.polylines.isEmpty && hiking.markers.isEmpty) {
-            final previousTrailPolylines = _existingHikingPolylines();
-            final previousTrailMarkers = _existingHikingMarkers();
+            final previousTrailPolylines = _existingHikingAdventurePolylines();
+            final previousTrailMarkers = _existingHikingAdventureMarkers();
             overlayPolylines = {...overlayPolylines, ...previousTrailPolylines};
             overlayMarkers = {...overlayMarkers, ...previousTrailMarkers};
-            campsiteOverlayMarkers = previousTrailMarkers;
+            campsiteOverlayMarkers = {
+              ...campsiteOverlayMarkers,
+              ...previousTrailMarkers,
+            };
             trailSegmentCount += previousTrailPolylines.length;
             campsiteMarkerCount +=
                 previousTrailMarkers
-                    .where((m) => m.markerId.value.contains('_camp_'))
+                    .where((marker) => marker.markerId.value.contains('_camp_'))
                     .length;
             trailheadMarkerCount +=
                 previousTrailMarkers
-                    .where((m) => m.markerId.value.contains('_trailhead_'))
+                    .where(
+                      (marker) => marker.markerId.value.contains('_trailhead_'),
+                    )
                     .length;
-            debugPrint(
-              'hikingOverlays empty during route rebuild; reusing previous overlays.',
-            );
+            if (previousTrailPolylines.isNotEmpty ||
+                previousTrailMarkers.isNotEmpty) {
+              debugPrint(
+                'hikingOverlays reused_previous_layers during route refresh',
+              );
+            }
           } else {
             overlayPolylines = {...overlayPolylines, ...hiking.polylines};
             overlayMarkers = {...overlayMarkers, ...hiking.markers};
-            campsiteOverlayMarkers = hiking.markers;
+            campsiteOverlayMarkers = {
+              ...campsiteOverlayMarkers,
+              ...hiking.markers,
+            };
             trailSegmentCount += hiking.trailSegments;
             campsiteMarkerCount += hiking.campsiteMarkers;
             trailheadMarkerCount += hiking.trailheadMarkers;
           }
         } catch (e) {
-          debugPrint('hikingOverlays failed err=$e');
+          debugPrint('hikingOverlays route_refresh_failed err=$e');
         }
       }
 
@@ -6662,23 +10269,58 @@ out body geom;
         try {
           final portaging = await _buildPortagingOverlays(segGeometry);
           if (!mounted || seq != _rebuildSeq) return;
-          overlayPolylines = {...overlayPolylines, ...portaging.polylines};
-          overlayMarkers = {...overlayMarkers, ...portaging.markers};
-          campsiteOverlayMarkers = {
-            ...campsiteOverlayMarkers,
-            ...portaging.markers,
-          };
-          trailSegmentCount += portaging.trailSegments;
-          campsiteMarkerCount += portaging.campsiteMarkers;
-          trailheadMarkerCount += portaging.trailheadMarkers;
+          if (portaging.polylines.isEmpty && portaging.markers.isEmpty) {
+            final previousPortagingPolylines =
+                _existingPortagingAdventurePolylines();
+            final previousPortagingMarkers =
+                _existingPortagingAdventureMarkers();
+            overlayPolylines = {
+              ...overlayPolylines,
+              ...previousPortagingPolylines,
+            };
+            overlayMarkers = {...overlayMarkers, ...previousPortagingMarkers};
+            campsiteOverlayMarkers = {
+              ...campsiteOverlayMarkers,
+              ...previousPortagingMarkers,
+            };
+            trailSegmentCount += previousPortagingPolylines.length;
+            campsiteMarkerCount +=
+                previousPortagingMarkers
+                    .where(
+                      (marker) => marker.markerId.value.contains('_p_camp_'),
+                    )
+                    .length;
+            trailheadMarkerCount +=
+                previousPortagingMarkers
+                    .where(
+                      (marker) => marker.markerId.value.contains('_p_access_'),
+                    )
+                    .length;
+            if (previousPortagingPolylines.isNotEmpty ||
+                previousPortagingMarkers.isNotEmpty) {
+              debugPrint(
+                'portagingOverlays reused_previous_layers during route refresh',
+              );
+            }
+          } else {
+            overlayPolylines = {...overlayPolylines, ...portaging.polylines};
+            overlayMarkers = {...overlayMarkers, ...portaging.markers};
+            campsiteOverlayMarkers = {
+              ...campsiteOverlayMarkers,
+              ...portaging.markers,
+            };
+            trailSegmentCount += portaging.trailSegments;
+            campsiteMarkerCount += portaging.campsiteMarkers;
+            trailheadMarkerCount += portaging.trailheadMarkers;
+          }
         } catch (e) {
-          debugPrint('portagingOverlays failed err=$e');
+          debugPrint('portagingOverlays route_refresh_failed err=$e');
         }
       }
 
-      // Retry portaging segments that fell back to straight lines. The overlay
-      // builder above will have warmed the Overpass cache, so re-running the
-      // portage graph router should now find data without a network fetch.
+      // Retry hiking/portaging segments once more after the initial routing
+      // pass. The first attempt may have populated route/focus caches that
+      // make a second pass resolvable without user-visible changes.
       if (straightLineFallbackSegs.isNotEmpty) {
         var retriedAny = false;
         for (final entry in straightLineFallbackSegs.entries) {
@@ -6686,16 +10328,29 @@ out body geom;
           final seg = entry.key;
           final info = entry.value;
           _RouteComputation? retried;
+          final normalizedMode = _normalizeTransportMode(info.mode);
           try {
-            retried = await _routeViaPortageGraph(
-              info.segPoints,
+            retried = await _retryAdventureRouteAfterCacheWarm(
+              segPoints: info.segPoints,
+              mode: info.mode,
+              segType: info.segType,
             ).timeout(const Duration(seconds: 10), onTimeout: () => null);
           } catch (e) {
-            debugPrint('portageRetry failed segment=$seg err=$e');
+            debugPrint(
+              'adventureRetry failed segment=$seg mode=$normalizedMode err=$e',
+            );
           }
-          if (retried == null || !mounted || seq != _rebuildSeq) continue;
+          if (retried == null || !mounted || seq != _rebuildSeq) {
+            if (normalizedMode == 'portaging') {
+              unresolvedPortageSegs[seg] = List<Map<String, dynamic>>.from(
+                info.segPoints,
+              );
+            }
+            continue;
+          }
           debugPrint(
-            'portageRetry resolved segment=$seg points=${retried.path.length} '
+            'adventureRetry resolved segment=$seg mode=$normalizedMode '
+            'points=${retried.path.length} '
             'meters=${retried.distanceMeters.toStringAsFixed(0)}',
           );
           // Replace the straight-line polyline with the resolved route.
@@ -6706,8 +10361,11 @@ out body geom;
                   '${_instanceId}_seg_${seg}_style_',
                 ),
           );
-          distSum -= _polylineDistanceMeters(segGeometry[seg] ?? const []);
+          distSum -= segmentDistanceMeters[seg] ?? 0.0;
+          durSum -= segmentDurationSeconds[seg] ?? 0.0;
           segGeometry[seg] = retried.path;
+          segmentDistanceMeters[seg] = retried.distanceMeters;
+          segmentDurationSeconds[seg] = retried.durationSeconds;
           distSum += retried.distanceMeters;
           durSum += retried.durationSeconds;
           if (retried.styledSegments.isNotEmpty) {
@@ -6741,6 +10399,7 @@ out body geom;
               ),
             );
           }
+          unresolvedPortageSegs.remove(seg);
           retriedAny = true;
         }
         if (retriedAny && mounted && seq == _rebuildSeq) {
@@ -6749,10 +10408,28 @@ out body geom;
           setState(() {
             _polylines = outPolylines;
           });
-          if (distSum > 0) {
-            widget.onRouteSummary?.call(distSum, durSum);
-          }
         }
+      }
+
+      hasBlockingPortageGap = unresolvedPortageSegs.isNotEmpty;
+      if (hasBlockingPortageGap) {
+        final unresolvedSegments = unresolvedPortageSegs.keys.toList()..sort();
+        final firstSeg = unresolvedSegments.first;
+        final failedSegPoints = unresolvedPortageSegs[firstSeg]!;
+        _emitRouteErrorOnce(
+          signature: '$calculationSig:portage:$firstSeg',
+          message: _portageInaccessibleMessage(failedSegPoints),
+        );
+      } else {
+        _lastRouteErrorSig = '';
+      }
+
+      if (deferRouteSummary &&
+          !hasBlockingPortageGap &&
+          mounted &&
+          seq == _rebuildSeq &&
+          distSum > 0) {
+        widget.onRouteSummary?.call(distSum, durSum);
       }
 
       if (!showNearbyContextOverlays ||
@@ -6790,6 +10467,7 @@ out body geom;
         gasMarkers: gasMarkerCount,
       );
       _lastRouteCalcSig = calculationSig;
+      _lastRouteHadBlockingGaps = hasBlockingPortageGap;
     } finally {
       _setRouteComputing(false, seq: seq);
     }
@@ -6935,11 +10613,136 @@ out body geom;
 
     if (_markers.length == 1) {
       final only = _markers.first.position;
+      _currentZoom = 12;
       await c.moveCamera(gmaps.CameraUpdate.newLatLngZoom(only, 12));
+      try {
+        _currentZoom = await c.getZoomLevel();
+      } catch (_) {}
+      _scheduleRouteComputingOverlayRefresh();
       return;
     }
 
     await c.moveCamera(gmaps.CameraUpdate.newLatLngBounds(bounds, 48));
+    try {
+      _currentZoom = await c.getZoomLevel();
+    } catch (_) {}
+    _scheduleRouteComputingOverlayRefresh();
+  }
+
+  String _routeComputingHeadline() {
+    final hasPortagingMode = _modeMatchesAnySegment('portaging');
+    final hasHikingMode = _modeMatchesAnySegment('hiking');
+    if (hasPortagingMode && !hasHikingMode) {
+      return 'Tracing connected waterways';
+    }
+    if (hasHikingMode) {
+      return 'Scanning trail network';
+    }
+    if (_modeMatchesAnySegment('train')) {
+      return 'Linking transit segments';
+    }
+    return 'Locking route geometry';
+  }
+
+  String _routeComputingDetail() {
+    final hasPortagingMode = _modeMatchesAnySegment('portaging');
+    final hasHikingMode = _modeMatchesAnySegment('hiking');
+    if (hasPortagingMode && !hasHikingMode) {
+      return 'Sweeping for viable carries, shoreline landings, and uninterrupted water access.';
+    }
+    if (hasHikingMode) {
+      return 'Matching your stops to mapped trails, campsites, and realistic backcountry connectors.';
+    }
+    if (_modeMatchesAnySegment('train')) {
+      return 'Resolving the cleanest sequence of stations, transfers, and arrival timing.';
+    }
+    return 'Committing each leg, mode, and stop order into one continuous route.';
+  }
+
+  Widget _buildAdventureOverlayLoadButton() {
+    if (!_showAdventureOverlayLoadButton && !_isAdventureOverlayLoading) {
+      return const SizedBox.shrink();
+    }
+    final topOffset = (widget.routeComputingBannerTop < 0
+            ? 16.0
+            : widget.routeComputingBannerTop.toDouble() + 44.0)
+        .clamp(16.0, 220.0);
+    final hasHikingMode = _shouldRenderAdventureOverlayMode('hiking');
+    final hasPortagingMode = _shouldRenderAdventureOverlayMode('portaging');
+    final idleLabel =
+        hasPortagingMode && !hasHikingMode
+            ? 'View nearby portage routes & campsites'
+            : 'View nearby trails & campsites';
+    final loadingLabel =
+        hasPortagingMode && !hasHikingMode
+            ? 'Loading portage routes...'
+            : 'Loading trails & campsites...';
+    final label = _isAdventureOverlayLoading ? loadingLabel : idleLabel;
+
+    return Positioned(
+      top: topOffset,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xF2FFFFFF),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: const Color(0x14000000)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x24000000),
+                blurRadius: 20,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap:
+                  _isAdventureOverlayLoading
+                      ? null
+                      : () {
+                        unawaited(_loadAdventureOverlaysForViewport());
+                      },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_isAdventureOverlayLoading)
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      const Icon(
+                        Icons.terrain,
+                        size: 18,
+                        color: Colors.black87,
+                      ),
+                    const SizedBox(width: 8),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -6959,8 +10762,16 @@ out body geom;
             ? _markers.first.position
             : const gmaps.LatLng(0, 0);
     final mapStyle = _activeMapStyle();
-    final markersForMap = {..._markers, ..._modeSpecificMarkers};
-    final polylinesForMap = {..._polylines, ..._modeSpecificPolylines};
+    final markersForMap = {
+      ..._markers,
+      ..._modeSpecificMarkers,
+      ..._focusedStepMarkers,
+    };
+    final polylinesForMap = {
+      ..._polylines,
+      ..._modeSpecificPolylines,
+      ..._focusedStepPolylines,
+    };
 
     final mapType =
         _usesTerrainMap() ? gmaps.MapType.terrain : gmaps.MapType.normal;
@@ -7003,14 +10814,22 @@ out body geom;
                     _controllerKeySig = _mapKeySig();
                     _fitCamera();
                     _schedulePreviewUpdate();
+                    _scheduleRouteComputingOverlayRefresh(
+                      delay: const Duration(milliseconds: 180),
+                    );
                   },
                   markers: markersForMap,
                   polylines: polylinesForMap,
                   onCameraMove: (pos) {
                     _currentZoom = pos.zoom;
                     _schedulePreviewUpdate();
+                    _scheduleRouteComputingOverlayRefresh();
                     // Hide ghost during panning/zooming to avoid stale position.
                     if (!_isDraggingGhost) _hideGhostVia();
+                  },
+                  onCameraIdle: () {
+                    _scheduleAdventureOverlayRefresh();
+                    _scheduleRouteComputingOverlayRefresh();
                   },
                   onTap: (p) {
                     _hidePreview();
@@ -7064,39 +10883,22 @@ out body geom;
                   compassEnabled: false,
                 ),
                 if (_isRouteComputing)
-                  Positioned(
-                    top:
-                        widget.routeComputingBannerTop < 0
-                            ? 0
-                            : widget.routeComputingBannerTop,
-                    left: 0,
-                    right: 0,
-                    child: const IgnorePointer(
-                      child: Center(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Color(0xE61F2937),
-                            borderRadius: BorderRadius.all(
-                              Radius.circular(999),
-                            ),
-                          ),
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            child: Text(
-                              'Calculating route...',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: _RouteComputingOverlay(
+                        headline: _routeComputingHeadline(),
+                        detail: _routeComputingDetail(),
+                        topOffset:
+                            widget.routeComputingBannerTop < 0
+                                ? 16
+                                : widget.routeComputingBannerTop,
+                        start: _routeComputingStartOffset,
+                        target: _routeComputingTargetOffset,
+                        curveSeed: _routeComputingCurveSeed,
                       ),
                     ),
                   ),
+                _buildAdventureOverlayLoadButton(),
                 _buildGhostViaOverlay(),
                 _buildPreviewOverlay(),
               ],
@@ -7105,6 +10907,313 @@ out body geom;
         );
       },
     );
+  }
+}
+
+class _RouteComputingOverlay extends StatefulWidget {
+  final String headline;
+  final String detail;
+  final double topOffset;
+  final Offset? start;
+  final Offset? target;
+  final double curveSeed;
+
+  const _RouteComputingOverlay({
+    required this.headline,
+    required this.detail,
+    required this.topOffset,
+    required this.start,
+    required this.target,
+    required this.curveSeed,
+  });
+
+  @override
+  State<_RouteComputingOverlay> createState() => _RouteComputingOverlayState();
+}
+
+class _RouteComputingOverlayState extends State<_RouteComputingOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final pulse = 0.45 + (0.55 * math.sin(_controller.value * math.pi * 2));
+        return RepaintBoundary(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _RouteBeamPainter(
+                    progress: _controller.value,
+                    start: widget.start,
+                    target: widget.target,
+                    curveSeed: widget.curveSeed,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: widget.topOffset.toDouble(),
+                left: 16,
+                right: 16,
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xE0162431),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: const Color(0x3367E8D9)),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x30000000),
+                            blurRadius: 18,
+                            offset: Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 9,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Color.lerp(
+                                  const Color(0xFF38BDF8),
+                                  const Color(0xFF2DD4BF),
+                                  pulse.clamp(0.0, 1.0),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(
+                                      0xFF38BDF8,
+                                    ).withValues(alpha: 0.35),
+                                    blurRadius: 12,
+                                    spreadRadius: 2,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    widget.headline,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  Text(
+                                    widget.detail,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFFD0D9E4),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RouteBeamPainter extends CustomPainter {
+  final double progress;
+  final Offset? start;
+  final Offset? target;
+  final double curveSeed;
+
+  const _RouteBeamPainter({
+    required this.progress,
+    required this.start,
+    required this.target,
+    required this.curveSeed,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final origin = start;
+    final destination = target;
+    if (origin == null || destination == null) return;
+
+    final delta = destination - origin;
+    final distance = delta.distance;
+    if (distance < 18) return;
+
+    final mid = Offset(
+      (origin.dx + destination.dx) / 2,
+      (origin.dy + destination.dy) / 2,
+    );
+    final normal = Offset(-delta.dy, delta.dx);
+    final normalLength = normal.distance;
+    if (normalLength <= 0.0001) return;
+    final normalUnit = Offset(
+      normal.dx / normalLength,
+      normal.dy / normalLength,
+    );
+    final directionSign = curveSeed >= 0.5 ? -1.0 : 1.0;
+    final arcHeight = (distance * (0.16 + (0.12 * curveSeed))).clamp(
+      30.0,
+      104.0,
+    );
+    var control = mid + (normalUnit * (arcHeight * directionSign));
+    final maxControlY = math.min(origin.dy, destination.dy) - 26.0;
+    if (control.dy > maxControlY) {
+      control = Offset(control.dx, maxControlY);
+    }
+
+    final path =
+        Path()
+          ..moveTo(origin.dx, origin.dy)
+          ..quadraticBezierTo(
+            control.dx,
+            control.dy,
+            destination.dx,
+            destination.dy,
+          );
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0x33FFFFFF),
+    );
+
+    final metrics = path.computeMetrics();
+    if (metrics.isEmpty) return;
+    final metric = metrics.first;
+    if (metric.length <= 1) return;
+
+    final head = metric.length * (0.14 + (0.82 * progress));
+    final tail = math.max(36.0, metric.length * 0.22);
+    final segment = metric.extractPath(
+      math.max(0.0, head - tail),
+      math.min(metric.length, head),
+    );
+    canvas.drawPath(
+      segment,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 9
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0x4438BDF8),
+    );
+    canvas.drawPath(
+      segment,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4.6
+        ..strokeCap = StrokeCap.round
+        ..shader = const LinearGradient(
+          colors: [Color(0x0038BDF8), Color(0xFF38BDF8), Color(0xFF2DD4BF)],
+        ).createShader(Offset.zero & size),
+    );
+
+    final tangent = metric.getTangentForOffset(head);
+    if (tangent != null) {
+      canvas.drawCircle(
+        tangent.position,
+        6,
+        Paint()..color = const Color(0xCC67E8F9),
+      );
+      canvas.drawCircle(
+        tangent.position,
+        12,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = const Color(0x4467E8F9),
+      );
+    }
+
+    final pulse = 0.5 + (0.5 * math.sin(progress * math.pi * 2));
+    final targetStroke =
+        Color.lerp(
+          const Color(0x6638BDF8),
+          const Color(0xAA2DD4BF),
+          pulse.clamp(0.0, 1.0),
+        )!;
+    final startStroke =
+        Color.lerp(
+          const Color(0x6638BDF8),
+          const Color(0x8838BDF8),
+          pulse.clamp(0.0, 1.0),
+        )!;
+    canvas.drawCircle(origin, 5, Paint()..color = const Color(0xFF38BDF8));
+    canvas.drawCircle(
+      origin,
+      12 + (pulse * 4),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = startStroke,
+    );
+    canvas.drawCircle(destination, 6, Paint()..color = const Color(0xFF2DD4BF));
+    canvas.drawCircle(
+      destination,
+      14 + (pulse * 5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = targetStroke,
+    );
+    canvas.drawCircle(
+      destination,
+      24 + (pulse * 8),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = targetStroke.withValues(alpha: 0.38),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _RouteBeamPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.start != start ||
+        oldDelegate.target != target ||
+        oldDelegate.curveSeed != curveSeed;
   }
 }
 
@@ -7379,6 +11488,21 @@ class _MarkerIconCache {
         icon: Icons.terrain,
         text: null,
         borderWidthLogical: 2.0,
+      ),
+    );
+  }
+
+  Future<gmaps.BitmapDescriptor> portageAccessPin({required double dpr}) {
+    return _memoized(
+      'portageAccess:${const Color(0xFF1565C0).value}:$dpr',
+      () => _buildCircleBadge(
+        dpr: dpr,
+        logicalSize: 22.0,
+        background: const Color(0xFF1565C0),
+        foreground: Colors.white,
+        icon: Icons.kayaking,
+        text: null,
+        borderWidthLogical: 2.2,
       ),
     );
   }

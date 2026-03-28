@@ -371,10 +371,21 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
   }
 
   bool _isCarModeBlockedForSegment(int segmentIndex) {
+    // Only block car mode on segments when the primary trip mode is
+    // hiking or portaging.  For car/train/etc. trips, users should always
+    // be able to pick car even if a waypoint name contains outdoor keywords.
+    final primaryMode = _normalizeTransportMode(_transportMode);
+    if (primaryMode != 'hiking' && primaryMode != 'portaging') return false;
     return _isHikingTrailSegment(segmentIndex);
   }
 
   void _coerceBlockedCarModesToHiking() {
+    // Only auto-coerce segments when the primary trip mode is hiking or
+    // portaging.  Car trips should never have segments silently converted
+    // to portaging just because a waypoint name contains an outdoor keyword.
+    final primaryMode = _normalizeTransportMode(_transportMode);
+    if (primaryMode != 'hiking' && primaryMode != 'portaging') return;
+
     for (var i = 0; i < _segmentTransportModes.length; i++) {
       final mode = _normalizeTransportMode(_segmentTransportModes[i]);
       if (mode == 'car' && _isCarModeBlockedForSegment(i)) {
@@ -727,13 +738,9 @@ class _VerifiedTripBuilderScreenState extends State<VerifiedTripBuilderScreen> {
     if (segmentIndex < 0 || segmentIndex >= _segmentCount) return;
     setState(() {
       _activeSegmentIndex = segmentIndex;
-      var resolved = normalized;
-      if (resolved == 'car' && _isCarModeBlockedForSegment(segmentIndex)) {
-        resolved = 'portaging';
-      }
-      _segmentTransportModes[segmentIndex] = resolved;
-      _transportMode = resolved;
-      if (resolved == 'train' || resolved == 'plane') {
+      _segmentTransportModes[segmentIndex] = normalized;
+      _transportMode = normalized;
+      if (normalized == 'train' || normalized == 'plane') {
         _routeVia =
             _routeVia.where((v) {
               final after = (v['afterIndex'] as num?)?.toInt();

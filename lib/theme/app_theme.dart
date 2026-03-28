@@ -531,6 +531,8 @@ class _TripCardState extends State<TripCard> {
                               ? Image.network(
                                 widget.imageUrl!,
                                 fit: BoxFit.cover,
+                                semanticLabel:
+                                    'Map or cover image for trip ${widget.title}',
                                 errorBuilder:
                                     (_, __, ___) => Container(
                                       color: TryprColors.surfaceVariant,

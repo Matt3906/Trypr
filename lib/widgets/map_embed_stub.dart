@@ -17,9 +17,15 @@ class MapEmbed extends StatefulWidget {
   onRouteSummary;
   final void Function(List<Map<String, dynamic>> geometry)? onRouteGeometry;
   final void Function(List<String> lines)? onRouteInstructions;
+  final void Function(List<Map<String, dynamic>> segments)?
+  onRouteSegmentDetails;
   final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
+  final void Function(bool isComputing)? onRouteComputingChanged;
+  final void Function(String message)? onRouteError;
+  final Map<String, dynamic>? focusedRouteStep;
   final List<Map<String, dynamic>> initialRouteGeometry;
   final List<String> initialRouteInstructions;
+  final List<Map<String, dynamic>> initialRouteSegmentDetails;
   final bool preferInitialRouteData;
   final String transportMode;
   final List<String> segmentTransportModes;
@@ -29,6 +35,7 @@ class MapEmbed extends StatefulWidget {
   final void Function(int viaIndex, double lat, double lon)? onViaDragEnd;
   final void Function(int viaIndex)? onViaTapDelete;
   final void Function(Map<String, dynamic> campsite)? onHikingCampsiteTap;
+  final void Function(Map<String, dynamic> accessPoint)? onPortageAccessTap;
   final List<Map<String, dynamic>> secondaryPoints;
   final bool disableDefaultUi;
   final bool disableGestures;
@@ -45,9 +52,14 @@ class MapEmbed extends StatefulWidget {
     this.onRouteSummary,
     this.onRouteGeometry,
     this.onRouteInstructions,
+    this.onRouteSegmentDetails,
     this.onTransitArrivalStop,
+    this.onRouteComputingChanged,
+    this.onRouteError,
+    this.focusedRouteStep,
     this.initialRouteGeometry = const [],
     this.initialRouteInstructions = const [],
+    this.initialRouteSegmentDetails = const [],
     this.preferInitialRouteData = false,
     this.transportMode = 'car',
     this.segmentTransportModes = const [],
@@ -57,6 +69,7 @@ class MapEmbed extends StatefulWidget {
     this.onViaDragEnd,
     this.onViaTapDelete,
     this.onHikingCampsiteTap,
+    this.onPortageAccessTap,
     this.secondaryPoints = const [],
     this.disableDefaultUi = false,
     this.disableGestures = false,
@@ -134,8 +147,15 @@ class _MapEmbedState extends State<MapEmbed> {
   }
 
   String _segmentRoutingSignature(List<String> types) {
-    if (types.isEmpty) return '';
-    return types.map((t) => t.trim().toLowerCase()).join(',');
+    final segments = math.max(0, widget.points.length - 1);
+    if (segments <= 0) return '';
+    return List<String>.generate(segments, (index) {
+      final raw = index < types.length ? types[index] : '';
+      return _normalizeSegmentRoutingType(
+        raw,
+        mode: _segmentTransportModeFor(index),
+      );
+    }).join(',');
   }
 
   String _segmentTransportSignature(List<String> types) {
@@ -150,11 +170,41 @@ class _MapEmbedState extends State<MapEmbed> {
     return _normalizeTransportMode(widget.segmentTransportModes[segmentIndex]);
   }
 
+  String _defaultRoutingTypeForMode(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
+  String _normalizeSegmentRoutingType(String raw, {required String mode}) {
+    final normalizedMode = _normalizeTransportMode(mode);
+    final value = raw.trim().toLowerCase();
+    if (value == 'direct') return 'direct';
+    switch (normalizedMode) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
   String _segmentRoutingTypeFor(int segmentIndex) {
     if (segmentIndex < 0) return 'calculated';
-    if (segmentIndex >= widget.segmentRoutingTypes.length) return 'calculated';
-    final v = widget.segmentRoutingTypes[segmentIndex].trim().toLowerCase();
-    return (v == 'direct') ? 'direct' : 'calculated';
+    final mode = _segmentTransportModeFor(segmentIndex);
+    if (segmentIndex >= widget.segmentRoutingTypes.length) {
+      return _defaultRoutingTypeForMode(mode);
+    }
+    return _normalizeSegmentRoutingType(
+      widget.segmentRoutingTypes[segmentIndex],
+      mode: mode,
+    );
   }
 
   Color _standardRouteColor(String mode) {
@@ -508,10 +558,21 @@ class _MapEmbedState extends State<MapEmbed> {
           );
         }).toList();
 
+    final stopNumbers = <int?>[];
+    var nextStopNumber = 1;
+    for (final point in pts) {
+      if (_pointUsesStopBadge(point)) {
+        stopNumbers.add(nextStopNumber++);
+      } else {
+        stopNumbers.add(null);
+      }
+    }
+
     for (var i = 0; i < pts.length; i++) {
       final p = pts[i];
       final lat = _toDouble(p['lat']);
       final lon = _toDouble(p['lon']);
+      final stopNumber = stopNumbers[i];
       _markers.add(
         Marker(
           width: 36,
@@ -524,7 +585,18 @@ class _MapEmbedState extends State<MapEmbed> {
                       DateTime.now().millisecondsSinceEpoch + 300;
                   widget.onPointTap?.call(p);
                 },
-                child: CircleAvatar(child: Text('${i + 1}')),
+                child:
+                    stopNumber != null
+                        ? CircleAvatar(child: Text('$stopNumber'))
+                        : Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: Theme.of(ctx).colorScheme.primary,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
               ),
         ),
       );
@@ -587,6 +659,7 @@ class _MapEmbedState extends State<MapEmbed> {
         widget.onRouteInstructions?.call(
           widget.initialRouteInstructions.take(8).toList(growable: false),
         );
+        widget.onRouteSegmentDetails?.call(widget.initialRouteSegmentDetails);
         _routes = [
           Polyline(
             points: cachedPath,
@@ -806,6 +879,7 @@ class _MapEmbedState extends State<MapEmbed> {
     }
 
     _emitRouteGeometry(segGeometry);
+    widget.onRouteSegmentDetails?.call(const []);
     _lastRouteCalcSig = routeSig;
 
     setState(() {
@@ -821,6 +895,25 @@ class _MapEmbedState extends State<MapEmbed> {
     if (v is num) return v.toDouble();
     if (v is String) return double.tryParse(v) ?? 0.0;
     return 0.0;
+  }
+
+  bool _boolish(dynamic value, {required bool fallback}) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      if (normalized == 'true' || normalized == 'yes' || normalized == '1') {
+        return true;
+      }
+      if (normalized == 'false' || normalized == 'no' || normalized == '0') {
+        return false;
+      }
+    }
+    return fallback;
+  }
+
+  bool _pointUsesStopBadge(Map<String, dynamic> point) {
+    return _boolish(point['isStop'], fallback: true);
   }
 
   Future<void> _safeRebuild() async {

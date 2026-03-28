@@ -65,7 +65,7 @@ Future<void> ensureGoogleMapsLoaded() {
   final script =
       html.ScriptElement()
         ..src =
-            'https://maps.googleapis.com/maps/api/js?key=$key&libraries=places&loading=async'
+            'https://maps.googleapis.com/maps/api/js?key=$key&libraries=places,routes&loading=async'
         ..async = true;
 
   script.onLoad.listen((_) {

@@ -72,23 +72,35 @@ List<String> normalizeSegmentModes(
   return out;
 }
 
+String normalizeSegmentRoutingType(String raw, {required String mode}) {
+  final normalizedMode = normalizeRouteMode(mode);
+  final value = raw.trim().toLowerCase();
+  if (value == 'direct') return 'direct';
+  switch (normalizedMode) {
+    case 'hiking':
+      return 'trails';
+    case 'portaging':
+      return 'waterway';
+    default:
+      return 'calculated';
+  }
+}
+
 List<String> normalizeSegmentRoutingTypes(
   List<dynamic> raw, {
   required int segmentCount,
+  List<dynamic> segmentModes = const [],
+  required String fallbackMode,
 }) {
-  final out = raw
-      .map(
-        (e) =>
-            e.toString().trim().toLowerCase() == 'direct'
-                ? 'direct'
-                : 'calculated',
-      )
-      .toList(growable: true);
-  if (out.length > segmentCount) return out.take(segmentCount).toList();
-  while (out.length < segmentCount) {
-    out.add('calculated');
-  }
-  return out;
+  final normalizedModes = normalizeSegmentModes(
+    segmentModes,
+    segmentCount: segmentCount,
+    fallbackMode: fallbackMode,
+  );
+  return List<String>.generate(segmentCount, (index) {
+    final rawType = index < raw.length ? raw[index].toString() : '';
+    return normalizeSegmentRoutingType(rawType, mode: normalizedModes[index]);
+  });
 }
 
 List<Map<String, dynamic>> normalizeRouteVia(
@@ -136,6 +148,95 @@ List<String> readRouteInstructions(Object? raw, {int maxItems = 8}) {
       .where((e) => e.isNotEmpty)
       .take(maxItems)
       .toList(growable: false);
+  return out;
+}
+
+List<Map<String, dynamic>> readRouteSegmentDetails(
+  Object? raw, {
+  int maxSegments = 24,
+  int maxStepsPerSegment = 8,
+}) {
+  if (raw is! List) return const [];
+  final out = <Map<String, dynamic>>[];
+
+  Map<String, dynamic>? sanitizeStop(dynamic rawStop) {
+    if (rawStop is! Map) return null;
+    final name = (rawStop['name'] ?? rawStop['label'] ?? '').toString().trim();
+    final lat = _toDouble(rawStop['lat']);
+    final lon = _toDouble(rawStop['lon'] ?? rawStop['lng']);
+    final stop = <String, dynamic>{};
+    if (name.isNotEmpty) stop['name'] = name;
+    if (lat.isFinite && lon.isFinite) {
+      stop['lat'] = lat;
+      stop['lon'] = lon;
+      stop['lng'] = lon;
+    }
+    return stop.isEmpty ? null : stop;
+  }
+
+  for (final item in raw.take(maxSegments)) {
+    if (item is! Map) continue;
+    final segmentIndex = (item['segmentIndex'] as num?)?.toInt();
+    if (segmentIndex == null || segmentIndex < 0) continue;
+
+    final mode = normalizeRouteMode((item['mode'] ?? '').toString());
+    final stepsRaw = item['steps'];
+    final steps = <Map<String, dynamic>>[];
+    if (stepsRaw is List) {
+      for (final step in stepsRaw.take(maxStepsPerSegment)) {
+        if (step is! Map) continue;
+        final tabLabel = (step['tabLabel'] ?? '').toString().trim();
+        final headline = (step['headline'] ?? '').toString().trim();
+        if (tabLabel.isEmpty && headline.isEmpty) continue;
+        final stepMap = <String, dynamic>{
+          'mode': (step['mode'] ?? '').toString().trim().toLowerCase(),
+          if (tabLabel.isNotEmpty) 'tabLabel': tabLabel,
+          if (headline.isNotEmpty) 'headline': headline,
+        };
+        final detail = (step['detail'] ?? '').toString().trim();
+        final caption = (step['caption'] ?? '').toString().trim();
+        final lineColor = (step['lineColor'] ?? '').toString().trim();
+        if (detail.isNotEmpty) stepMap['detail'] = detail;
+        if (caption.isNotEmpty) stepMap['caption'] = caption;
+        if (lineColor.isNotEmpty) stepMap['lineColor'] = lineColor;
+        final focusLat = _toDouble(step['focusLat'] ?? step['lat']);
+        final focusLon = _toDouble(
+          step['focusLon'] ?? step['lon'] ?? step['lng'],
+        );
+        if (focusLat.isFinite && focusLon.isFinite) {
+          stepMap['focusLat'] = focusLat;
+          stepMap['focusLon'] = focusLon;
+          stepMap['lat'] = focusLat;
+          stepMap['lon'] = focusLon;
+          stepMap['lng'] = focusLon;
+        }
+        final focusZoom = _toDouble(step['focusZoom']);
+        if (focusZoom.isFinite && focusZoom > 0) {
+          stepMap['focusZoom'] = focusZoom.clamp(3.0, 18.0);
+        }
+        final path = readRouteGeometry(step['path']);
+        if (path.isNotEmpty) {
+          stepMap['path'] = path;
+        }
+        steps.add(stepMap);
+      }
+    }
+    if (steps.isEmpty) continue;
+
+    final detail = <String, dynamic>{
+      'segmentIndex': segmentIndex,
+      'mode': mode,
+      'steps': steps,
+    };
+    final distanceMeters = _toDouble(item['distanceMeters']);
+    final durationSeconds = _toDouble(item['durationSeconds']);
+    if (distanceMeters > 0) detail['distanceMeters'] = distanceMeters;
+    if (durationSeconds > 0) detail['durationSeconds'] = durationSeconds;
+    final arrivalStop = sanitizeStop(item['arrivalStop']);
+    if (arrivalStop != null) detail['arrivalStop'] = arrivalStop;
+    out.add(detail);
+  }
+
   return out;
 }
 
@@ -224,6 +325,8 @@ String buildRouteCacheKey({
     'segmentRoutingTypes': normalizeSegmentRoutingTypes(
       segmentRoutingTypes,
       segmentCount: segmentCount,
+      segmentModes: segmentTransportModes,
+      fallbackMode: transportMode,
     ),
     'routeVia': normalizeRouteVia(routeVia, segmentCount: segmentCount),
   };

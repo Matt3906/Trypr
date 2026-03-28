@@ -13,6 +13,8 @@ import 'package:flutter/foundation.dart';
 import 'package:trypr/services/google_maps_loader_web.dart';
 
 Object? _directionsService;
+const Duration _mapsBootstrapTimeout = Duration(seconds: 8);
+const Duration _directionsCtorTimeout = Duration(seconds: 4);
 
 Object? _getGoogle() {
   return js_util.getProperty(html.window, 'google');
@@ -37,19 +39,65 @@ Object _jsDepartureTime() {
 }
 
 Future<void> _ensureDirectionsService() async {
-  await ensureGoogleMapsLoaded();
-  final maps = _getMaps();
-  if (maps == null) return;
+  await ensureGoogleMapsLoaded().timeout(_mapsBootstrapTimeout);
+  final maps = await _waitForMapsObject();
+  if (maps == null) {
+    debugPrint('googleDirections: maps object is null after wait');
+    return;
+  }
 
-  if (_directionsService == null) {
-    final directionsServiceCtor = js_util.getProperty(
-      maps,
-      'DirectionsService',
+  if (_directionsService != null) return;
+
+  await _importRoutesLibrary(maps);
+  final directionsServiceCtor = await _waitForDirectionsServiceCtor(maps);
+  if (directionsServiceCtor == null) {
+    debugPrint(
+      'googleDirections: DirectionsService constructor is null after wait',
     );
-    _directionsService = js_util.callConstructor(
-      directionsServiceCtor,
-      const [],
-    );
+    return;
+  }
+
+  _directionsService = js_util.callConstructor(directionsServiceCtor, const []);
+  debugPrint('googleDirections: DirectionsService initialized successfully');
+}
+
+Future<Object?> _waitForMapsObject() async {
+  final deadline = DateTime.now().add(_directionsCtorTimeout);
+  while (DateTime.now().isBefore(deadline)) {
+    final maps = _getMaps();
+    if (maps != null) return maps;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  return _getMaps();
+}
+
+Future<void> _importRoutesLibrary(Object maps) async {
+  try {
+    final importLibrary = js_util.getProperty(maps, 'importLibrary');
+    if (importLibrary == null) return;
+    final promise = js_util.callMethod<Object?>(maps, 'importLibrary', const [
+      'routes',
+    ]);
+    if (promise == null) return;
+    await js_util
+        .promiseToFuture<Object?>(promise)
+        .timeout(_directionsCtorTimeout);
+  } catch (_) {}
+}
+
+Future<Object?> _waitForDirectionsServiceCtor(Object maps) async {
+  final deadline = DateTime.now().add(_directionsCtorTimeout);
+  while (DateTime.now().isBefore(deadline)) {
+    try {
+      final ctor = js_util.getProperty(maps, 'DirectionsService');
+      if (ctor != null) return ctor;
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  try {
+    return js_util.getProperty(maps, 'DirectionsService');
+  } catch (_) {
+    return null;
   }
 }
 
@@ -59,6 +107,7 @@ class DirectionsResult {
   final double distanceMeters;
   final double durationSeconds;
   final List<String> instructions;
+  final List<Map<String, dynamic>> stepDetails;
   final Map<String, dynamic>? transitArrivalStop;
   final String? transitLineColor;
 
@@ -67,9 +116,144 @@ class DirectionsResult {
     required this.distanceMeters,
     required this.durationSeconds,
     required this.instructions,
+    this.stepDetails = const [],
     this.transitArrivalStop,
     this.transitLineColor,
   });
+}
+
+String _tabLabelForTransitStep({
+  required String travelMode,
+  String shortName = '',
+  String vehicleName = '',
+}) {
+  switch (travelMode.trim().toUpperCase()) {
+    case 'WALKING':
+      return 'Walk';
+    case 'BICYCLING':
+      return 'Bike';
+    case 'TRANSIT':
+      if (shortName.isNotEmpty) return 'Train $shortName';
+      if (vehicleName.isNotEmpty) return vehicleName;
+      return 'Transit';
+    default:
+      return 'Step';
+  }
+}
+
+Map<String, dynamic> _stepDetail({
+  required String mode,
+  required String tabLabel,
+  required String headline,
+  String detail = '',
+  String caption = '',
+  String lineColor = '',
+  double? focusLat,
+  double? focusLon,
+  double? focusZoom,
+  List<Map<String, dynamic>> path = const [],
+}) {
+  return {
+    'mode': mode.trim().toLowerCase(),
+    'tabLabel': tabLabel.trim(),
+    'headline': headline.trim(),
+    if (detail.trim().isNotEmpty) 'detail': detail.trim(),
+    if (caption.trim().isNotEmpty) 'caption': caption.trim(),
+    if (lineColor.trim().isNotEmpty) 'lineColor': lineColor.trim(),
+    if (focusLat != null && focusLon != null) ...{
+      'focusLat': focusLat,
+      'focusLon': focusLon,
+    },
+    if (focusZoom != null && focusZoom.isFinite) 'focusZoom': focusZoom,
+    if (path.isNotEmpty) 'path': path,
+  };
+}
+
+double? _jsLat(Object? location) {
+  if (location == null) return null;
+  try {
+    return (js_util.callMethod(location, 'lat', const []) as num?)?.toDouble();
+  } catch (_) {
+    return null;
+  }
+}
+
+double? _jsLng(Object? location) {
+  if (location == null) return null;
+  try {
+    return (js_util.callMethod(location, 'lng', const []) as num?)?.toDouble();
+  } catch (_) {
+    return null;
+  }
+}
+
+Map<String, dynamic>? _pointFromLocation(Object? location) {
+  final lat = _jsLat(location);
+  final lon = _jsLng(location);
+  if (lat == null || lon == null || !lat.isFinite || !lon.isFinite) {
+    return null;
+  }
+  return {'lat': lat, 'lon': lon, 'lng': lon};
+}
+
+void _appendDistinctPoint(
+  List<Map<String, dynamic>> out,
+  Map<String, dynamic>? point,
+) {
+  if (point == null) return;
+  final lat = (point['lat'] as num?)?.toDouble();
+  final lon = (point['lon'] as num?)?.toDouble();
+  if (lat == null || lon == null || !lat.isFinite || !lon.isFinite) return;
+  if (out.isNotEmpty) {
+    final last = out.last;
+    final lastLat = (last['lat'] as num?)?.toDouble();
+    final lastLon = (last['lon'] as num?)?.toDouble();
+    if (lastLat != null &&
+        lastLon != null &&
+        (lastLat - lat).abs() < 1e-7 &&
+        (lastLon - lon).abs() < 1e-7) {
+      return;
+    }
+  }
+  out.add({'lat': lat, 'lon': lon, 'lng': lon});
+}
+
+List<Map<String, dynamic>> _pathFromStep(
+  Object step, {
+  Map<String, dynamic>? startPoint,
+  Map<String, dynamic>? endPoint,
+}) {
+  final out = <Map<String, dynamic>>[];
+  _appendDistinctPoint(out, startPoint);
+
+  final stepPath = js_util.getProperty(step, 'path');
+  if (stepPath is List) {
+    for (final point in stepPath) {
+      _appendDistinctPoint(out, _pointFromLocation(point));
+    }
+  }
+
+  _appendDistinctPoint(out, endPoint);
+  return out;
+}
+
+Map<String, dynamic>? _focusPointFromPath(List<Map<String, dynamic>> path) {
+  if (path.isEmpty) return null;
+  if (path.length == 1) return Map<String, dynamic>.from(path.first);
+  return Map<String, dynamic>.from(path[path.length ~/ 2]);
+}
+
+double _focusZoomForStepMode(String mode) {
+  switch (mode.trim().toUpperCase()) {
+    case 'WALKING':
+      return 15.4;
+    case 'BICYCLING':
+      return 14.8;
+    case 'TRANSIT':
+      return 13.6;
+    default:
+      return 14.0;
+  }
 }
 
 /// Get directions between two points using Google Maps JS API.
@@ -93,7 +277,7 @@ Future<DirectionsResult?> getDirections({
 }) async {
   try {
     // DirectionsService initialization can take >800ms on cold web loads.
-    await _ensureDirectionsService().timeout(const Duration(seconds: 5));
+    await _ensureDirectionsService();
     final svc = _directionsService;
     if (svc == null) return null;
 
@@ -232,10 +416,12 @@ Future<DirectionsResult?> getDirections({
             route,
             'overview_polyline',
           );
-          final encodedStr = js_util.getProperty(overviewPolyline, 'points');
-          final encoded = encodedStr?.toString() ?? '';
-          if (encoded.isNotEmpty) {
-            polyPoints.addAll(_decodePolyline(encoded));
+          if (overviewPolyline != null) {
+            final encodedStr = js_util.getProperty(overviewPolyline, 'points');
+            final encoded = encodedStr?.toString() ?? '';
+            if (encoded.isNotEmpty) {
+              polyPoints.addAll(_decodePolyline(encoded));
+            }
           }
         }
 
@@ -244,6 +430,7 @@ Future<DirectionsResult?> getDirections({
         var totalDist = 0.0;
         var totalDur = 0.0;
         final instructions = <String>[];
+        final stepDetails = <Map<String, dynamic>>[];
         Map<String, dynamic>? transitArrivalStop;
         String? transitLineColor;
 
@@ -344,6 +531,32 @@ Future<DirectionsResult?> getDirections({
                         }
                       }
 
+                      final stepStart =
+                          _pointFromLocation(
+                            js_util.getProperty(step, 'start_location'),
+                          ) ??
+                          _pointFromLocation(
+                            depStop == null
+                                ? null
+                                : js_util.getProperty(depStop, 'location'),
+                          );
+                      final stepEnd =
+                          _pointFromLocation(
+                            js_util.getProperty(step, 'end_location'),
+                          ) ??
+                          _pointFromLocation(
+                            arrStop == null
+                                ? null
+                                : js_util.getProperty(arrStop, 'location'),
+                          );
+                      final stepPath = _pathFromStep(
+                        step,
+                        startPoint: stepStart,
+                        endPoint: stepEnd,
+                      );
+                      final focusPoint =
+                          _focusPointFromPath(stepPath) ?? stepStart ?? stepEnd;
+
                       final label = [
                         if (vehicleName.isNotEmpty) vehicleName,
                         if (shortName.isNotEmpty)
@@ -363,6 +576,28 @@ Future<DirectionsResult?> getDirections({
                         headPart,
                       ].where((s) => s.trim().isNotEmpty).join(' — ');
                       if (full.isNotEmpty) instructions.add(full);
+                      if (full.isNotEmpty) {
+                        stepDetails.add(
+                          _stepDetail(
+                            mode: 'transit',
+                            tabLabel: _tabLabelForTransitStep(
+                              travelMode: travelMode,
+                              shortName: shortName,
+                              vehicleName: vehicleName,
+                            ),
+                            headline: full,
+                            detail: stopPart,
+                            caption: headsign,
+                            lineColor: color ?? '',
+                            focusLat:
+                                (focusPoint?['lat'] as num?)?.toDouble(),
+                            focusLon:
+                                (focusPoint?['lon'] as num?)?.toDouble(),
+                            focusZoom: _focusZoomForStepMode(travelMode),
+                            path: stepPath,
+                          ),
+                        );
+                      }
                     }
                   }
                 } else {
@@ -380,9 +615,43 @@ Future<DirectionsResult?> getDirections({
                                     ?.toString() ??
                                 ''
                             : '';
-                    instructions.add(
-                      distText.isNotEmpty ? '$clean ($distText)' : clean,
+                    final stepStart = _pointFromLocation(
+                      js_util.getProperty(step, 'start_location'),
                     );
+                    final stepEnd = _pointFromLocation(
+                      js_util.getProperty(step, 'end_location'),
+                    );
+                    final stepPath = _pathFromStep(
+                      step,
+                      startPoint: stepStart,
+                      endPoint: stepEnd,
+                    );
+                    final focusPoint =
+                        _focusPointFromPath(stepPath) ?? stepStart ?? stepEnd;
+                    final stepLine =
+                        distText.isNotEmpty ? '$clean ($distText)' : clean;
+                    instructions.add(stepLine);
+                    if (mode.toLowerCase() == 'transit') {
+                      stepDetails.add(
+                        _stepDetail(
+                          mode: travelMode.isEmpty ? 'walking' : travelMode,
+                          tabLabel: _tabLabelForTransitStep(
+                            travelMode:
+                                travelMode.isEmpty ? 'WALKING' : travelMode,
+                          ),
+                          headline: clean,
+                          detail: distText,
+                          focusLat:
+                              (focusPoint?['lat'] as num?)?.toDouble(),
+                          focusLon:
+                              (focusPoint?['lon'] as num?)?.toDouble(),
+                          focusZoom: _focusZoomForStepMode(
+                            travelMode.isEmpty ? 'WALKING' : travelMode,
+                          ),
+                          path: stepPath,
+                        ),
+                      );
+                    }
                   }
                 }
 
@@ -421,6 +690,7 @@ Future<DirectionsResult?> getDirections({
             distanceMeters: totalDist,
             durationSeconds: totalDur,
             instructions: instructions.take(6).toList(),
+            stepDetails: stepDetails.take(6).toList(growable: false),
             transitArrivalStop: transitArrivalStop,
             transitLineColor: transitLineColor,
           ),

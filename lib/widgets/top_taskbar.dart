@@ -6,6 +6,7 @@ import 'package:trypr/screens/my_trips_screen.dart';
 import 'package:trypr/screens/trip_builder_screen.dart';
 import 'package:trypr/screens/verified_trips_screen.dart';
 import 'package:trypr/screens/about_screen.dart';
+import 'package:trypr/screens/home_screen.dart';
 import 'package:trypr/screens/account_screen.dart';
 import 'package:trypr/screens/friends_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
@@ -151,6 +152,16 @@ class _TopTaskbarState extends State<TopTaskbar> {
     }
   }
 
+  void _goToPrimaryLanding() {
+    final navigator = Navigator.of(context);
+    final Widget landing =
+        _signedIn ? const MyTripsScreen() : const HomeScreen();
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => landing),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final dp = widget.dockProgress.clamp(0.0, 1.0);
@@ -169,7 +180,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
               cursor: SystemMouseCursors.click,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+                onTap: _goToPrimaryLanding,
                 child: SizedBox(
                   height: 36,
                   child: Stack(

@@ -89,6 +89,54 @@ IconData _iconForRouteStayType(RouteStayType t) {
   }
 }
 
+String _normalizeRouteMode(String? raw) {
+  var value = (raw ?? '').trim().toLowerCase();
+  if (value == 'canoe' || value == 'canoeing' || value == 'portage') {
+    value = 'portaging';
+  }
+  if (value == 'walking') value = 'walk';
+  if (value == 'bicycling' || value == 'biking' || value == 'bikepacking') {
+    value = 'bike';
+  }
+  if (value == 'backpacking') value = 'hiking';
+  return value.isEmpty ? 'car' : value;
+}
+
+RouteStayType _defaultRouteStayTypeForMode(String? rawMode) {
+  switch (_normalizeRouteMode(rawMode)) {
+    case 'hiking':
+    case 'portaging':
+      return RouteStayType.camping;
+    case 'bike':
+      return RouteStayType.hostel;
+    default:
+      return RouteStayType.hotel;
+  }
+}
+
+BudgetTier _defaultBudgetForRouteMode(String? rawMode) {
+  switch (_normalizeRouteMode(rawMode)) {
+    case 'hiking':
+    case 'portaging':
+      return BudgetTier.budget;
+    default:
+      return BudgetTier.moderate;
+  }
+}
+
+String _routeModeRecommendation(String? rawMode) {
+  switch (_normalizeRouteMode(rawMode)) {
+    case 'hiking':
+      return 'Camping is the default for hiking legs so suggestions stay trail-friendly.';
+    case 'portaging':
+      return 'Camping is the default for portage legs so suggestions bias toward backcountry-style stops.';
+    case 'bike':
+      return 'Hostels are the default for bike legs so quick route-stop suggestions stay lightweight.';
+    default:
+      return 'Hotel is the default for road-style legs, but you can switch the stay type any time.';
+  }
+}
+
 String _labelForBudget(BudgetTier b) {
   switch (b) {
     case BudgetTier.budget:
@@ -121,6 +169,7 @@ Map<String, dynamic> _buildPreferences({
   RouteStayType? routeStayType,
   String? routeFromName,
   String? routeToName,
+  String? routeMode,
 }) {
   final out = <String, dynamic>{
     'mode': mode.name,
@@ -135,6 +184,7 @@ Map<String, dynamic> _buildPreferences({
     out['routeIntent'] = 'between_stops';
     out['scope'] = 'along_route';
     out['maxTravelMinutes'] = 30;
+    out['routeMode'] = _normalizeRouteMode(routeMode);
     final from = (routeFromName ?? '').trim();
     final to = (routeToName ?? '').trim();
     if (from.isNotEmpty) out['routeFrom'] = from;
@@ -187,6 +237,7 @@ Future<void> showSmartRouteModal(
   required Future<void> Function(Map<String, dynamic> suggestion) onAddStop,
   String? routeFromName,
   String? routeToName,
+  String? routeMode,
 }) async {
   return showModalBottomSheet<void>(
     context: context,
@@ -206,6 +257,7 @@ Future<void> showSmartRouteModal(
         onAddStop: onAddStop,
         routeFromName: routeFromName,
         routeToName: routeToName,
+        routeMode: routeMode,
       );
     },
   );
@@ -225,6 +277,7 @@ class _ActivityFinderSheet extends StatefulWidget {
   final Future<void> Function(Map<String, dynamic> suggestion)? onAddStop;
   final String? routeFromName;
   final String? routeToName;
+  final String? routeMode;
 
   const _ActivityFinderSheet({
     required this.mode,
@@ -239,6 +292,7 @@ class _ActivityFinderSheet extends StatefulWidget {
     this.onAddStop,
     this.routeFromName,
     this.routeToName,
+    this.routeMode,
   });
 
   @override
@@ -416,6 +470,11 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
     if (!_allowedTypes.contains(_type)) {
       _type = _allowedTypes.first;
     }
+    if (widget.mode == ActivityFinderMode.routeStop) {
+      _routeStayType = _defaultRouteStayTypeForMode(widget.routeMode);
+      _budget = _defaultBudgetForRouteMode(widget.routeMode);
+      _haveCar = _normalizeRouteMode(widget.routeMode) == 'car';
+    }
   }
 
   Future<void> _generate() async {
@@ -438,6 +497,7 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
         routeStayType: _routeStayType,
         routeFromName: widget.routeFromName,
         routeToName: widget.routeToName,
+        routeMode: widget.routeMode,
       );
 
       // Strict input: no free-text. Only structured preferences.
@@ -690,9 +750,7 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                                         const SizedBox(
                                                           width: 6,
                                                         ),
-                                                        Text(
-                                                          _labelForType(t),
-                                                        ),
+                                                        Text(_labelForType(t)),
                                                       ],
                                                     ),
                                                     selected: selected,
@@ -705,6 +763,17 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                               }).toList(),
                                         ),
                               ),
+                              if (widget.mode == ActivityFinderMode.routeStop)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: Text(
+                                    _routeModeRecommendation(widget.routeMode),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                ),
 
                               _sectionTitle('Budget'),
                               ToggleButtons(
@@ -775,30 +844,30 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                 ],
                               ),
 
-                              if (widget.mode != ActivityFinderMode.routeStop)
-                                ...[
-                                  _sectionTitle('Time Available'),
-                                  DropdownButtonFormField<TimeAvailable>(
-                                    initialValue: _time,
-                                    items:
-                                        TimeAvailable.values
-                                            .map(
-                                              (t) => DropdownMenuItem(
-                                                value: t,
-                                                child: Text(_labelForTime(t)),
-                                              ),
-                                            )
-                                            .toList(),
-                                    onChanged: (v) {
-                                      if (v == null) return;
-                                      setState(() => _time = v);
-                                    },
-                                    decoration: const InputDecoration(
-                                      border: OutlineInputBorder(),
-                                      isDense: true,
-                                    ),
+                              if (widget.mode !=
+                                  ActivityFinderMode.routeStop) ...[
+                                _sectionTitle('Time Available'),
+                                DropdownButtonFormField<TimeAvailable>(
+                                  initialValue: _time,
+                                  items:
+                                      TimeAvailable.values
+                                          .map(
+                                            (t) => DropdownMenuItem(
+                                              value: t,
+                                              child: Text(_labelForTime(t)),
+                                            ),
+                                          )
+                                          .toList(),
+                                  onChanged: (v) {
+                                    if (v == null) return;
+                                    setState(() => _time = v);
+                                  },
+                                  decoration: const InputDecoration(
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
                                   ),
-                                ],
+                                ),
+                              ],
 
                               _sectionTitle('Have a Car?'),
                               Row(
@@ -881,7 +950,8 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                             final rating =
                                 (s['rating'] as num?)?.toDouble() ?? 0;
                             final category = (s['category'] ?? '').toString();
-                            final stayTypeRaw = (s['stayType'] ?? '').toString();
+                            final stayTypeRaw =
+                                (s['stayType'] ?? '').toString();
                             final stayType =
                                 stayTypeRaw.trim().isNotEmpty
                                     ? stayTypeRaw
@@ -893,7 +963,7 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
 
                             final actionLabel =
                                 widget.mode == ActivityFinderMode.routeStop
-                                    ? 'Add Via Stop'
+                                    ? 'Add Stop to Trip'
                                     : 'Add to Itinerary';
 
                             return Padding(
@@ -930,7 +1000,8 @@ class _ActivityFinderSheetState extends State<_ActivityFinderSheet> {
                                         if (widget.mode ==
                                             ActivityFinderMode.routeStop)
                                           Chip(
-                                            visualDensity: VisualDensity.compact,
+                                            visualDensity:
+                                                VisualDensity.compact,
                                             label: Text(stayType),
                                           )
                                         else if (category.trim().isNotEmpty)

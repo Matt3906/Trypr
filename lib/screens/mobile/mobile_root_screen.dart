@@ -7,6 +7,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:trypr/models/budget_person.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
 import 'package:trypr/screens/trip_builder_screen.dart';
 import 'package:trypr/screens/trip_detail_screen.dart';
@@ -493,14 +494,18 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
   final _chatCtl = TextEditingController();
   final _expenseTitleCtl = TextEditingController();
   final _expenseAmountCtl = TextEditingController();
+  final _expensePersonCtl = TextEditingController();
   final _nameCache = <String, String>{};
   final _picker = ImagePicker();
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _tripSub;
   bool _sendingChat = false;
   bool _addingExpense = false;
+  bool _updatingExpensePeople = false;
   bool _uploadingPhoto = false;
 
   List<String> _participants = const [];
+  String? _expensePaidByPersonId;
+  String _expenseCategory = 'Other';
 
   @override
   void initState() {
@@ -508,6 +513,8 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
     _tripRef = FirebaseFirestore.instance.doc(widget.selectedTrip.tripRefPath);
     _tripData = Map<String, dynamic>.from(widget.selectedTrip.tripData);
     _participants = _participantsFromTrip(_tripData, widget.me.uid);
+    _expensePaidByPersonId =
+        _participants.contains(widget.me.uid) ? widget.me.uid : null;
     _primeNameCache();
     _tripSub = _tripRef.snapshots().listen((snap) {
       if (!snap.exists) return;
@@ -536,6 +543,7 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
     _chatCtl.dispose();
     _expenseTitleCtl.dispose();
     _expenseAmountCtl.dispose();
+    _expensePersonCtl.dispose();
     super.dispose();
   }
 
@@ -575,17 +583,27 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
       );
       return;
     }
+    final people = _expensePeople();
+    final payerId = _resolvedExpensePersonId(people);
+    final payer = budgetPersonById(people, payerId);
     setState(() => _addingExpense = true);
     try {
-      await _tripRef.collection('expenses').add({
+      final payload = <String, dynamic>{
         'title': title,
         'amount': amount,
         'splitMode': 'group',
-        'category': 'Other',
-        'paidByUid': widget.me.uid,
+        'category': _expenseCategory,
         'createdAt': Timestamp.now(),
         'createdByUid': widget.me.uid,
-      });
+      };
+      if (payer != null) {
+        payload['paidByPersonId'] = payer.id;
+        payload['paidByPersonName'] = payer.name;
+        if (payer.uid != null && payer.uid!.isNotEmpty) {
+          payload['paidByUid'] = payer.uid;
+        }
+      }
+      await _tripRef.collection('expenses').add(payload);
       _expenseTitleCtl.clear();
       _expenseAmountCtl.clear();
     } catch (e) {
@@ -595,6 +613,149 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
       ).showTryprSnackBar(SnackBar(content: Text('Failed to add expense: $e')));
     } finally {
       if (mounted) setState(() => _addingExpense = false);
+    }
+  }
+
+  Future<void> _addExpensePerson() async {
+    if (_updatingExpensePeople) return;
+    final name = _expensePersonCtl.text.trim();
+    if (name.isEmpty) return;
+
+    final people = _expensePeople();
+    final customPeople = _customExpensePeople();
+    final exists = people.any(
+      (person) => person.name.trim().toLowerCase() == name.toLowerCase(),
+    );
+    if (exists) {
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('That person already exists')),
+      );
+      return;
+    }
+
+    setState(() => _updatingExpensePeople = true);
+    try {
+      await _tripRef.update({
+        'tripBudget.people': encodeBudgetPeople(<BudgetPerson>[
+          ...customPeople,
+          BudgetPerson.custom(name),
+        ]),
+      });
+      _expensePersonCtl.clear();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showTryprSnackBar(SnackBar(content: Text('Failed to add person: $e')));
+    } finally {
+      if (mounted) setState(() => _updatingExpensePeople = false);
+    }
+  }
+
+  Future<void> _removeExpensePerson(BudgetPerson person) async {
+    if (_updatingExpensePeople) return;
+    setState(() => _updatingExpensePeople = true);
+    try {
+      await _tripRef.update({
+        'tripBudget.people': encodeBudgetPeople(
+          _customExpensePeople().where((entry) => entry.id != person.id),
+        ),
+      });
+      if (_expensePaidByPersonId == person.id && mounted) {
+        setState(() => _expensePaidByPersonId = null);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Failed to remove person: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _updatingExpensePeople = false);
+    }
+  }
+
+  Future<void> _deleteExpense(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            title: const Text('Delete expense?'),
+            content: const Text('This removes it for everyone on the trip.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Delete'),
+              ),
+            ],
+          ),
+    );
+    if (ok != true) return;
+
+    try {
+      await _tripRef.collection('expenses').doc(doc.id).delete();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Failed to delete expense: $e')),
+      );
+    }
+  }
+
+  List<BudgetPerson> _customExpensePeople() {
+    final tripBudget = _tripData['tripBudget'];
+    if (tripBudget is! Map) return const <BudgetPerson>[];
+    return parseBudgetPeople(tripBudget['people']);
+  }
+
+  List<BudgetPerson> _expensePeople() {
+    return mergeBudgetPeople(
+      participantUids: _participants,
+      nameCache: _nameCache,
+      customPeople: _customExpensePeople(),
+    );
+  }
+
+  String? _resolvedExpensePersonId(List<BudgetPerson> people) {
+    final selectedId = (_expensePaidByPersonId ?? '').trim();
+    if (selectedId.isNotEmpty && budgetPersonById(people, selectedId) != null) {
+      return selectedId;
+    }
+    if (budgetPersonById(people, widget.me.uid) != null) {
+      return widget.me.uid;
+    }
+    return null;
+  }
+
+  int _resolvedExpenseFinalSplitCount(List<BudgetPerson> people) {
+    final tripBudget = _tripData['tripBudget'];
+    if (tripBudget is Map) {
+      return _mobileExpenseSplitByCount(
+        tripBudget['finalSplitByCount'],
+        fallback: _defaultExpenseSplitByCount(people),
+      );
+    }
+    return _defaultExpenseSplitByCount(people);
+  }
+
+  Future<void> _updateExpenseFinalSplitCount(int nextCount) async {
+    final people = _expensePeople();
+    final normalized = _mobileExpenseSplitByCount(
+      nextCount,
+      fallback: _defaultExpenseSplitByCount(people),
+    );
+    try {
+      await _tripRef.update({'tripBudget.finalSplitByCount': normalized});
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Failed to update final split: $e')),
+      );
     }
   }
 
@@ -837,6 +998,11 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
   }
 
   Widget _buildExpensesTab() {
+    final customPeople = _customExpensePeople();
+    final people = _expensePeople();
+    final resolvedPayerId = _resolvedExpensePersonId(people);
+    final finalSplitByCount = _resolvedExpenseFinalSplitCount(people);
+
     return Column(
       children: [
         Padding(
@@ -847,6 +1013,48 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
               padding: const EdgeInsets.all(10),
               child: Column(
                 children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final person in customPeople)
+                          InputChip(
+                            label: Text(person.name),
+                            onDeleted:
+                                _updatingExpensePeople
+                                    ? null
+                                    : () => _removeExpensePerson(person),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (customPeople.isNotEmpty) const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _expensePersonCtl,
+                          decoration: const InputDecoration(
+                            labelText: 'Add person',
+                          ),
+                          onSubmitted:
+                              _updatingExpensePeople
+                                  ? null
+                                  : (_) => _addExpensePerson(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        onPressed:
+                            _updatingExpensePeople ? null : _addExpensePerson,
+                        icon: const Icon(Icons.person_add_alt_1),
+                        label: const Text('Add person'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: _expenseTitleCtl,
                     decoration: const InputDecoration(
@@ -854,9 +1062,12 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      Expanded(
+                      SizedBox(
+                        width: 132,
                         child: TextField(
                           controller: _expenseAmountCtl,
                           keyboardType: const TextInputType.numberWithOptions(
@@ -868,7 +1079,69 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 180,
+                        child: DropdownButtonFormField<String?>(
+                          initialValue: resolvedPayerId,
+                          items: [
+                            const DropdownMenuItem<String?>(
+                              value: null,
+                              child: Text('Unassigned'),
+                            ),
+                            ...people.map(
+                              (person) => DropdownMenuItem<String?>(
+                                value: person.id,
+                                child: Text(
+                                  person.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
+                          ],
+                          onChanged:
+                              _addingExpense
+                                  ? null
+                                  : (value) => setState(
+                                    () => _expensePaidByPersonId = value,
+                                  ),
+                          decoration: const InputDecoration(
+                            labelText: 'Paid by',
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        width: 150,
+                        child: DropdownButtonFormField<String>(
+                          initialValue: _expenseCategory,
+                          items:
+                              const [
+                                    'Accommodation',
+                                    'Food',
+                                    'Transport',
+                                    'Activities',
+                                    'Groceries',
+                                    'Shopping',
+                                    'Other',
+                                  ]
+                                  .map(
+                                    (entry) => DropdownMenuItem<String>(
+                                      value: entry,
+                                      child: Text(entry),
+                                    ),
+                                  )
+                                  .toList(),
+                          onChanged:
+                              _addingExpense
+                                  ? null
+                                  : (value) => setState(
+                                    () => _expenseCategory = value ?? 'Other',
+                                  ),
+                          decoration: const InputDecoration(
+                            labelText: 'Category',
+                          ),
+                        ),
+                      ),
                       FilledButton.icon(
                         onPressed: _addingExpense ? null : _addExpense,
                         icon: const Icon(Icons.add),
@@ -907,12 +1180,80 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
                 children: [
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Total tracked: \$${total.toStringAsFixed(2)}',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Total tracked: \$${total.toStringAsFixed(2)}',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Final split',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  const Text('Split total by'),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    onPressed:
+                                        finalSplitByCount <= 1
+                                            ? null
+                                            : () =>
+                                                _updateExpenseFinalSplitCount(
+                                                  finalSplitByCount - 1,
+                                                ),
+                                    icon: const Icon(
+                                      Icons.remove_circle_outline,
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 8,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: const Color(0x14000000),
+                                      ),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      '$finalSplitByCount',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    onPressed:
+                                        () => _updateExpenseFinalSplitCount(
+                                          finalSplitByCount + 1,
+                                        ),
+                                    icon: const Icon(Icons.add_circle_outline),
+                                  ),
+                                ],
+                              ),
+                              Text(
+                                'Each share: \$${(total / finalSplitByCount).toStringAsFixed(2)}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   Expanded(
@@ -921,22 +1262,37 @@ class _ActiveTripWorkspaceState extends State<_ActiveTripWorkspace> {
                       itemCount: docs.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 8),
                       itemBuilder: (context, index) {
-                        final data = docs[index].data();
+                        final doc = docs[index];
+                        final data = doc.data();
                         final title = (data['title'] ?? 'Expense').toString();
                         final amount =
                             ((data['amount'] as num?)?.toDouble() ?? 0.0);
-                        final paidByUid = (data['paidByUid'] ?? '').toString();
-                        final paidByName =
-                            _nameCache[paidByUid] ??
-                            (paidByUid.isNotEmpty ? paidByUid : 'Unassigned');
+                        final paidById = _mobileExpensePaidById(data);
+                        final paidByName = budgetPersonLabelForId(
+                          people: _mobileExpensePeopleForDocs(people, docs),
+                          id: paidById,
+                          fallbackName:
+                              (data['paidByPersonName'] ?? '').toString(),
+                        );
                         return Card(
                           elevation: 0,
                           child: ListTile(
                             title: Text(title),
                             subtitle: Text('Paid by $paidByName'),
-                            trailing: Text(
-                              '\$${amount.toStringAsFixed(2)}',
-                              style: Theme.of(context).textTheme.titleMedium,
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '\$${amount.toStringAsFixed(2)}',
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium,
+                                ),
+                                IconButton(
+                                  tooltip: 'Delete',
+                                  onPressed: () => _deleteExpense(doc),
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                              ],
                             ),
                           ),
                         );
@@ -1295,6 +1651,48 @@ List<String> _participantsFromTrip(Map<String, dynamic> data, String meUid) {
     }
   }
   return out.toList(growable: false);
+}
+
+int _mobileExpenseSplitByCount(dynamic raw, {int fallback = 1}) {
+  if (raw is int && raw > 0) return raw;
+  if (raw is num && raw > 0) return raw.round();
+  final parsed = int.tryParse(raw?.toString() ?? '');
+  if (parsed == null || parsed <= 0) return fallback <= 0 ? 1 : fallback;
+  return parsed;
+}
+
+int _defaultExpenseSplitByCount(List<BudgetPerson> people) {
+  return people.isEmpty ? 1 : people.length;
+}
+
+String? _mobileExpensePaidById(Map<String, dynamic> data) {
+  final personId = (data['paidByPersonId'] ?? '').toString().trim();
+  if (personId.isNotEmpty) return personId;
+  final uid = (data['paidByUid'] ?? '').toString().trim();
+  return uid.isEmpty ? null : uid;
+}
+
+List<BudgetPerson> _mobileExpensePeopleForDocs(
+  List<BudgetPerson> people,
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+) {
+  var resolved = people;
+  for (final doc in docs) {
+    final data = doc.data();
+    final personId = _mobileExpensePaidById(data);
+    if (personId == null || budgetPersonById(resolved, personId) != null) {
+      continue;
+    }
+    final fallbackName = (data['paidByPersonName'] ?? '').toString().trim();
+    resolved = <BudgetPerson>[
+      ...resolved,
+      BudgetPerson.custom(
+        fallbackName.isNotEmpty ? fallbackName : personId,
+        id: personId,
+      ),
+    ];
+  }
+  return resolved;
 }
 
 List<Map<String, dynamic>> _tripPhotosFromTrip(Map<String, dynamic> data) {

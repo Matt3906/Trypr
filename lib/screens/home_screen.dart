@@ -55,6 +55,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<bool>? _premiumAccessFuture;
   Timer? _introFocusTimer;
   Timer? _mapReadyFallbackTimer;
+  Timer? _lazyMapInitTimer;
+  bool _mapInitScheduled = false;
   int _tripAnimationToken = 0;
   String? _lastAnimatedTripKey;
   static const bool _enableStreetViewGallery = bool.fromEnvironment(
@@ -149,7 +151,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         setState(() => _dockProgress = progress);
       }
     });
-    _initializeMapFrame();
+    _scheduleMapInitialization();
     unawaited(_primePremiumAccess());
   }
 
@@ -157,9 +159,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void dispose() {
     _introFocusTimer?.cancel();
     _mapReadyFallbackTimer?.cancel();
+    _lazyMapInitTimer?.cancel();
     _scrollController.dispose();
     _buttonAnimController.dispose();
     super.dispose();
+  }
+
+  void _scheduleMapInitialization() {
+    if (!kIsWeb || _mapFactoryRegistered || _mapInitScheduled) return;
+    _mapInitScheduled = true;
+
+    final isSignedIn = FirebaseAuth.instance.currentUser != null;
+    final delay =
+        isSignedIn
+            ? const Duration(milliseconds: 350)
+            : const Duration(milliseconds: 900);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lazyMapInitTimer = Timer(delay, () {
+        if (!mounted) return;
+        _initializeMapFrame();
+        setState(() {});
+      });
+    });
   }
 
   Future<void> _primePremiumAccess() async {
@@ -443,7 +466,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           // Keep the globe visual-only on this screen so overlay UI receives taps.
           ..style.pointerEvents = 'none'
           ..title = 'Trypr 3D Globe'
-          ..allow = 'fullscreen';
+          ..allow = 'fullscreen'
+          ..setAttribute('loading', 'lazy');
     _mapIFrame!.onLoad.listen((_) => _handleMapIFrameLoaded());
 
     // Listen for postMessage events from the Earth iframe (map_ready, etc.)
@@ -1482,7 +1506,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   String _focusedStopTitle(Map<String, dynamic> stop, int stopNumber) {
     final explicit = (stop['name'] ?? stop['title'] ?? '').toString().trim();
-    final cleanedExplicit = _trimAddressNoise(explicit);
+    var cleanedExplicit = _trimAddressNoise(explicit);
+    if (cleanedExplicit.toLowerCase() == 'dropped pin') {
+      cleanedExplicit = '';
+    }
     if (_isBackcountryStop(stop) && cleanedExplicit.isNotEmpty) {
       return cleanedExplicit;
     }
@@ -1690,6 +1717,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       '${_normalizePhotoTag(querySeed).replaceAll(',', ' ')}, travel',
     );
     return 'https://source.unsplash.com/900x520/?$query';
+  }
+
+  String _fallbackGalleryImageUrl(String title, int index) {
+    final seed = title.isEmpty ? 'travel-town' : '$title-gallery-${index + 1}';
+    return _realisticFallbackPhotoUrl(seed, index: index);
   }
 
   List<String> _fallbackActivitiesForTown(String title) {
@@ -1979,7 +2011,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     double minHeight = 360,
   }) {
     final title = _focusedStopTitle(stop, stopNumber);
-    final fallbackImageUrl = _fallbackTownImageUrl(title);
     final showAiPanels = _shouldShowAiForStop(stop);
     final imageUrls = _focusedStopImageUrls(stop, title);
     final activities =
@@ -1996,6 +2027,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         imageUrls.isNotEmpty
             ? imageUrls
             : <String>[_focusedStopImageUrl(stop, title)];
+    final galleryFallbacks = List<String>.generate(
+      gallery.length,
+      (index) => _fallbackGalleryImageUrl(title, index),
+      growable: false,
+    );
     final normalizedMinHeight = minHeight.clamp(220.0, 780.0).toDouble();
     final cardHeight = maxHeight.clamp(normalizedMinHeight, 820.0).toDouble();
 
@@ -2036,7 +2072,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           fit: BoxFit.cover,
                           errorBuilder:
                               (_, __, ___) => Image.network(
-                                fallbackImageUrl,
+                                galleryFallbacks.first,
                                 fit: BoxFit.cover,
                                 errorBuilder:
                                     (_, __, ___) => Container(
@@ -2083,6 +2119,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         ),
                         itemBuilder: (context, index) {
                           final imageUrl = gallery[index];
+                          final fallbackForTile = galleryFallbacks[index];
                           final remaining = gallery.length - previewCount;
                           final showRemaining =
                               remaining > 0 && index == previewCount - 1;
@@ -2095,7 +2132,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                 fit: BoxFit.cover,
                                 errorBuilder:
                                     (_, __, ___) => Image.network(
-                                      fallbackImageUrl,
+                                      fallbackForTile,
                                       fit: BoxFit.cover,
                                       errorBuilder:
                                           (_, __, ___) => Container(
@@ -3450,8 +3487,8 @@ class _SavedTripsDock extends StatelessWidget {
     this.compact = false,
   });
 
-  String _formatDistance(double? km) {
-    if (km == null) return '';
+  String _formatDistance(double? km, {required int stopCount}) {
+    if (stopCount < 2 || km == null || km <= 0) return 'No route yet';
     if (km < 1) return '${(km * 1000).round()} m';
     return '${km.toStringAsFixed(0)} km';
   }
@@ -3602,8 +3639,28 @@ class _SavedTripsDock extends StatelessWidget {
                               if (tripModel.segmentRoutingTypes != null)
                                 'segmentRoutingTypes':
                                     tripModel.segmentRoutingTypes,
+                              if (tripModel.tripType != null)
+                                'tripType': tripModel.tripType,
+                              if (tripModel.experienceLevel != null)
+                                'experienceLevel': tripModel.experienceLevel,
                               'canEdit': true,
                             };
+                            final tripType = normalizeTripType(
+                              tripModel.tripType,
+                              transportMode: tripModel.transportMode,
+                              segmentTransportModes:
+                                  tripModel.segmentTransportModes,
+                            );
+                            final difficultyLabel = inferTripDifficultyLabel(
+                              tripType: tripType,
+                              experienceLevel: tripModel.experienceLevel,
+                              distanceKm: tripModel.distance,
+                              estimatedDurationMin:
+                                  tripModel.estimatedDurationMin,
+                              stopCount: tripModel.stops.length,
+                              segmentTransportModes:
+                                  tripModel.segmentTransportModes,
+                            );
 
                             final isSelected = selectedTripId == tripModel.id;
 
@@ -3611,8 +3668,17 @@ class _SavedTripsDock extends StatelessWidget {
                               compact: compact,
                               title: tripModel.tripName,
                               stops: tripModel.stops.length,
-                              distance: _formatDistance(tripModel.distance),
+                              distance: _formatDistance(
+                                tripModel.distance,
+                                stopCount: tripModel.stops.length,
+                              ),
                               date: tripModel.formattedDates,
+                              tripTypeBadge: tripTypeBadgeLabel(tripType),
+                              difficultyLabel:
+                                  isAdventureTripType(tripType) ||
+                                          tripType == 'mixed'
+                                      ? difficultyLabel
+                                      : null,
                               isSelected: isSelected,
                               onTap: () => onTripSelected(trip),
                             );
@@ -3683,6 +3749,31 @@ class _SavedTripsDock extends StatelessWidget {
                     final daysRaw = data['recommendedDays'] ?? data['days'];
                     final days =
                         daysRaw is num ? '${daysRaw.toInt()} days' : '';
+                    final transportMode =
+                        (data['transportMode'] ?? '').toString().trim();
+                    final segmentModes =
+                        (data['segmentTransportModes'] is List)
+                            ? (data['segmentTransportModes'] as List)
+                                .map((e) => e.toString())
+                                .toList(growable: false)
+                            : const <String>[];
+                    final tripType = normalizeTripType(
+                      (data['tripType'] ?? '').toString(),
+                      transportMode: transportMode,
+                      segmentTransportModes: segmentModes,
+                    );
+                    final difficultyLabel = inferTripDifficultyLabel(
+                      tripType: tripType,
+                      experienceLevel:
+                          (data['experienceLevel'] ?? '').toString(),
+                      distanceKm:
+                          (data['totalKm'] as num?)?.toDouble() ??
+                          (data['distance'] as num?)?.toDouble(),
+                      estimatedDurationMin:
+                          (data['estimatedDurationMin'] as num?)?.toDouble(),
+                      stopCount: stops,
+                      segmentTransportModes: segmentModes,
+                    );
 
                     return _TripCard(
                       compact: compact,
@@ -3690,6 +3781,11 @@ class _SavedTripsDock extends StatelessWidget {
                       stops: stops,
                       distance: days,
                       date: '',
+                      tripTypeBadge: tripTypeBadgeLabel(tripType),
+                      difficultyLabel:
+                          isAdventureTripType(tripType) || tripType == 'mixed'
+                              ? difficultyLabel
+                              : null,
                       isSelected: false,
                       onTap: () {
                         // Build waypoints for the globe preview
@@ -3715,6 +3811,10 @@ class _SavedTripsDock extends StatelessWidget {
                             'title': title,
                             'waypoints': points,
                             'stops': stops,
+                            if (data['tripType'] != null)
+                              'tripType': data['tripType'],
+                            if (data['experienceLevel'] != null)
+                              'experienceLevel': data['experienceLevel'],
                             if (data['transportMode'] != null)
                               'transportMode': data['transportMode'],
                             if (data['segmentTransportModes'] is List)
@@ -3746,6 +3846,8 @@ class _TripCard extends StatefulWidget {
   final int stops;
   final String distance;
   final String date;
+  final String? tripTypeBadge;
+  final String? difficultyLabel;
   final bool isSelected;
   final VoidCallback onTap;
 
@@ -3755,6 +3857,8 @@ class _TripCard extends StatefulWidget {
     required this.stops,
     required this.distance,
     required this.date,
+    this.tripTypeBadge,
+    this.difficultyLabel,
     required this.isSelected,
     required this.onTap,
   });
@@ -3936,6 +4040,24 @@ class _TripCardState extends State<_TripCard> {
                       ],
                     ],
                   ),
+                  if ((widget.tripTypeBadge ?? '').trim().isNotEmpty ||
+                      (widget.difficultyLabel ?? '').trim().isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        if ((widget.tripTypeBadge ?? '').trim().isNotEmpty)
+                          _infoBadge(
+                            widget.tripTypeBadge!,
+                            metaFontSize,
+                            primary: true,
+                          ),
+                        if ((widget.difficultyLabel ?? '').trim().isNotEmpty)
+                          _infoBadge(widget.difficultyLabel!, metaFontSize),
+                      ],
+                    ),
+                  ],
                   // Date pill
                   if (widget.date.isNotEmpty) ...[
                     const SizedBox(height: 4),
@@ -3962,6 +4084,34 @@ class _TripCardState extends State<_TripCard> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoBadge(String text, double fontSize, {bool primary = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color:
+            primary
+                ? Colors.black.withOpacity(0.22)
+                : Colors.white.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color:
+              primary
+                  ? Colors.white.withOpacity(0.22)
+                  : Colors.white.withOpacity(0.16),
+        ),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: fontSize,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.15,
         ),
       ),
     );

@@ -3,15 +3,16 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:trypr/utils/trypr_snackbar.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:flutter_quill_extensions/flutter_quill_extensions.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:trypr/models/budget_person.dart';
 import 'package:trypr/services/pick_file_data_url.dart';
 import 'package:trypr/services/open_external_url.dart';
 import 'package:trypr/theme/app_theme.dart';
+import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/widgets/modern_widgets.dart';
 import 'package:trypr/services/address_search.dart';
 import 'package:trypr/services/route_options.dart';
@@ -87,7 +88,10 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
 
   // ─── Budget ───────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _budgetItems = [];
+  List<BudgetPerson> _budgetPeople = [];
+  int _budgetFinalSplitByCount = 0;
   String _currency = 'USD';
+  final TextEditingController _budgetPersonCtrl = TextEditingController();
 
   // ─── Checklists ───────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _checklists = [];
@@ -206,6 +210,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       c.dispose();
     }
     _noteTitleCtrl.dispose();
+    _budgetPersonCtrl.dispose();
     _noteEditorFocus.dispose();
     _noteEditorScroll.dispose();
     super.dispose();
@@ -230,6 +235,15 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     if (budget is Map) {
       _currency = (budget['currency'] as String?) ?? 'USD';
       _budgetItems = _mapList(budget['items']);
+      _budgetPeople = parseBudgetPeople(budget['people']);
+      _budgetFinalSplitByCount = _parseBudgetFinalSplitCount(
+        budget['finalSplitByCount'],
+      );
+    } else {
+      _currency = 'USD';
+      _budgetItems = [];
+      _budgetPeople = const <BudgetPerson>[];
+      _budgetFinalSplitByCount = 0;
     }
 
     _checklists = _mapList(_tripData['tripChecklists']);
@@ -480,6 +494,20 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       });
     }
     return out;
+  }
+
+  int _waypointNights(Map<String, dynamic> waypoint) {
+    final raw = waypoint['nights'];
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '') ?? 0;
+  }
+
+  bool _waypointCountsAsStay(List<Map<String, dynamic>> waypoints, int index) {
+    if (index < 0 || index >= waypoints.length) return false;
+    if (index == 0 || index == waypoints.length - 1) return true;
+    final raw = waypoints[index]['isStop'];
+    if (raw is bool) return raw;
+    return _waypointNights(waypoints[index]) > 0;
   }
 
   List<Map<String, dynamic>> _mapItineraryActivityPins() {
@@ -866,6 +894,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     // ── Helper: find the waypoint covering a given date ──
     (String name, int index) waypointForDate(DateTime date) {
       for (int w = 0; w < waypoints.length; w++) {
+        if (!_waypointCountsAsStay(waypoints, w)) continue;
         final wpStart = (waypoints[w]['startDate'] ?? '').toString();
         final wpEnd = (waypoints[w]['endDate'] ?? '').toString();
         if (wpStart.isNotEmpty && wpEnd.isNotEmpty) {
@@ -1033,6 +1062,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final date = _tryParseDate((day['date'] ?? '').toString());
     if (date != null) {
       for (var i = 0; i < waypoints.length; i++) {
+        if (!_waypointCountsAsStay(waypoints, i)) continue;
         final wpStart = _tryParseDate(
           (waypoints[i]['startDate'] ?? '').toString(),
         );
@@ -1048,6 +1078,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final loc = (day['locationName'] ?? '').toString().trim().toLowerCase();
     if (loc.isNotEmpty) {
       for (var i = 0; i < waypoints.length; i++) {
+        if (!_waypointCountsAsStay(waypoints, i)) continue;
         final wp = (waypoints[i]['name'] ?? '').toString().trim().toLowerCase();
         if (wp.isEmpty) continue;
         if (wp == loc || wp.contains(loc) || loc.contains(wp)) return i;
@@ -1640,7 +1671,12 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     return {
       'tripItinerary': _itineraryDays,
       'tripNotes': _notes,
-      'tripBudget': {'currency': _currency, 'items': _budgetItems},
+      'tripBudget': {
+        'currency': _currency,
+        'items': _normalizedBudgetItems(),
+        'people': encodeBudgetPeople(_budgetPeople),
+        'finalSplitByCount': _resolvedBudgetFinalSplitCount(),
+      },
       'tripChecklists': _checklists,
       'tripDocuments': _documents,
       'startDate': (_tripData['startDate'] ?? '').toString(),
@@ -2005,9 +2041,16 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     }
 
     final waypoints = _mapList(_tripData['waypoints']);
-    if (waypoints.isEmpty) {
+    final stayIndexes = <int>[];
+    final stayWaypoints = <Map<String, dynamic>>[];
+    for (var i = 0; i < waypoints.length; i++) {
+      if (!_waypointCountsAsStay(waypoints, i)) continue;
+      stayIndexes.add(i);
+      stayWaypoints.add(waypoints[i]);
+    }
+    if (stayWaypoints.isEmpty) {
       ScaffoldMessenger.of(context).showTryprSnackBar(
-        const SnackBar(content: Text('No stops to edit yet.')),
+        const SnackBar(content: Text('No stay destinations to edit yet.')),
       );
       return;
     }
@@ -2015,8 +2058,8 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final initialTripStart = _stripDate(tripStart);
     final initialTripEnd = _stripDate(tripEnd);
     final local = <Map<String, dynamic>>[];
-    for (var i = 0; i < waypoints.length; i++) {
-      final wp = waypoints[i];
+    for (var i = 0; i < stayWaypoints.length; i++) {
+      final wp = stayWaypoints[i];
       var start =
           _tryParseDate((wp['startDate'] ?? '').toString()) ?? initialTripStart;
       var end = _tryParseDate((wp['endDate'] ?? '').toString()) ?? start;
@@ -2228,15 +2271,18 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         setState2(() => validationError = error);
                         return;
                       }
-                      final updated = <Map<String, dynamic>>[];
-                      for (var i = 0; i < waypoints.length; i++) {
-                        final wp = Map<String, dynamic>.from(waypoints[i]);
+                      final updated = waypoints
+                          .map((wp) => Map<String, dynamic>.from(wp))
+                          .toList(growable: false);
+                      for (var i = 0; i < stayWaypoints.length; i++) {
+                        final wpIndex = stayIndexes[i];
+                        final wp = Map<String, dynamic>.from(updated[wpIndex]);
                         final start = local[i]['start'] as DateTime;
                         final end = local[i]['end'] as DateTime;
                         wp['startDate'] = _ymd(start);
                         wp['endDate'] = _ymd(end);
                         wp['nights'] = end.difference(start).inDays + 1;
-                        updated.add(wp);
+                        updated[wpIndex] = wp;
                       }
                       Navigator.of(ctx2).pop(updated);
                     },
@@ -4201,6 +4247,106 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
           ),
         ),
         const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: GlassCard(
+            padding: const EdgeInsets.all(12),
+            borderRadius: 10,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      'People',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${_budgetPeople.length} saved',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: TryprColors.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Create people here, then assign who paid. The final split is calculated once in the summary at the end.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: TryprColors.textTertiary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (_budgetPeople.isEmpty)
+                  const Text(
+                    'No people added yet.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: TryprColors.textTertiary,
+                    ),
+                  )
+                else
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children:
+                        _budgetPeople
+                            .map(
+                              (person) => InputChip(
+                                label: Text(person.name),
+                                onDeleted:
+                                    () => setState(
+                                      () => _budgetPeople.removeWhere(
+                                        (entry) => entry.id == person.id,
+                                      ),
+                                    ),
+                              ),
+                            )
+                            .toList(),
+                  ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _budgetPersonCtrl,
+                        decoration: const InputDecoration(
+                          hintText: 'Add a person',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: (_) => _addBudgetPerson(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    GradientButton(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      onPressed: _addBudgetPerson,
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.person_add_alt_1, size: 16),
+                          SizedBox(width: 6),
+                          Text('Add Person'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
         // Table
         Expanded(
           child:
@@ -4214,8 +4360,16 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                   )
                   : ListView.builder(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-                    itemCount: _budgetItems.length,
-                    itemBuilder: (ctx, i) => _buildBudgetRow(i),
+                    itemCount: _budgetItems.length + 1,
+                    itemBuilder: (ctx, i) {
+                      if (i == _budgetItems.length) {
+                        return _buildBudgetFinalSummary(
+                          totalEstimated: totalEstimated,
+                          totalActual: totalActual,
+                        );
+                      }
+                      return _buildBudgetRow(i);
+                    },
                   ),
         ),
       ],
@@ -4260,18 +4414,21 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
 
   Widget _buildBudgetRow(int index) {
     final item = _budgetItems[index];
+    final itemPeople = _budgetPeopleForItem(item);
+    final paidById = (item['paidByPersonId'] ?? '').toString().trim();
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: GlassCard(
         padding: const EdgeInsets.all(10),
         borderRadius: 10,
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Description
                 Expanded(
-                  flex: 3,
                   child: TextField(
                     controller: TextEditingController(
                         text: (item['description'] ?? '').toString(),
@@ -4293,15 +4450,35 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                // Category
-                Expanded(
-                  flex: 2,
+                TextButton.icon(
+                  onPressed: () => setState(() => _budgetItems.removeAt(index)),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 18,
+                    color: TryprColors.error,
+                  ),
+                  label: const Text(
+                    'Delete',
+                    style: TextStyle(color: TryprColors.error),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SizedBox(
+                  width: 180,
                   child: DropdownButtonFormField<String>(
                     initialValue:
                         budgetCategories.contains(item['category']?.toString())
                             ? item['category'].toString()
                             : 'Other',
                     decoration: const InputDecoration(
+                      labelText: 'Category',
                       isDense: true,
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(
@@ -4322,10 +4499,49 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         ),
                   ),
                 ),
-                const SizedBox(width: 6),
-                // Estimated
                 SizedBox(
-                  width: 90,
+                  width: 220,
+                  child: DropdownButtonFormField<String?>(
+                    initialValue: paidById.isEmpty ? null : paidById,
+                    decoration: const InputDecoration(
+                      labelText: 'Paid by',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 8,
+                      ),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('Unassigned'),
+                      ),
+                      ...itemPeople.map(
+                        (person) => DropdownMenuItem<String?>(
+                          value: person.id,
+                          child: Text(person.name),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      final nextId = (value ?? '').trim();
+                      final person = budgetPersonById(itemPeople, nextId);
+                      setState(() {
+                        if (nextId.isEmpty) {
+                          _budgetItems[index].remove('paidByPersonId');
+                          _budgetItems[index].remove('paidByPersonName');
+                        } else {
+                          _budgetItems[index]['paidByPersonId'] = nextId;
+                          _budgetItems[index]['paidByPersonName'] =
+                              person?.name ?? '';
+                        }
+                      });
+                    },
+                  ),
+                ),
+                SizedBox(
+                  width: 110,
                   child: TextField(
                     controller: TextEditingController(
                         text: _numStr(item['estimated']),
@@ -4334,7 +4550,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         offset: _numStr(item['estimated']).length,
                       ),
                     decoration: const InputDecoration(
-                      hintText: 'Est.',
+                      labelText: 'Estimated',
                       isDense: true,
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(
@@ -4350,10 +4566,8 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                                 double.tryParse(v) ?? 0,
                   ),
                 ),
-                const SizedBox(width: 6),
-                // Actual
                 SizedBox(
-                  width: 90,
+                  width: 110,
                   child: TextField(
                     controller: TextEditingController(
                         text: _numStr(item['actual']),
@@ -4362,7 +4576,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         offset: _numStr(item['actual']).length,
                       ),
                     decoration: const InputDecoration(
-                      hintText: 'Actual',
+                      labelText: 'Actual',
                       isDense: true,
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(
@@ -4378,21 +4592,10 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                                 double.tryParse(v) ?? 0,
                   ),
                 ),
-                const SizedBox(width: 4),
-                IconButton(
-                  icon: const Icon(
-                    Icons.delete_outline,
-                    size: 18,
-                    color: TryprColors.error,
-                  ),
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => setState(() => _budgetItems.removeAt(index)),
-                ),
               ],
             ),
-            // Optional notes row
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: 6),
               child: TextField(
                 controller: TextEditingController(
                     text: (item['notes'] ?? '').toString(),
@@ -4422,12 +4625,225 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     );
   }
 
+  Widget _buildBudgetFinalSummary({
+    required double totalEstimated,
+    required double totalActual,
+  }) {
+    final splitByCount = _resolvedBudgetFinalSplitCount();
+    final currencySymbol = _currencySymbol(_currency);
+    final eachEstimated =
+        splitByCount <= 0 ? 0.0 : totalEstimated / splitByCount;
+    final eachActual = splitByCount <= 0 ? 0.0 : totalActual / splitByCount;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      child: GlassCard(
+        padding: const EdgeInsets.all(12),
+        borderRadius: 10,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Final summary',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Apply the split once here after all expenses are entered.',
+              style: TextStyle(fontSize: 12, color: TryprColors.textTertiary),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Text(
+                  'Split total by',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 10),
+                IconButton(
+                  onPressed:
+                      splitByCount <= 1
+                          ? null
+                          : () => setState(
+                            () => _budgetFinalSplitByCount = splitByCount - 1,
+                          ),
+                  icon: const Icon(Icons.remove_circle_outline),
+                ),
+                Container(
+                  constraints: const BoxConstraints(minWidth: 44),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0x14000000)),
+                  ),
+                  child: Text(
+                    '$splitByCount',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  onPressed:
+                      () => setState(
+                        () => _budgetFinalSplitByCount = splitByCount + 1,
+                      ),
+                  icon: const Icon(Icons.add_circle_outline),
+                ),
+                const Spacer(),
+                Text(
+                  '${_budgetPeople.length} people saved',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: TryprColors.textTertiary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _budgetSummaryPill(
+                  label: 'Each estimated',
+                  value: '$currencySymbol${eachEstimated.toStringAsFixed(2)}',
+                ),
+                _budgetSummaryPill(
+                  label: 'Each actual',
+                  value: '$currencySymbol${eachActual.toStringAsFixed(2)}',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _budgetSummaryPill({required String label, required String value}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x12000000)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: TryprColors.textTertiary,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
   String _numStr(dynamic n) {
     if (n == null) return '';
     if (n is num) {
       return n == 0 ? '' : n.toStringAsFixed(n == n.roundToDouble() ? 0 : 2);
     }
     return n.toString();
+  }
+
+  void _addBudgetPerson() {
+    final name = _budgetPersonCtrl.text.trim();
+    if (name.isEmpty) return;
+
+    final exists = _budgetPeople.any(
+      (person) => person.name.trim().toLowerCase() == name.toLowerCase(),
+    );
+    if (exists) {
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('That person already exists')),
+      );
+      return;
+    }
+
+    setState(() {
+      _budgetPeople = <BudgetPerson>[
+        ..._budgetPeople,
+        BudgetPerson.custom(name),
+      ];
+      _budgetPersonCtrl.clear();
+    });
+  }
+
+  List<Map<String, dynamic>> _normalizedBudgetItems() {
+    return _budgetItems
+        .map((rawItem) {
+          final item = Map<String, dynamic>.from(rawItem);
+          final paidById = (item['paidByPersonId'] ?? '').toString().trim();
+          final fallbackName =
+              (item['paidByPersonName'] ?? '').toString().trim();
+          final paidBy = budgetPersonById(_budgetPeople, paidById);
+
+          item['id'] =
+              (item['id'] ?? '').toString().trim().isNotEmpty
+                  ? item['id'].toString().trim()
+                  : _newId();
+          item['description'] = (item['description'] ?? '').toString();
+          item['category'] = (item['category'] ?? 'Other').toString();
+          item['estimated'] = (item['estimated'] as num?)?.toDouble() ?? 0.0;
+          item['actual'] = (item['actual'] as num?)?.toDouble() ?? 0.0;
+          item['notes'] = (item['notes'] ?? '').toString();
+          item.remove('splitByCount');
+
+          if (paidById.isEmpty) {
+            item.remove('paidByPersonId');
+            item.remove('paidByPersonName');
+          } else {
+            item['paidByPersonId'] = paidById;
+            item['paidByPersonName'] = paidBy?.name ?? fallbackName;
+          }
+
+          return item;
+        })
+        .toList(growable: false);
+  }
+
+  int _parseBudgetFinalSplitCount(dynamic raw) {
+    if (raw is int && raw > 0) return raw;
+    if (raw is num && raw > 0) return raw.round();
+    final parsed = int.tryParse(raw?.toString() ?? '');
+    if (parsed == null || parsed <= 0) return 0;
+    return parsed;
+  }
+
+  int _resolvedBudgetFinalSplitCount() {
+    if (_budgetFinalSplitByCount > 0) return _budgetFinalSplitByCount;
+    if (_budgetPeople.isNotEmpty) return _budgetPeople.length;
+    return 1;
+  }
+
+  List<BudgetPerson> _budgetPeopleForItem(Map<String, dynamic> item) {
+    final selectedId = (item['paidByPersonId'] ?? '').toString().trim();
+    final fallbackName = (item['paidByPersonName'] ?? '').toString().trim();
+    if (selectedId.isEmpty ||
+        budgetPersonById(_budgetPeople, selectedId) != null) {
+      return _budgetPeople;
+    }
+    return <BudgetPerson>[
+      ..._budgetPeople,
+      BudgetPerson.custom(
+        fallbackName.isNotEmpty ? fallbackName : selectedId,
+        id: selectedId,
+      ),
+    ];
   }
 
   // ═════════════════════════════════════════════════════════════════════════════
@@ -4774,6 +5190,40 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     return '${gb.toStringAsFixed(2)} GB';
   }
 
+  Map<String, dynamic>? _normalizedDocumentAttachment(dynamic raw) {
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw.cast<String, dynamic>());
+    final url = (map['url'] ?? '').toString().trim();
+    if (url.isEmpty) return null;
+    return map;
+  }
+
+  List<Map<String, dynamic>> _documentAttachmentsFor(Map<String, dynamic> doc) {
+    final attachments = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    final rawList = doc['attachments'];
+    if (rawList is List) {
+      for (final raw in rawList) {
+        final attachment = _normalizedDocumentAttachment(raw);
+        if (attachment == null) continue;
+        final url = (attachment['url'] ?? '').toString().trim();
+        if (!seen.add(url)) continue;
+        attachments.add(attachment);
+      }
+    }
+
+    final legacy = _normalizedDocumentAttachment(doc['attachment']);
+    if (legacy != null) {
+      final url = (legacy['url'] ?? '').toString().trim();
+      if (seen.add(url)) {
+        attachments.add(legacy);
+      }
+    }
+
+    return attachments;
+  }
+
   Future<Map<String, dynamic>?> _uploadDocumentAttachment() async {
     if (!kIsWeb) {
       if (mounted) {
@@ -4933,14 +5383,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
     final doc = _documents[index];
     final cat = (doc['category'] ?? 'Other').toString();
     final emoji = _docCategoryEmojis[cat] ?? '📄';
-    final attachmentMap =
-        doc['attachment'] is Map
-            ? Map<String, dynamic>.from(doc['attachment'] as Map)
-            : <String, dynamic>{};
-    final attachmentUrl = (attachmentMap['url'] ?? '').toString();
-    final attachmentName =
-        (attachmentMap['fileName'] ?? 'Attachment').toString();
-    final attachmentSize = (attachmentMap['sizeBytes'] as num?)?.toInt() ?? 0;
+    final attachments = _documentAttachmentsFor(doc);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -5010,7 +5453,7 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                 ),
               ),
             ],
-            if (attachmentUrl.isNotEmpty) ...[
+            if (attachments.isNotEmpty) ...[
               const SizedBox(height: 8),
               Container(
                 width: double.infinity,
@@ -5031,59 +5474,107 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            attachmentName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            attachments.length == 1
+                                ? '1 attachment'
+                                : '${attachments.length} attachments',
                             style: const TextStyle(
                               fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w700,
                             ),
-                          ),
-                        ),
-                        Text(
-                          _formatBytes(attachmentSize),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: TryprColors.textTertiary,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        TextButton.icon(
-                          onPressed: () => _openAttachmentUrl(attachmentUrl),
-                          icon: const Icon(Icons.open_in_new, size: 14),
-                          label: const Text('Open'),
-                          style: TextButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
+                    const SizedBox(height: 8),
+                    for (final entry in attachments.asMap().entries) ...[
+                      if (entry.key > 0)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Divider(
+                            height: 1,
+                            color: TryprColors.primary.withValues(alpha: 0.14),
                           ),
                         ),
-                        TextButton.icon(
-                          onPressed:
-                              () => _copyToClipboard(
-                                attachmentUrl,
-                                'Attachment link copied',
+                      Builder(
+                        builder: (context) {
+                          final attachment = entry.value;
+                          final attachmentUrl =
+                              (attachment['url'] ?? '').toString();
+                          final attachmentName =
+                              (attachment['fileName'] ?? 'Attachment')
+                                  .toString();
+                          final attachmentSize =
+                              (attachment['sizeBytes'] as num?)?.toInt() ?? 0;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      attachmentName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    _formatBytes(attachmentSize),
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: TryprColors.textTertiary,
+                                    ),
+                                  ),
+                                ],
                               ),
-                          icon: const Icon(Icons.link, size: 14),
-                          label: const Text('Copy link'),
-                          style: TextButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  TextButton.icon(
+                                    onPressed:
+                                        () => _openAttachmentUrl(attachmentUrl),
+                                    icon: const Icon(
+                                      Icons.open_in_new,
+                                      size: 14,
+                                    ),
+                                    label: const Text('Open'),
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed:
+                                        () => _copyToClipboard(
+                                          attachmentUrl,
+                                          'Attachment link copied',
+                                        ),
+                                    icon: const Icon(Icons.link, size: 14),
+                                    label: const Text('Copy link'),
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -5103,10 +5594,10 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
       text: existing?['content']?.toString() ?? '',
     );
     String category = existing?['category']?.toString() ?? 'Other';
-    Map<String, dynamic>? attachment =
-        existing?['attachment'] is Map
-            ? Map<String, dynamic>.from(existing!['attachment'] as Map)
-            : null;
+    List<Map<String, dynamic>> attachments =
+        existing == null
+            ? <Map<String, dynamic>>[]
+            : _documentAttachmentsFor(existing);
     bool uploading = false;
 
     showDialog(
@@ -5187,46 +5678,110 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Attachment',
-                                style: TextStyle(
+                              Text(
+                                attachments.length == 1
+                                    ? 'Attachment'
+                                    : 'Attachments',
+                                style: const TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w700,
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              if (attachment != null &&
-                                  (attachment!['url'] ?? '')
-                                      .toString()
-                                      .isNotEmpty) ...[
-                                Row(
-                                  children: [
-                                    const Icon(Icons.attach_file, size: 15),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        (attachment!['fileName'] ??
-                                                'Attachment')
-                                            .toString(),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
+                              if (attachments.isNotEmpty)
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxHeight: 160,
+                                  ),
+                                  child: ListView.separated(
+                                    shrinkWrap: true,
+                                    itemCount: attachments.length,
+                                    separatorBuilder:
+                                        (_, __) => const SizedBox(height: 6),
+                                    itemBuilder: (context, attachmentIndex) {
+                                      final attachment =
+                                          attachments[attachmentIndex];
+                                      final fileName =
+                                          (attachment['fileName'] ??
+                                                  'Attachment')
+                                              .toString();
+                                      final sizeBytes =
+                                          (attachment['sizeBytes'] as num?)
+                                              ?.toInt() ??
+                                          0;
+                                      return Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 8,
                                         ),
-                                      ),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.close, size: 16),
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed:
-                                          () => setD(() => attachment = null),
-                                    ),
-                                  ],
-                                ),
-                              ] else
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          border: Border.all(
+                                            color: TryprColors.textTertiary
+                                                .withValues(alpha: 0.16),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.attach_file,
+                                              size: 15,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    fileName,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    _formatBytes(sizeBytes),
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color:
+                                                          TryprColors
+                                                              .textTertiary,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.close,
+                                                size: 16,
+                                              ),
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed:
+                                                  () => setD(
+                                                    () => attachments.removeAt(
+                                                      attachmentIndex,
+                                                    ),
+                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                )
+                              else
                                 const Text(
-                                  'No file attached',
+                                  'No files attached',
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: TryprColors.textTertiary,
@@ -5243,7 +5798,13 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                                             final uploaded =
                                                 await _uploadDocumentAttachment();
                                             if (uploaded != null) {
-                                              setD(() => attachment = uploaded);
+                                              setD(
+                                                () =>
+                                                    attachments = [
+                                                      ...attachments,
+                                                      uploaded,
+                                                    ],
+                                              );
                                             }
                                           } catch (e) {
                                             if (!ctx.mounted) return;
@@ -5273,7 +5834,11 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                                         )
                                         : const Icon(Icons.upload_file),
                                 label: Text(
-                                  uploading ? 'Uploading…' : 'Upload file',
+                                  uploading
+                                      ? 'Uploading…'
+                                      : attachments.isEmpty
+                                      ? 'Upload file'
+                                      : 'Add another file',
                                 ),
                               ),
                             ],
@@ -5306,7 +5871,10 @@ class _TripPlanningScreenState extends State<TripPlanningScreen> {
                           'title': titleCtrl.text.trim(),
                           'content': contentCtrl.text.trim(),
                           'category': category,
-                          if (attachment != null) 'attachment': attachment,
+                          if (attachments.isNotEmpty) ...{
+                            'attachments': attachments,
+                            'attachment': attachments.first,
+                          },
                         };
                         setState(() {
                           if (isEdit &&

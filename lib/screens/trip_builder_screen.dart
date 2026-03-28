@@ -8,11 +8,13 @@ import 'package:trypr/widgets/web_interceptor.dart';
 import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/map_embed.dart';
 import 'package:trypr/widgets/globe_3d_embed.dart';
+import 'package:trypr/widgets/transit_leg_tabs_card.dart';
 import 'package:trypr/services/geocode.dart';
 import 'package:trypr/services/location_display.dart';
 import 'package:trypr/widgets/activity_finder_modal.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:trypr/models/trip_model.dart';
 import 'package:trypr/utils/route_cache.dart';
 import 'package:trypr/widgets/share_trip_dialog.dart';
 
@@ -27,8 +29,16 @@ class _Waypoint {
   final String name;
   final double lat;
   final double lon;
-  int nights = 1;
-  _Waypoint(this.name, this.lat, this.lon);
+  int nights;
+  bool isStop;
+
+  _Waypoint(
+    this.name,
+    this.lat,
+    this.lon, {
+    this.nights = 1,
+    this.isStop = true,
+  });
 }
 
 class _TransportOption {
@@ -37,6 +47,37 @@ class _TransportOption {
   final String emoji;
 
   const _TransportOption(this.mode, this.label, this.emoji);
+}
+
+class _TripTypeOption {
+  final String id;
+  final String label;
+  final String emoji;
+  final String summary;
+
+  const _TripTypeOption(this.id, this.label, this.emoji, this.summary);
+}
+
+class _ExperienceOption {
+  final String id;
+  final String label;
+  final String summary;
+
+  const _ExperienceOption(this.id, this.label, this.summary);
+}
+
+class _DestinationDraft {
+  final String name;
+  final bool isStop;
+  final int nights;
+  final String routingType;
+
+  const _DestinationDraft({
+    required this.name,
+    required this.isStop,
+    required this.nights,
+    required this.routingType,
+  });
 }
 
 String activeRoutingMode = 'car';
@@ -50,14 +91,59 @@ const String _verificationTripStopsDefine = String.fromEnvironment(
 );
 
 const List<_TransportOption> _transportOptions = [
-  _TransportOption('car', 'Car', '🚗'),
-  _TransportOption('plane', 'Plane', '✈️'),
-  _TransportOption('train', 'Train', '🚆'),
+  _TransportOption('car', 'Road', '🚗'),
+  _TransportOption('plane', 'Flight', '✈️'),
+  _TransportOption('train', 'Rail', '🚆'),
   _TransportOption('walk', 'Walk', '🚶'),
   _TransportOption('bike', 'Bike', '🚲'),
-  _TransportOption('portaging', 'Portaging', '🛶'),
+  _TransportOption('portaging', 'Paddle / Portage', '🛶'),
   _TransportOption('hiking', 'Hiking', '🥾'),
-  _TransportOption('gas_stops', 'Gas/Stops', '⛽'),
+  _TransportOption('gas_stops', 'Road Stops', '⛽'),
+];
+
+const List<_TripTypeOption> _tripTypeOptions = [
+  _TripTypeOption(
+    'road',
+    'Road Trip',
+    '🚗',
+    'Drive between towns, parks, hotels, and regular stops.',
+  ),
+  _TripTypeOption(
+    'portage',
+    'Portage / Canoe',
+    '🏕️',
+    'Start at an access point, then plan campsites along water and portage routes.',
+  ),
+  _TripTypeOption(
+    'hiking',
+    'Hiking / Backpacking',
+    '🥾',
+    'Build a trail-first itinerary with campsites and trailheads.',
+  ),
+  _TripTypeOption(
+    'mixed',
+    'Mixed Mode',
+    '🧭',
+    'Combine road, rail, hiking, and backcountry legs in one trip.',
+  ),
+];
+
+const List<_ExperienceOption> _experienceOptions = [
+  _ExperienceOption(
+    'beginner',
+    'Beginner',
+    'First-time or short, lower-commitment routes.',
+  ),
+  _ExperienceOption(
+    'intermediate',
+    'Intermediate',
+    'Some outdoor experience and comfort with longer days.',
+  ),
+  _ExperienceOption(
+    'advanced',
+    'Advanced',
+    'Remote, technical, or high-effort itineraries.',
+  ),
 ];
 
 enum _TripBuilderMapMode { map2d, globe3d }
@@ -75,6 +161,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   Timer? _searchDebounce;
   Timer? _autoSaveTimer;
   Timer? _routeCachePersistDebounce;
+  Timer? _routeLoadingHideTimer;
   double? _roadDistanceKm;
   double? _routeDurationMin;
   User? _currentUser;
@@ -83,23 +170,32 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   String _lastPersistedSignature = '';
   DocumentReference<Map<String, dynamic>>? _lastSavedTripRef;
 
+  String _tripType = 'road';
+  String _experienceLevel = 'beginner';
   String _transportMode = 'car';
   bool _adjustRoute = false;
   List<Map<String, dynamic>> _routeVia = [];
   List<String> _routeInstructions = [];
   List<Map<String, dynamic>> _routeGeometry3d = const [];
+  List<Map<String, dynamic>> _routeSegmentDetails = const [];
 
   List<String> _segmentRoutingTypes = [];
   List<String> _segmentTransportModes = [];
   Map<String, dynamic>? _transitArrivalStop;
+  Map<String, dynamic>? _focusedTransitStep;
+  int _focusedTransitStepRequestId = 0;
   int _activeSegmentIndex = 0;
 
   bool _suspendMapTap = false;
   int _mapTapLockUntilMs = 0;
   bool _didShowOnboarding = false;
   bool _isRenamingTripName = false;
+  bool _isRouteComputing = false;
   _TripBuilderMapMode _mapMode = _TripBuilderMapMode.map2d;
   final FocusNode _renameTripNameFocus = FocusNode();
+  DateTime? _routeLoadingShownAt;
+
+  static const Duration _routeLoadingMinVisible = Duration(milliseconds: 1100);
 
   static const List<String> _hikingSearchKeywords = <String>[
     'trail',
@@ -145,9 +241,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
     final start = _stripTime(DateTime.now());
     final end = start.add(Duration(days: math.max(3, selected.length)));
-    final totalDays = end.difference(start).inDays + 1;
-    final base = totalDays ~/ selected.length;
-    var remainder = totalDays % selected.length;
+    final totalNights = math.max(1, end.difference(start).inDays);
+    final base = totalNights ~/ selected.length;
+    var remainder = totalNights % selected.length;
     for (final wp in selected) {
       wp.nights = math.max(1, base + (remainder > 0 ? 1 : 0));
       if (remainder > 0) remainder--;
@@ -161,10 +257,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       ..addAll(selected);
 
     final segments = math.max(0, _waypoints.length - 1);
-    _segmentRoutingTypes = List<String>.filled(segments, 'calculated');
     _segmentTransportModes = List<String>.filled(
       segments,
       _normalizeTransportMode(_transportMode),
+    );
+    _segmentRoutingTypes = List<String>.generate(
+      segments,
+      (index) => _defaultRoutingTypeForMode(_segmentTransportModes[index]),
     );
     debugPrint(
       'verificationAutoloadTrip enabled stops=${selected.length} tripRange=$_tripRange',
@@ -213,18 +312,26 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       return;
     }
     final last = _waypoints.last;
+    final legMode =
+        _waypoints.length >= 2
+            ? _segmentTransportModeAt(_waypoints.length - 2)
+            : _transportMode;
     final startDate = _tripStartDateYmd();
     final endDate = _tripEndDateYmd();
 
     await showSmartRouteModal(
       context,
-      title: '✨ Suggest Next Stay Stop',
+      title:
+          _isAdventureMode(legMode)
+              ? '✨ Suggest Next Campsite'
+              : '✨ Suggest Next Stay Stop',
       destinationName: formatLocationDisplay(raw: last.name).title,
       lat: last.lat,
       lon: last.lon,
       startDate: startDate,
       endDate: endDate,
       routeFromName: formatLocationDisplay(raw: last.name).title,
+      routeMode: legMode,
       onAddStop: (suggestion) async {
         final coords = await _geocodeSuggestionLatLon(suggestion);
         if (coords == null) {
@@ -243,6 +350,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           raw.isNotEmpty ? raw : 'Suggested stop',
           coords.$1,
           coords.$2,
+          segmentModeOverride: legMode,
+          preferredRoutingType: _defaultRoutingTypeForMode(legMode),
+          preferStop: true,
         );
       },
     );
@@ -266,13 +376,17 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final b = _waypoints[afterIndex + 1];
     final midLat = (a.lat + b.lat) / 2;
     final midLon = (a.lon + b.lon) / 2;
+    final legMode = _segmentTransportModeAt(afterIndex);
 
     final startDate = _tripStartDateYmd();
     final endDate = _tripEndDateYmd();
 
     await showSmartRouteModal(
       context,
-      title: '✨ Find Stay Stop Between',
+      title:
+          _isAdventureMode(legMode)
+              ? '✨ Find Campsite Between'
+              : '✨ Find Stay Stop Between',
       destinationName:
           'Between ${formatLocationDisplay(raw: a.name).title} and ${formatLocationDisplay(raw: b.name).title}',
       lat: midLat,
@@ -281,6 +395,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       endDate: endDate,
       routeFromName: formatLocationDisplay(raw: a.name).title,
       routeToName: formatLocationDisplay(raw: b.name).title,
+      routeMode: legMode,
       onAddStop: (suggestion) async {
         final coords = await _geocodeSuggestionLatLon(suggestion);
         if (coords == null) {
@@ -291,24 +406,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           return;
         }
 
-        // Add as a route via point so route timing updates without changing
-        // overnight nights allocation.
-        if (!mounted) return;
-        setState(() {
-          _adjustRoute = true;
-          _upsertViaPoint(
-            afterIndex: afterIndex,
-            lat: coords.$1,
-            lon: coords.$2,
-          );
-        });
-
-        ScaffoldMessenger.of(context).showTryprSnackBar(
-          SnackBar(
-            content: Text(
-              'Added a stay stop between ${formatLocationDisplay(raw: a.name).title} and ${formatLocationDisplay(raw: b.name).title}',
-            ),
-          ),
+        final pn = (suggestion['name'] ?? '').toString().trim();
+        final addr = (suggestion['address'] ?? '').toString().trim();
+        final raw =
+            [pn, addr].where((s) => s.trim().isNotEmpty).join(', ').trim();
+        await _addWaypointWithPrompt(
+          raw.isNotEmpty ? raw : 'Suggested stop',
+          coords.$1,
+          coords.$2,
+          insertIndex: afterIndex + 1,
+          segmentModeOverride: legMode,
+          preferredRoutingType: _segmentRoutingTypeAt(afterIndex),
+          preferStop: true,
         );
       },
     );
@@ -346,6 +455,309 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     return m == 'hiking' || m == 'portaging';
   }
 
+  String get _normalizedTripType => normalizeTripType(
+    _tripType,
+    transportMode: _transportMode,
+    segmentTransportModes: _segmentTransportModes,
+  );
+
+  bool get _isPortageTrip => _normalizedTripType == 'portage';
+
+  bool get _isHikingTrip => _normalizedTripType == 'hiking';
+
+  bool get _isMixedTrip => _normalizedTripType == 'mixed';
+
+  bool get _isAdventureTrip => isAdventureTripType(_normalizedTripType);
+
+  bool get _allowsCustomMapDrops => !_isPortageTrip;
+
+  String _defaultTransportModeForTripType(String tripType) {
+    switch (normalizeTripType(tripType)) {
+      case 'portage':
+        return 'portaging';
+      case 'hiking':
+        return 'hiking';
+      case 'mixed':
+        return 'car';
+      default:
+        return 'car';
+    }
+  }
+
+  List<_TransportOption> _availableTransportOptionsForTripType(
+    String tripType,
+  ) {
+    final normalized = normalizeTripType(tripType);
+    switch (normalized) {
+      case 'portage':
+        return _transportOptions
+            .where(
+              (opt) =>
+                  opt.mode == 'portaging' ||
+                  opt.mode == 'hiking' ||
+                  opt.mode == 'walk',
+            )
+            .toList(growable: false);
+      case 'hiking':
+        return _transportOptions
+            .where(
+              (opt) =>
+                  opt.mode == 'hiking' ||
+                  opt.mode == 'walk' ||
+                  opt.mode == 'bike',
+            )
+            .toList(growable: false);
+      case 'mixed':
+        return _transportOptions;
+      default:
+        return _transportOptions
+            .where(
+              (opt) =>
+                  opt.mode == 'car' ||
+                  opt.mode == 'plane' ||
+                  opt.mode == 'train' ||
+                  opt.mode == 'walk' ||
+                  opt.mode == 'bike' ||
+                  opt.mode == 'gas_stops',
+            )
+            .toList(growable: false);
+    }
+  }
+
+  String _normalizedExperienceLevel([String? raw]) {
+    final fallback = raw ?? _experienceLevel;
+    final normalized = normalizeTripExperienceLevel(fallback);
+    return normalized.isEmpty ? 'beginner' : normalized;
+  }
+
+  String _tripTypeSummary([String? raw]) {
+    final normalized = normalizeTripType(raw ?? _tripType);
+    for (final option in _tripTypeOptions) {
+      if (option.id == normalized) return option.summary;
+    }
+    return 'Plan your route with the right transport and overnight context from the start.';
+  }
+
+  String _tripTypeSearchHint() {
+    if (_isPortageTrip && _waypoints.isEmpty) {
+      return 'Search access points, put-ins & canoe launches';
+    }
+    if (_isPortageTrip) {
+      return 'Search campsites, lakes & portages';
+    }
+    if (_isHikingTrip) {
+      return 'Search trailheads, campsites & trails';
+    }
+    if (_isMixedTrip) {
+      return 'Search locations, campsites & transfer points';
+    }
+    return 'Search locations';
+  }
+
+  String _tripTypeGuideTitle() {
+    if (_isPortageTrip && _waypoints.isEmpty) {
+      return 'Step 1: Choose your access point';
+    }
+    if (_isPortageTrip) {
+      return 'Step 2: Add reachable campsites';
+    }
+    if (_isHikingTrip) {
+      return 'Trail-first trip planning';
+    }
+    if (_isMixedTrip) {
+      return 'Blend modes as needed';
+    }
+    return 'Add towns, parks, and stays';
+  }
+
+  String _tripTypeGuideBody() {
+    if (_isPortageTrip && _waypoints.isEmpty) {
+      return 'Portage trips usually begin at an access point or boat launch. Try Brent Access Point, Shall Lake, or Magnetawan Lake, or click a blue access marker on the map.';
+    }
+    if (_isPortageTrip) {
+      return 'Now add mapped campsites reachable from your access point, or use Suggested to get the next realistic stay stop. You can also click campsite and access-point markers on the map.';
+    }
+    if (_isHikingTrip) {
+      return 'Start with a trailhead or campsite, then add only the overnight stops that should use your trip nights.';
+    }
+    if (_isMixedTrip) {
+      return 'Pick the main trip type here, then switch individual legs below when a segment should be rail, road, or backcountry.';
+    }
+    return 'Search naturally for towns, parks, and addresses, or click the map to add a custom stop.';
+  }
+
+  String _modeSelectionHelperText() {
+    if (_isPortageTrip) {
+      return 'Portage trips default to waterway routing. Change a leg to Hiking if it should follow a trail instead.';
+    }
+    if (_isHikingTrip) {
+      return 'Hiking trips default to trail routing. Change the selected leg only if one segment needs a different surface.';
+    }
+    if (_isMixedTrip) {
+      return 'Top pills set the selected leg. Use Mixed Mode when one itinerary genuinely combines road, rail, and backcountry travel.';
+    }
+    return 'Top pills only set the selected leg. Tap a destination card to change which leg is active.';
+  }
+
+  String _currentDifficultyLabel() {
+    return inferTripDifficultyLabel(
+      tripType: _normalizedTripType,
+      experienceLevel: _experienceLevel,
+      distanceKm: _roadDistanceKm ?? _totalKm,
+      estimatedDurationMin: _routeDurationMin,
+      stopCount: _waypoints.length,
+      segmentTransportModes: _segmentTransportModes,
+    );
+  }
+
+  List<String> _currentRequiredSkills() {
+    return inferTripRequiredSkills(
+      tripType: _normalizedTripType,
+      segmentTransportModes: _segmentTransportModes,
+    );
+  }
+
+  bool get _isPortageAccessSearchStage => _isPortageTrip && _waypoints.isEmpty;
+
+  bool _looksLikePortageAccessPointResult(Map<String, dynamic> result) {
+    final text = _searchResultText(result);
+    if (text.isEmpty) return false;
+    const keywords = <String>[
+      'access point',
+      'put in',
+      'put-in',
+      'take out',
+      'take-out',
+      'boat launch',
+      'canoe launch',
+      'landing',
+      'boat ramp',
+      'dock',
+      'launch',
+    ];
+    return keywords.any(text.contains);
+  }
+
+  String _portageAccessBiasedQuery(String q) {
+    final trimmed = q.trim();
+    if (trimmed.isEmpty) return trimmed;
+    final lowered = trimmed.toLowerCase();
+    if (_looksLikePortageAccessPointResult({
+      'name': lowered,
+      'display_name': lowered,
+    })) {
+      return trimmed;
+    }
+    return '$trimmed access point canoe launch boat launch put in landing';
+  }
+
+  List<Map<String, dynamic>> _filterPortageAccessResults(
+    List<Map<String, dynamic>> results,
+  ) {
+    if (results.isEmpty) return const [];
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final result in results) {
+      if (!_looksLikePortageAccessPointResult(result)) continue;
+      final lat =
+          (result['lat'] is num)
+              ? (result['lat'] as num).toDouble()
+              : double.tryParse(result['lat']?.toString() ?? '');
+      final lon =
+          (result['lon'] is num)
+              ? (result['lon'] as num).toDouble()
+              : double.tryParse(result['lon']?.toString() ?? '');
+      if (lat == null || lon == null || !lat.isFinite || !lon.isFinite) {
+        continue;
+      }
+      final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
+      if (!seen.add(key)) continue;
+      out.add(result);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
+  ({String label, IconData icon, Color color}) _searchResultCategory(
+    Map<String, dynamic> result,
+  ) {
+    final text = _searchResultText(result);
+    if (_looksLikePortageAccessPointResult(result)) {
+      return (
+        label: 'Access point',
+        icon: Icons.directions_boat_filled_outlined,
+        color: const Color(0xFF1565C0),
+      );
+    }
+    if (text.contains('campsite') ||
+        text.contains('campground') ||
+        text.contains('camp site')) {
+      return (
+        label: 'Campsite',
+        icon: Icons.forest_outlined,
+        color: const Color(0xFF2E7D32),
+      );
+    }
+    if (text.contains('portage') ||
+        text.contains('trail') ||
+        text.contains('trailhead')) {
+      return (
+        label: 'Trail / portage',
+        icon: Icons.alt_route,
+        color: const Color(0xFF6D4C41),
+      );
+    }
+    return (
+      label: 'Location',
+      icon: Icons.place_outlined,
+      color: Colors.deepOrange.shade400,
+    );
+  }
+
+  String _adventureDifficultyForDistance(double? distanceKm, String mode) {
+    final km = distanceKm ?? 0.0;
+    final normalizedMode = _normalizeTransportMode(mode);
+    if (normalizedMode == 'portaging') {
+      if (km >= 10) return 'Advanced';
+      if (km >= 5) return 'Intermediate';
+      return 'Beginner-friendly';
+    }
+    if (normalizedMode == 'hiking') {
+      if (km >= 16) return 'Advanced';
+      if (km >= 8) return 'Intermediate';
+      return 'Beginner-friendly';
+    }
+    return km >= 12 ? 'Intermediate' : 'Beginner-friendly';
+  }
+
+  String _adventureEstimatedTimeForDistance(double? distanceKm, String mode) {
+    final km = distanceKm ?? 0.0;
+    final normalizedMode = _normalizeTransportMode(mode);
+    final speedKmh = normalizedMode == 'portaging' ? 3.2 : 4.2;
+    if (km <= 0) return 'Route time updates after you add it';
+    final hours = km / speedKmh;
+    if (hours < 1) {
+      final minutes = math.max(20, (hours * 60).round());
+      return '$minutes min';
+    }
+    final wholeHours = hours.floor();
+    final minutes = ((hours - wholeHours) * 60).round();
+    if (minutes == 0) return '$wholeHours hr';
+    return '$wholeHours hr ${minutes.toString().padLeft(2, '0')} min';
+  }
+
+  String? _adventureWarningForDistance(double? distanceKm, String mode) {
+    final km = distanceKm ?? 0.0;
+    final normalizedMode = _normalizeTransportMode(mode);
+    if (normalizedMode == 'portaging' && km >= 10) {
+      return 'This is a long backcountry leg. Make sure your group is comfortable with a full day of paddling and portaging.';
+    }
+    if (normalizedMode == 'hiking' && km >= 18) {
+      return 'This is a long hiking leg. Double-check daylight, pack weight, and campsite spacing before saving.';
+    }
+    return null;
+  }
+
   String _normalizeTransportMode(String raw) {
     var m = raw.trim().toLowerCase();
     if (m == 'driving') m = 'car';
@@ -364,6 +776,101 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       if (opt.mode == m) return m;
     }
     return 'car';
+  }
+
+  String _defaultRoutingTypeForMode(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
+  String _transportLabelForMode(String mode) {
+    final normalized = _normalizeTransportMode(mode);
+    for (final option in _transportOptions) {
+      if (option.mode == normalized) return option.label;
+    }
+    return 'Route';
+  }
+
+  String _normalizeSegmentRoutingType(String raw, {String? mode}) {
+    final normalizedMode = _normalizeTransportMode(mode ?? _transportMode);
+    final value = raw.trim().toLowerCase();
+    if (value == 'direct') return 'direct';
+    switch (normalizedMode) {
+      case 'hiking':
+        return 'trails';
+      case 'portaging':
+        return 'waterway';
+      default:
+        return 'calculated';
+    }
+  }
+
+  String _segmentRoutingTypeAt(int segmentIndex) {
+    final mode = _segmentTransportModeAt(segmentIndex);
+    if (segmentIndex < 0 || segmentIndex >= _segmentRoutingTypes.length) {
+      return _defaultRoutingTypeForMode(mode);
+    }
+    return _normalizeSegmentRoutingType(
+      _segmentRoutingTypes[segmentIndex],
+      mode: mode,
+    );
+  }
+
+  String _primaryRoutingLabelForMode(String mode) {
+    switch (_normalizeTransportMode(mode)) {
+      case 'hiking':
+        return 'Trail';
+      case 'portaging':
+        return 'Waterway';
+      default:
+        return 'Calculated';
+    }
+  }
+
+  String _routingDescriptionForSelection(String routingType, String mode) {
+    final normalizedType = _normalizeSegmentRoutingType(
+      routingType,
+      mode: mode,
+    );
+    final normalizedMode = _normalizeTransportMode(mode);
+    if (normalizedType == 'direct') {
+      return 'Straight-line preview. Fast for rough planning, but it ignores mapped routes.';
+    }
+    switch (normalizedMode) {
+      case 'hiking':
+        return 'Follows mapped trails and trail connectors for a more realistic hiking line.';
+      case 'portaging':
+        return 'Follows mapped waterways and portage links instead of a crow-flies shortcut.';
+      default:
+        return 'Uses the normal routed path for this leg instead of a straight line.';
+    }
+  }
+
+  String _defaultMapTapWaypointName() {
+    final selectedSegment = _selectedSegmentIndex;
+    final mode =
+        selectedSegment == null
+            ? _transportMode
+            : _segmentTransportModeAt(selectedSegment);
+    return _isAdventureMode(mode) ? 'Campsite' : 'Dropped Pin';
+  }
+
+  String _modeForWaypointInsert({int? insertIndex, String? override}) {
+    if (override != null && override.trim().isNotEmpty) {
+      return _normalizeTransportMode(override);
+    }
+    if (insertIndex != null &&
+        insertIndex > 0 &&
+        insertIndex < _waypoints.length) {
+      return _segmentTransportModeAt(insertIndex - 1);
+    }
+    return _normalizeTransportMode(_transportMode);
   }
 
   String _segmentTransportModeAt(int segmentIndex) {
@@ -458,6 +965,99 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     return false;
   }
 
+  List<Map<String, dynamic>> _legacyTransitStepsFromInstructions() {
+    return _routeInstructions
+        .map((line) {
+          final text = line.trim();
+          if (text.isEmpty) return const <String, dynamic>{};
+          final lower = text.toLowerCase();
+          if (lower.startsWith('walk')) {
+            return {'mode': 'walking', 'tabLabel': 'Walk', 'headline': text};
+          }
+          if (lower.startsWith('bike')) {
+            return {'mode': 'biking', 'tabLabel': 'Bike', 'headline': text};
+          }
+          return {'mode': 'transit', 'tabLabel': 'Train', 'headline': text};
+        })
+        .where((step) => step.isNotEmpty)
+        .take(6)
+        .toList(growable: false);
+  }
+
+  Map<String, dynamic>? _transitSegmentDetailAt(int segmentIndex) {
+    for (final detail in _routeSegmentDetails) {
+      final index = (detail['segmentIndex'] as num?)?.toInt();
+      final mode = _normalizeTransportMode((detail['mode'] ?? '').toString());
+      final steps = detail['steps'];
+      if (index == segmentIndex && mode == 'train' && steps is List) {
+        return detail;
+      }
+    }
+
+    final transitSegments = <int>[];
+    for (var i = 0; i < _waypoints.length - 1; i++) {
+      if (_segmentTransportModeAt(i) == 'train') {
+        transitSegments.add(i);
+      }
+    }
+    if (transitSegments.length == 1 &&
+        transitSegments.first == segmentIndex &&
+        _routeInstructions.isNotEmpty) {
+      return {
+        'segmentIndex': segmentIndex,
+        'mode': 'train',
+        'steps': _legacyTransitStepsFromInstructions(),
+        if (_transitArrivalStop != null) 'arrivalStop': _transitArrivalStop,
+      };
+    }
+    return null;
+  }
+
+  Widget _buildTransitLegCard(int segmentIndex) {
+    if (segmentIndex < 0 || segmentIndex + 1 >= _waypoints.length) {
+      return const SizedBox.shrink();
+    }
+    if (_segmentTransportModeAt(segmentIndex) != 'train') {
+      return const SizedBox.shrink();
+    }
+    final detail = _transitSegmentDetailAt(segmentIndex);
+    if (detail == null) return const SizedBox.shrink();
+    final steps =
+        (detail['steps'] as List?)
+            ?.whereType<Map>()
+            .map(
+              (step) => Map<String, dynamic>.from(step.cast<String, dynamic>()),
+            )
+            .toList(growable: false) ??
+        const <Map<String, dynamic>>[];
+    if (steps.isEmpty) return const SizedBox.shrink();
+    final arrivalStop = detail['arrivalStop'];
+    final arrivalName =
+        arrivalStop is Map
+            ? (arrivalStop['name'] ?? arrivalStop['label'] ?? '').toString()
+            : '';
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 34),
+      child: TransitLegTabsCard(
+        originName: _waypoints[segmentIndex].name,
+        destinationName: _waypoints[segmentIndex + 1].name,
+        arrivalStopName: arrivalName,
+        steps: steps,
+        onStepSelected: _focusTransitStepOnMap,
+      ),
+    );
+  }
+
+  void _focusTransitStepOnMap(Map<String, dynamic> step) {
+    setState(() {
+      _focusedTransitStep = {
+        ...step,
+        'requestId': ++_focusedTransitStepRequestId,
+      };
+    });
+  }
+
   void _ensureSegmentRoutingTypesLength() {
     final segments = math.max(0, _waypoints.length - 1);
     if (_segmentRoutingTypes.length == segments) return;
@@ -468,9 +1068,29 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       } else {
         _segmentRoutingTypes = [
           ..._segmentRoutingTypes,
-          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
+          ...List<String>.generate(segments - _segmentRoutingTypes.length, (
+            offset,
+          ) {
+            final segmentIndex = _segmentRoutingTypes.length + offset;
+            final mode =
+                segmentIndex < _segmentTransportModes.length
+                    ? _segmentTransportModes[segmentIndex]
+                    : _transportMode;
+            return _defaultRoutingTypeForMode(mode);
+          }),
         ];
       }
+      _segmentRoutingTypes = List<String>.generate(segments, (index) {
+        final raw =
+            index < _segmentRoutingTypes.length
+                ? _segmentRoutingTypes[index]
+                : '';
+        final mode =
+            index < _segmentTransportModes.length
+                ? _segmentTransportModes[index]
+                : _transportMode;
+        return _normalizeSegmentRoutingType(raw, mode: mode);
+      });
     });
   }
 
@@ -526,6 +1146,17 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   Future<void> _addDroppedPinFromMapTap(double lat, double lon) async {
     if (_isMapTapBlocked) return;
+    if (_isPortageTrip) {
+      if (!mounted) return;
+      final message =
+          _isPortageAccessSearchStage
+              ? 'Portage trips must start from a mapped access point. Click a blue access marker or search one by name.'
+              : 'Portage trips only allow mapped campsites and access points. Click a campsite or access marker instead.';
+      ScaffoldMessenger.of(
+        context,
+      ).showTryprSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
     if (_tripRange == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showTryprSnackBar(
@@ -534,7 +1165,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       return;
     }
 
-    String name = 'Dropped Pin';
+    String name = _defaultMapTapWaypointName();
     try {
       final resolved = await reverseNominatim(lat, lon);
       if (resolved != null && resolved.trim().isNotEmpty) {
@@ -546,23 +1177,485 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     await _addWaypointWithPrompt(name, lat, lon);
   }
 
+  void _handleRouteError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _roadDistanceKm = null;
+      _routeDurationMin = null;
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showTryprSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _handleRouteComputingChanged(bool isComputing) {
+    if (!mounted) return;
+
+    if (isComputing) {
+      _routeLoadingHideTimer?.cancel();
+      _routeLoadingHideTimer = null;
+      _routeLoadingShownAt = DateTime.now();
+      if (_isRouteComputing) return;
+      setState(() => _isRouteComputing = true);
+      return;
+    }
+
+    if (!_isRouteComputing) {
+      _routeLoadingShownAt = null;
+      return;
+    }
+
+    final shownAt = _routeLoadingShownAt;
+    final elapsed =
+        shownAt == null
+            ? _routeLoadingMinVisible
+            : DateTime.now().difference(shownAt);
+    final remaining = _routeLoadingMinVisible - elapsed;
+    if (remaining > Duration.zero) {
+      _routeLoadingHideTimer?.cancel();
+      _routeLoadingHideTimer = Timer(remaining, () {
+        if (!mounted) return;
+        _routeLoadingHideTimer = null;
+        _routeLoadingShownAt = null;
+        if (_isRouteComputing) {
+          setState(() => _isRouteComputing = false);
+        }
+      });
+      return;
+    }
+
+    _routeLoadingHideTimer?.cancel();
+    _routeLoadingHideTimer = null;
+    _routeLoadingShownAt = null;
+    setState(() => _isRouteComputing = false);
+  }
+
+  void _showMapHintSnackBar() {
+    final message =
+        _isPortageAccessSearchStage
+            ? 'Tip: start your portage trip by clicking a blue access-point marker or searching one by name.'
+            : _isPortageTrip
+            ? 'Tip: portage trips only allow mapped campsites and access points. Click those markers on the map or search for them by name.'
+            : _isAdventureTrip
+            ? 'Tip: click the map to add a campsite, trail stop, or custom backcountry point.'
+            : 'Tip: click the map to drop a custom stop anywhere on your route.';
+    ScaffoldMessenger.of(
+      context,
+    ).showTryprSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Widget _buildPlannerGuideCard() {
+    final steps =
+        _isPortageTrip
+            ? <({String title, String detail, bool active, bool done})>[
+              (
+                title: 'Pick an access point',
+                detail:
+                    'Start from a real launch, put-in, or blue access marker.',
+                active: _waypoints.isEmpty,
+                done: _waypoints.isNotEmpty,
+              ),
+              (
+                title: 'Add reachable campsites',
+                detail:
+                    'Stay on mapped waterways and portage links when building the route.',
+                active: _waypoints.isNotEmpty && _waypoints.length < 2,
+                done: _waypoints.length >= 2,
+              ),
+              (
+                title: 'Tune each leg',
+                detail:
+                    'Only switch a leg away from water when it should truly become hiking.',
+                active: _waypoints.length >= 2,
+                done: false,
+              ),
+            ]
+            : _isHikingTrip
+            ? <({String title, String detail, bool active, bool done})>[
+              (
+                title: 'Start at a trailhead',
+                detail:
+                    'Choose the first trail access or campsite anchor for the trip.',
+                active: _waypoints.isEmpty,
+                done: _waypoints.isNotEmpty,
+              ),
+              (
+                title: 'Stack overnight stops',
+                detail:
+                    'Add only the campsites that should count toward trip nights.',
+                active: _waypoints.isNotEmpty && _waypoints.length < 2,
+                done: _waypoints.length >= 2,
+              ),
+              (
+                title: 'Refine the route',
+                detail:
+                    'Adjust leg mode and difficulty once the basic overnight flow exists.',
+                active: _waypoints.length >= 2,
+                done: false,
+              ),
+            ]
+            : _isMixedTrip
+            ? <({String title, String detail, bool active, bool done})>[
+              (
+                title: 'Drop in the anchors',
+                detail: 'Start with the major places that define the trip.',
+                active: _waypoints.isEmpty,
+                done: _waypoints.isNotEmpty,
+              ),
+              (
+                title: 'Switch leg modes',
+                detail:
+                    'Set the segments that should be rail, road, or backcountry.',
+                active: _waypoints.isNotEmpty && _waypoints.length < 2,
+                done: _waypoints.length >= 2,
+              ),
+              (
+                title: 'Polish and save',
+                detail:
+                    'Check nights, tune routing, then save or share the itinerary.',
+                active: _waypoints.length >= 2,
+                done: false,
+              ),
+            ]
+            : <({String title, String detail, bool active, bool done})>[
+              (
+                title: 'Add the first stop',
+                detail:
+                    'Search naturally for towns, parks, hotels, and addresses.',
+                active: _waypoints.isEmpty,
+                done: _waypoints.isNotEmpty,
+              ),
+              (
+                title: 'Chain the route',
+                detail:
+                    'Stack more destinations to build the full road trip flow.',
+                active: _waypoints.isNotEmpty && _waypoints.length < 2,
+                done: _waypoints.length >= 2,
+              ),
+              (
+                title: 'Adjust and save',
+                detail:
+                    'Fine-tune legs, route shape, and trip nights before saving.',
+                active: _waypoints.length >= 2,
+                done: false,
+              ),
+            ];
+    final activeStep =
+        steps.indexWhere((step) => step.active) >= 0
+            ? steps.indexWhere((step) => step.active) + 1
+            : steps.length;
+
+    Widget buildStep(
+      int index,
+      ({String title, String detail, bool active, bool done}) step,
+    ) {
+      final accent =
+          step.active
+              ? const Color(0xFF0F766E)
+              : step.done
+              ? const Color(0xFF0284C7)
+              : const Color(0xFF94A3B8);
+      final badgeBg =
+          step.active
+              ? const Color(0xFFCCFBF1)
+              : step.done
+              ? const Color(0xFFE0F2FE)
+              : const Color(0xFFFFFFFF);
+      final titleColor =
+          step.active ? const Color(0xFF0F172A) : const Color(0xFF334155);
+
+      return Padding(
+        padding: EdgeInsets.only(bottom: index == steps.length - 1 ? 0 : 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: badgeBg,
+                shape: BoxShape.circle,
+                border: Border.all(color: accent.withValues(alpha: 0.22)),
+              ),
+              child: Center(
+                child:
+                    step.done
+                        ? Icon(Icons.check, size: 14, color: accent)
+                        : Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                            color: accent,
+                          ),
+                        ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    step.title,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w800,
+                      color: titleColor,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    step.detail,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Color(0xFF475569),
+                      height: 1.32,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFF0FDFA), Color(0xFFF8FAFC)],
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0x33118A7E)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFCCFBF1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.alt_route,
+                  size: 17,
+                  color: Color(0xFF0F766E),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Build Flow',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF0F766E),
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _tripTypeGuideTitle(),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                '$activeStep/${steps.length}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0F766E),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _tripTypeGuideBody(),
+            style: const TextStyle(
+              fontSize: 11.5,
+              color: Color(0xFF475569),
+              height: 1.32,
+            ),
+          ),
+          const SizedBox(height: 12),
+          for (var i = 0; i < steps.length; i++) buildStep(i, steps[i]),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF0F766E),
+                  backgroundColor: Colors.white.withValues(alpha: 0.86),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                onPressed: () {
+                  if (_waypoints.isEmpty) {
+                    final message =
+                        _isPortageAccessSearchStage
+                            ? 'Choose your access point first, then Suggested will recommend the next campsite.'
+                            : 'Add your first destination first, then Suggested can recommend the next stop.';
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showTryprSnackBar(SnackBar(content: Text(message)));
+                    return;
+                  }
+                  _smartSuggestNextStop();
+                },
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: Text(
+                  _isAdventureTrip ? 'Suggested next' : 'Suggested stop',
+                ),
+              ),
+              if (_allowsCustomMapDrops)
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF0F766E),
+                    backgroundColor: Colors.white.withValues(alpha: 0.7),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  onPressed: _showMapHintSnackBar,
+                  icon: const Icon(Icons.touch_app_outlined, size: 16),
+                  label: const Text('Map tip'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   int get _totalTripDays {
     final r = _tripRange;
     if (r == null) return 0;
     return r.end.difference(r.start).inDays + 1;
   }
 
+  int get _totalTripNights {
+    final r = _tripRange;
+    if (r == null) return 0;
+    return math.max(0, r.end.difference(r.start).inDays);
+  }
+
+  bool _canEditWaypointRole(int waypointIndex) {
+    return waypointIndex >= 0 && waypointIndex < _waypoints.length;
+  }
+
   bool _countsTowardTripDays(int waypointIndex) {
-    if (waypointIndex < 0 || waypointIndex >= _waypoints.length) return false;
-    final count = _waypoints.length;
-    if (count <= 1) return false;
-    return waypointIndex > 0 && waypointIndex < count - 1;
+    if (!_canEditWaypointRole(waypointIndex)) return false;
+    return _waypoints[waypointIndex].isStop;
   }
 
   int _effectiveWaypointNights(int waypointIndex) {
     if (!_countsTowardTripDays(waypointIndex)) return 0;
     final raw = _waypoints[waypointIndex].nights;
     return raw <= 0 ? 1 : raw;
+  }
+
+  int _maxNightsForWaypoint(int waypointIndex) {
+    if (_tripRange == null) {
+      final rawNights =
+          waypointIndex >= 0 && waypointIndex < _waypoints.length
+              ? _waypoints[waypointIndex].nights
+              : 1;
+      return math.max(1, rawNights);
+    }
+    final totalNights = _totalTripNights;
+    if (totalNights <= 0) return 1;
+    final effectiveNights = _effectiveWaypointNights(waypointIndex);
+    return math.max(1, totalNights - (_assignedNights - effectiveNights));
+  }
+
+  void _setWaypointRole(int waypointIndex, bool isStop) {
+    if (!_canEditWaypointRole(waypointIndex)) return;
+    if (isStop && _tripRange != null && _totalTripNights <= 0) {
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(
+          content: Text(
+            'Add at least one trip night before creating stay stops',
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      final waypoint = _waypoints[waypointIndex];
+      waypoint.isStop = isStop;
+      if (isStop) {
+        final maxNights = _maxNightsForWaypoint(waypointIndex);
+        waypoint.nights = math.max(1, math.min(waypoint.nights, maxNights));
+      }
+    });
+  }
+
+  void _setSegmentRoutingType(int segmentIndex, String routingType) {
+    setState(() {
+      final segments = math.max(0, _waypoints.length - 1);
+      if (_segmentRoutingTypes.length > segments) {
+        _segmentRoutingTypes = _segmentRoutingTypes.take(segments).toList();
+      } else if (_segmentRoutingTypes.length < segments) {
+        _segmentRoutingTypes = [
+          ..._segmentRoutingTypes,
+          ...List<String>.generate(segments - _segmentRoutingTypes.length, (
+            offset,
+          ) {
+            final index = _segmentRoutingTypes.length + offset;
+            final mode =
+                index < _segmentTransportModes.length
+                    ? _segmentTransportModes[index]
+                    : _transportMode;
+            return _defaultRoutingTypeForMode(mode);
+          }),
+        ];
+      }
+      if (segmentIndex < 0 || segmentIndex >= _segmentRoutingTypes.length) {
+        return;
+      }
+      _segmentRoutingTypes[segmentIndex] = _normalizeSegmentRoutingType(
+        routingType,
+        mode: _segmentTransportModeAt(segmentIndex),
+      );
+      _resetComputedRouteState();
+    });
+    _scheduleRouteCachePersist();
+  }
+
+  bool _isWaypointOnly(int waypointIndex) {
+    return _canEditWaypointRole(waypointIndex) &&
+        !_countsTowardTripDays(waypointIndex);
   }
 
   int _offsetDaysBeforeWaypoint(int waypointIndex) {
@@ -582,20 +1675,504 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   }
 
   int get _remainingNights {
-    final total = _totalTripDays;
+    final total = _totalTripNights;
     if (total == 0) return 0;
     return total - _assignedNights;
   }
 
   bool get _hasValidAllocation {
-    final total = _totalTripDays;
+    final total = _totalTripNights;
     if (total == 0) return true;
     return _assignedNights == total;
   }
 
   bool get _hasTripBasics {
-    return _tripNameCtrl.text.trim().isNotEmpty && _tripRange != null;
+    return _tripNameValidationMessage(_tripNameCtrl.text.trim()) == null &&
+        _tripRange != null;
   }
+
+  bool get _hasStayStops {
+    for (var i = 0; i < _waypoints.length; i++) {
+      if (_countsTowardTripDays(i)) return true;
+    }
+    return false;
+  }
+
+  bool _isPlaceholderWaypointName(String name) {
+    final normalized = name.trim().toLowerCase();
+    return normalized.isEmpty || normalized == 'dropped pin';
+  }
+
+  bool _looksLikeTestTripName(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    if (RegExp(
+      r'^(test|testing|demo|sample|untitled|new trip|trip|my trip|asdf|qwer|zxcv)$',
+    ).hasMatch(normalized)) {
+      return true;
+    }
+
+    final tokens = normalized
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    if (tokens.length != 1) return false;
+
+    final token = tokens.first;
+    if (RegExp(r'\d').hasMatch(token) && token.length <= 12) {
+      return true;
+    }
+
+    final lettersOnly = token.replaceAll(RegExp(r'[^a-z]'), '');
+    if (lettersOnly.length < 5) return false;
+
+    if (!RegExp(r'[aeiouy]').hasMatch(lettersOnly)) {
+      return true;
+    }
+
+    var longestConsonantRun = 0;
+    var currentRun = 0;
+    for (final rune in lettersOnly.runes) {
+      final char = String.fromCharCode(rune);
+      if ('aeiouy'.contains(char)) {
+        currentRun = 0;
+      } else {
+        currentRun++;
+        if (currentRun > longestConsonantRun) {
+          longestConsonantRun = currentRun;
+        }
+      }
+    }
+    return lettersOnly.length >= 7 && longestConsonantRun >= 5;
+  }
+
+  String? _tripNameValidationMessage(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'Trip name is required.';
+    if (trimmed.length < 3) {
+      return 'Trip name must be at least 3 characters.';
+    }
+    if (_looksLikeTestTripName(trimmed)) {
+      return 'Use a more descriptive trip name before saving.';
+    }
+    return null;
+  }
+
+  String? _waypointValidationMessage() {
+    for (final waypoint in _waypoints) {
+      if (_isPlaceholderWaypointName(waypoint.name)) {
+        return 'Please name all your stops before saving.';
+      }
+    }
+    return null;
+  }
+
+  String? _tripValidationMessage() {
+    final nameMessage = _tripNameValidationMessage(_tripNameCtrl.text);
+    if (nameMessage != null) return nameMessage;
+    return _waypointValidationMessage();
+  }
+
+  Future<_DestinationDraft?> _showDestinationModal({
+    required String initialName,
+    required double lat,
+    required double lon,
+    required String segmentMode,
+    String? preferredRoutingType,
+    Map<String, dynamic>? campsiteData,
+    bool preferStop = true,
+    String confirmLabel = 'Add to Trip',
+  }) async {
+    if (!mounted || _tripRange == null) return null;
+
+    final normalizedMode = _normalizeTransportMode(segmentMode);
+    final suggestedName =
+        _isPlaceholderWaypointName(initialName) ? '' : initialName.trim();
+    var draftName = suggestedName;
+    final details =
+        campsiteData == null
+            ? <String, dynamic>{}
+            : Map<String, dynamic>.from(campsiteData);
+    final primaryRoutingType = _defaultRoutingTypeForMode(normalizedMode);
+    final totalTripNights = _totalTripNights;
+    final availableNights = _remainingNights;
+    final canCreateStayStop = totalTripNights > 0 && availableNights > 0;
+    final distanceKm = (details['distanceKmFromRoute'] as num?)?.toDouble();
+    final factRows = <MapEntry<String, String>>[];
+    final routeDifficulty =
+        (details['routeDifficulty'] ?? details['difficulty'])
+            ?.toString()
+            .trim() ??
+        '';
+    final estimatedTime = (details['estimatedTime'] ?? '').toString().trim();
+    final accessibleFrom = (details['accessibleFrom'] ?? '').toString().trim();
+    final routeWarning = (details['warning'] ?? '').toString().trim();
+
+    void addFact(String label, dynamic raw) {
+      final value = raw?.toString().trim() ?? '';
+      if (value.isEmpty) return;
+      factRows.add(MapEntry<String, String>(label, value));
+    }
+
+    addFact('Mode', _transportLabelForMode(normalizedMode));
+    if (distanceKm != null && distanceKm.isFinite) {
+      addFact('From route', '${distanceKm.toStringAsFixed(1)} km');
+    }
+    addFact(
+      'Area',
+      details['lakeName'] ??
+          details['lake'] ??
+          details['waterBody'] ??
+          details['park'] ??
+          details['region'],
+    );
+    addFact('Access', details['access']);
+    addFact('Capacity', details['capacity']);
+    addFact('Amenities', details['amenities']);
+    addFact('Operator', details['operator']);
+    addFact('Accessible from', accessibleFrom);
+    addFact('Route fit', routeDifficulty);
+    addFact('Est. time', estimatedTime);
+
+    var isStop = preferStop && canCreateStayStop;
+    var nights = canCreateStayStop ? 1 : 0;
+    var routingType = _normalizeSegmentRoutingType(
+      preferredRoutingType ?? primaryRoutingType,
+      mode: normalizedMode,
+    );
+
+    return _withMapTapSuspended(
+      () => showDialog<_DestinationDraft>(
+        context: context,
+        builder: (ctx) {
+          final primaryRoutingLabel = _primaryRoutingLabelForMode(
+            normalizedMode,
+          );
+          return StatefulBuilder(
+            builder: (ctx2, setState2) {
+              final trimmedName = draftName.trim();
+              final nameError =
+                  _isPlaceholderWaypointName(trimmedName)
+                      ? 'Enter a custom stop name.'
+                      : null;
+              final previewRemaining = availableNights - (isStop ? nights : 0);
+              final previewColor =
+                  previewRemaining < 0
+                      ? Colors.red.shade700
+                      : previewRemaining == 0
+                      ? const Color(0xFF2E7D32)
+                      : Colors.black54;
+
+              return AlertDialog(
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      details.isNotEmpty
+                          ? 'Add campsite to trip'
+                          : 'Add destination',
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Choose the stop type, nights, and routing in one place.',
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                  ],
+                ),
+                content: SingleChildScrollView(
+                  child: SizedBox(
+                    width: 520,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextFormField(
+                          initialValue: suggestedName,
+                          autofocus: details.isEmpty,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: InputDecoration(
+                            labelText: 'Stop name',
+                            hintText: 'Lake Louise Campground',
+                            errorText: nameError,
+                          ),
+                          onChanged:
+                              (value) => setState2(() => draftName = value),
+                        ),
+                        const SizedBox(height: 12),
+                        if (factRows.isNotEmpty)
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: factRows
+                                .map(
+                                  (fact) => Chip(
+                                    label: Text('${fact.key}: ${fact.value}'),
+                                  ),
+                                )
+                                .toList(growable: false),
+                          )
+                        else
+                          Text(
+                            'Lat ${lat.toStringAsFixed(5)}, Lon ${lon.toStringAsFixed(5)}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        const SizedBox(height: 18),
+                        const Text(
+                          'How should we treat this stop?',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 8),
+                        RadioListTile<bool>(
+                          value: true,
+                          groupValue: isStop,
+                          onChanged:
+                              canCreateStayStop
+                                  ? (_) => setState2(() {
+                                    isStop = true;
+                                    if (nights <= 0) nights = 1;
+                                  })
+                                  : null,
+                          title: const Text('Stay stop'),
+                          subtitle: Text(
+                            canCreateStayStop
+                                ? 'Overnight stay that uses trip nights and gets dated automatically.'
+                                : 'No trip nights are left yet, so overnight stays are disabled for now.',
+                          ),
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        RadioListTile<bool>(
+                          value: false,
+                          groupValue: isStop,
+                          onChanged: (_) => setState2(() => isStop = false),
+                          title: const Text('Waypoint'),
+                          subtitle: const Text(
+                            'Transit-only stop for navigation, resupply, or route shaping. Uses no nights.',
+                          ),
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        const SizedBox(height: 10),
+                        if (isStop) ...[
+                          DropdownButtonFormField<int>(
+                            initialValue: math.max(1, nights),
+                            decoration: const InputDecoration(
+                              labelText: 'How many nights here?',
+                            ),
+                            items: List.generate(
+                                  math.max(1, availableNights),
+                                  (index) => index + 1,
+                                )
+                                .map((value) {
+                                  return DropdownMenuItem<int>(
+                                    value: value,
+                                    child: Text(
+                                      '$value night${value == 1 ? '' : 's'}',
+                                    ),
+                                  );
+                                })
+                                .toList(growable: false),
+                            onChanged:
+                                canCreateStayStop
+                                    ? (value) {
+                                      if (value == null) return;
+                                      setState2(() => nights = value);
+                                    }
+                                    : null,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Remaining nights after this stop: ${previewRemaining.clamp(0, 999)}${previewRemaining == 0 ? '  Perfect fit.' : ''}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: previewColor,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ] else
+                          Text(
+                            totalTripNights <= 0
+                                ? 'This trip currently has 0 overnight nights, so new destinations will stay as waypoints until the date range changes.'
+                                : 'Waypoints skip night allocation and only shape the route.',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        const SizedBox(height: 18),
+                        const Text(
+                          'Routing for this leg',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 8),
+                        RadioListTile<String>(
+                          value: primaryRoutingType,
+                          groupValue: routingType,
+                          onChanged:
+                              (_) => setState2(
+                                () => routingType = primaryRoutingType,
+                              ),
+                          title: Text(
+                            '$primaryRoutingLabel routing (recommended)',
+                          ),
+                          subtitle: Text(
+                            _routingDescriptionForSelection(
+                              primaryRoutingType,
+                              normalizedMode,
+                            ),
+                          ),
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        RadioListTile<String>(
+                          value: 'direct',
+                          groupValue: routingType,
+                          onChanged:
+                              (_) => setState2(() => routingType = 'direct'),
+                          title: const Text('Direct line'),
+                          subtitle: Text(
+                            _routingDescriptionForSelection(
+                              'direct',
+                              normalizedMode,
+                            ),
+                          ),
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        if (routeWarning.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF4E5),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0xFFFFCC80),
+                              ),
+                            ),
+                            child: Text(
+                              routeWarning,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF8A5A00),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx2).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed:
+                        nameError == null
+                            ? () => Navigator.of(ctx2).pop(
+                              _DestinationDraft(
+                                name: trimmedName,
+                                isStop: isStop,
+                                nights: isStop ? math.max(1, nights) : 0,
+                                routingType: routingType,
+                              ),
+                            )
+                            : null,
+                    child: Text(confirmLabel),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _insertWaypointAt({
+    required int insertIndex,
+    required _Waypoint waypoint,
+    required String segmentMode,
+    required String routingType,
+  }) {
+    final int targetIndex = insertIndex.clamp(0, _waypoints.length);
+    final normalizedMode = _normalizeTransportMode(segmentMode);
+    final normalizedRouting = _normalizeSegmentRoutingType(
+      routingType,
+      mode: normalizedMode,
+    );
+
+    setState(() {
+      final existingSegmentCount = math.max(0, _waypoints.length - 1);
+      final segmentModes = List<String>.generate(existingSegmentCount, (index) {
+        if (index < _segmentTransportModes.length) {
+          return _normalizeTransportMode(_segmentTransportModes[index]);
+        }
+        return _normalizeTransportMode(_transportMode);
+      });
+      final segmentRouting = List<String>.generate(existingSegmentCount, (
+        index,
+      ) {
+        final mode =
+            index < segmentModes.length ? segmentModes[index] : _transportMode;
+        final raw =
+            index < _segmentRoutingTypes.length
+                ? _segmentRoutingTypes[index]
+                : _defaultRoutingTypeForMode(mode);
+        return _normalizeSegmentRoutingType(raw, mode: mode);
+      });
+
+      _waypoints.insert(targetIndex, waypoint);
+
+      if (_waypoints.length > 1) {
+        if (targetIndex > 0 && targetIndex < _waypoints.length - 1) {
+          final splitIndex = targetIndex - 1;
+          final inheritedMode =
+              splitIndex < segmentModes.length
+                  ? segmentModes[splitIndex]
+                  : normalizedMode;
+          segmentModes.insert(targetIndex, inheritedMode);
+          if (splitIndex < segmentRouting.length) {
+            segmentRouting[splitIndex] = normalizedRouting;
+            segmentRouting.insert(targetIndex, normalizedRouting);
+          } else {
+            segmentRouting.add(normalizedRouting);
+          }
+        } else {
+          final segmentIndex = targetIndex == 0 ? 0 : targetIndex - 1;
+          segmentModes.insert(segmentIndex, normalizedMode);
+          segmentRouting.insert(segmentIndex, normalizedRouting);
+        }
+      }
+
+      _segmentTransportModes = segmentModes;
+      _segmentRoutingTypes = segmentRouting;
+      _normalizeWaypointStructureAfterMutation();
+      _activeSegmentIndex = math.max(
+        0,
+        math.min(
+          targetIndex == 0 ? 0 : targetIndex - 1,
+          math.max(0, _waypoints.length - 2),
+        ),
+      );
+      _resetComputedRouteState();
+      _searchResults = [];
+      _searchCtrl.clear();
+    });
+    _scheduleRouteCachePersist();
+  }
+
+  DateTime _minimumTripDate() => DateTime(1900, 1, 1);
+
+  DateTime _maximumTripDate() => DateTime(2100, 12, 31);
 
   DateTime _stripTime(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
 
@@ -641,10 +2218,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           onPressed: () async {
                             final picked = await _pickSingleTripDate(
                               initialDate: localStart,
-                              lastDate: localEnd,
                             );
                             if (picked == null) return;
-                            setState2(() => localStart = picked);
+                            setState2(() {
+                              localStart = picked;
+                              if (localEnd.isBefore(localStart)) {
+                                localEnd = localStart;
+                              }
+                            });
                           },
                           icon: const Icon(Icons.event),
                           label: Text(_ymd(localStart)),
@@ -658,10 +2239,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           onPressed: () async {
                             final picked = await _pickSingleTripDate(
                               initialDate: localEnd,
-                              firstDate: localStart,
                             );
                             if (picked == null) return;
-                            setState2(() => localEnd = picked);
+                            setState2(() {
+                              localEnd = picked;
+                              if (localEnd.isBefore(localStart)) {
+                                localStart = localEnd;
+                              }
+                            });
                           },
                           icon: const Icon(Icons.event_available),
                           label: Text(_ymd(localEnd)),
@@ -696,9 +2281,8 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     DateTime? firstDate,
     DateTime? lastDate,
   }) async {
-    final now = DateTime.now();
-    final first = firstDate ?? DateTime(now.year - 1);
-    final last = lastDate ?? DateTime(now.year + 5);
+    final first = _stripTime(firstDate ?? _minimumTripDate());
+    final last = _stripTime(lastDate ?? _maximumTripDate());
     final safeInitial =
         initialDate.isBefore(first)
             ? first
@@ -725,6 +2309,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final now = _stripTime(DateTime.now());
     DateTime localStart = _tripRange?.start ?? now;
     DateTime localEnd = _tripRange?.end ?? now.add(const Duration(days: 3));
+    var localTripType = _normalizedTripType;
+    var localExperienceLevel = _normalizedExperienceLevel();
+    var confirmed = false;
     if (localEnd.isBefore(localStart)) {
       localEnd = localStart;
     }
@@ -732,93 +2319,270 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     await _withMapTapSuspended(
       () => showDialog<void>(
         context: context,
-        barrierDismissible: false,
+        barrierDismissible: true,
         builder: (ctx) {
           return StatefulBuilder(
             builder: (ctx2, setState2) {
-              final hasName = localName.text.trim().isNotEmpty;
+              final nameError = _tripNameValidationMessage(localName.text);
+              final hasName = nameError == null;
               final hasDates = !localEnd.isBefore(localStart);
               final canContinue = hasName && hasDates;
+              final selectedTripTypeLabel = tripTypeDisplayLabel(localTripType);
+              final selectedTripSummary = _tripTypeSummary(localTripType);
+              final showAdventureExperience =
+                  normalizeTripType(localTripType) == 'portage' ||
+                  normalizeTripType(localTripType) == 'hiking';
 
               return AlertDialog(
-                title: const Text('Start your trip'),
+                title: Row(
+                  children: [
+                    const Expanded(child: Text('Start your trip')),
+                    IconButton(
+                      tooltip: 'Close',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => Navigator.of(ctx2).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
                 content: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TextField(
-                        controller: localName,
-                        decoration: const InputDecoration(
-                          labelText: 'Trip name',
-                          prefixIcon: Icon(Icons.title),
-                        ),
-                        onChanged: (_) => setState2(() {}),
-                      ),
-                      const SizedBox(height: 12),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Trip dates',
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '1. Choose a trip style',
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w700,
                             color: Colors.grey.shade700,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () async {
-                                final picked = await _pickSingleTripDate(
-                                  initialDate: localStart,
-                                  lastDate: localEnd,
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _tripTypeOptions
+                              .map((option) {
+                                final selected =
+                                    normalizeTripType(localTripType) ==
+                                    option.id;
+                                return ChoiceChip(
+                                  label: Text(
+                                    '${option.emoji} ${option.label}',
+                                  ),
+                                  selected: selected,
+                                  showCheckmark: false,
+                                  onSelected: (_) {
+                                    setState2(() {
+                                      localTripType = option.id;
+                                      if (option.id == 'portage' ||
+                                          option.id == 'hiking') {
+                                        localExperienceLevel =
+                                            _normalizedExperienceLevel(
+                                              localExperienceLevel,
+                                            );
+                                      }
+                                    });
+                                  },
                                 );
-                                if (picked == null) return;
-                                setState2(() => localStart = picked);
-                              },
-                              icon: const Icon(Icons.event),
-                              label: Text(_ymd(localStart)),
+                              })
+                              .toList(growable: false),
+                        ),
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                selectedTripTypeLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                selectedTripSummary,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              if (normalizeTripType(localTripType) ==
+                                  'portage') ...[
+                                const SizedBox(height: 10),
+                                const Text(
+                                  'Portage trips start at access points like Brent Access Point, Shall Lake, or Magnetawan Lake. After that, search for campsites and portages reachable from your launch.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                              if (normalizeTripType(localTripType) ==
+                                  'hiking') ...[
+                                const SizedBox(height: 10),
+                                const Text(
+                                  'Hiking trips work best when you start at a trailhead or campsite, then add only the overnights that should consume trip nights.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        if (showAdventureExperience) ...[
+                          const SizedBox(height: 16),
+                          Text(
+                            '2. Choose your experience level',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.grey.shade700,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          const Icon(Icons.arrow_forward, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () async {
-                                final picked = await _pickSingleTripDate(
-                                  initialDate: localEnd,
-                                  firstDate: localStart,
-                                );
-                                if (picked == null) return;
-                                setState2(() => localEnd = picked);
-                              },
-                              icon: const Icon(Icons.event_available),
-                              label: Text(_ymd(localEnd)),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: _experienceOptions
+                                .map((option) {
+                                  final selected =
+                                      _normalizedExperienceLevel(
+                                        localExperienceLevel,
+                                      ) ==
+                                      option.id;
+                                  return ChoiceChip(
+                                    label: Text(option.label),
+                                    selected: selected,
+                                    showCheckmark: false,
+                                    onSelected:
+                                        (_) => setState2(
+                                          () =>
+                                              localExperienceLevel = option.id,
+                                        ),
+                                  );
+                                })
+                                .toList(growable: false),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _experienceOptions
+                                .firstWhere(
+                                  (option) =>
+                                      option.id ==
+                                      _normalizedExperienceLevel(
+                                        localExperienceLevel,
+                                      ),
+                                  orElse: () => _experienceOptions.first,
+                                )
+                                .summary,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
                             ),
                           ),
                         ],
-                      ),
-                      if (!hasDates)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: localName,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: InputDecoration(
+                            labelText: 'Trip name',
+                            prefixIcon: const Icon(Icons.title),
+                            errorText: nameError,
+                          ),
+                          onChanged: (_) => setState2(() {}),
+                        ),
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
                           child: Text(
-                            'Dates are required to plan your itinerary.',
-                            style: TextStyle(color: Colors.red.shade700),
+                            '3. Trip dates',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.grey.shade700,
+                            ),
                           ),
                         ),
-                    ],
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final picked = await _pickSingleTripDate(
+                                    initialDate: localStart,
+                                  );
+                                  if (picked == null) return;
+                                  setState2(() {
+                                    localStart = picked;
+                                    if (localEnd.isBefore(localStart)) {
+                                      localEnd = localStart;
+                                    }
+                                  });
+                                },
+                                icon: const Icon(Icons.event),
+                                label: Text(_ymd(localStart)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.arrow_forward, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  final picked = await _pickSingleTripDate(
+                                    initialDate: localEnd,
+                                  );
+                                  if (picked == null) return;
+                                  setState2(() {
+                                    localEnd = picked;
+                                    if (localEnd.isBefore(localStart)) {
+                                      localStart = localEnd;
+                                    }
+                                  });
+                                },
+                                icon: const Icon(Icons.event_available),
+                                label: Text(_ymd(localEnd)),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (!hasDates)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              'Dates are required to plan your itinerary.',
+                              style: TextStyle(color: Colors.red.shade700),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
                 actions: [
                   TextButton(
+                    onPressed: () => Navigator.of(ctx2).pop(),
+                    child: const Text('Not now'),
+                  ),
+                  TextButton(
                     onPressed:
                         canContinue
                             ? () {
+                              confirmed = true;
                               Navigator.of(ctx2).pop();
                             }
                             : null,
@@ -836,11 +2600,22 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     localName.dispose();
 
     if (!mounted) return;
-    if (resolvedName.isNotEmpty && !localEnd.isBefore(localStart)) {
+    if (confirmed &&
+        _tripNameValidationMessage(resolvedName) == null &&
+        !localEnd.isBefore(localStart)) {
       setState(() {
         _tripNameCtrl.text = resolvedName;
         _tripRange = DateTimeRange(start: localStart, end: localEnd);
+        _tripType = normalizeTripType(localTripType);
+        _experienceLevel = _normalizedExperienceLevel(localExperienceLevel);
+        if (_waypoints.isEmpty) {
+          _transportMode = _defaultTransportModeForTripType(_tripType);
+          activeRoutingMode = _transportMode;
+        }
+        _searchResults = [];
+        _searchCtrl.clear();
         _syncTripDatesText();
+        _resetComputedRouteState();
       });
     }
   }
@@ -849,26 +2624,29 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     return _currentUser != null &&
         _tripRange != null &&
         _waypoints.isNotEmpty &&
-        _tripNameCtrl.text.trim().isNotEmpty;
+        _tripValidationMessage() == null;
   }
 
   String _currentTripSignature() {
     final map = <String, dynamic>{
       'name': _tripNameCtrl.text.trim(),
+      'tripType': _tripType,
+      'experienceLevel': _experienceLevel,
       'transportMode': _transportMode,
       'rangeStart': _tripRange == null ? '' : _ymd(_tripRange!.start),
       'rangeEnd': _tripRange == null ? '' : _ymd(_tripRange!.end),
       'waypoints':
-          _waypoints
-              .map(
-                (w) => {
-                  'name': w.name,
-                  'lat': w.lat,
-                  'lon': w.lon,
-                  'nights': w.nights,
-                },
-              )
-              .toList(),
+          _waypoints.asMap().entries.map((entry) {
+            final idx = entry.key;
+            final w = entry.value;
+            return {
+              'name': w.name,
+              'lat': w.lat,
+              'lon': w.lon,
+              'nights': w.nights,
+              'isStop': _countsTowardTripDays(idx),
+            };
+          }).toList(),
       'segmentRoutingTypes': _segmentRoutingTypes,
       'segmentTransportModes': _segmentTransportModes,
       'routeVia': _routeVia,
@@ -879,14 +2657,19 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
   List<Map<String, dynamic>> _currentWaypointMaps() {
     return _waypoints
-        .map(
-          (w) => {
+        .asMap()
+        .entries
+        .map((entry) {
+          final idx = entry.key;
+          final w = entry.value;
+          return {
             'name': w.name,
             'lat': w.lat,
             'lon': w.lon,
             'nights': w.nights,
-          },
-        )
+            'isStop': _countsTowardTripDays(idx),
+          };
+        })
         .toList(growable: false);
   }
 
@@ -906,7 +2689,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       'routeCacheKey': _currentRouteCacheKey(),
       'routeGeometry3d': cachedGeometry,
       'routeInstructions': _routeInstructions.take(8).toList(growable: false),
+      'routeSegmentDetails': _routeSegmentDetails,
     };
+  }
+
+  void _resetComputedRouteState() {
+    _routeInstructions = [];
+    _routeGeometry3d = const [];
+    _routeSegmentDetails = const [];
+    _roadDistanceKm = null;
+    _routeDurationMin = null;
+    _transitArrivalStop = null;
+    _focusedTransitStep = null;
   }
 
   void _scheduleRouteCachePersist() {
@@ -931,16 +2725,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final tripStart = range.start;
     final tripEnd = range.end;
     final segmentCount = math.max(0, _waypoints.length - 1);
-    final segmentRoutingTypes =
-        _segmentRoutingTypes.take(segmentCount).map((v) {
-          final n = v.trim().toLowerCase();
-          return n == 'direct' ? 'direct' : 'calculated';
-        }).toList();
-    if (segmentRoutingTypes.length < segmentCount) {
-      segmentRoutingTypes.addAll(
-        List.filled(segmentCount - segmentRoutingTypes.length, 'calculated'),
-      );
-    }
     final segmentTransportModes =
         _segmentTransportModes
             .take(segmentCount)
@@ -954,6 +2738,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         ),
       );
     }
+    final segmentRoutingTypes = List<String>.generate(segmentCount, (index) {
+      final raw =
+          index < _segmentRoutingTypes.length
+              ? _segmentRoutingTypes[index]
+              : '';
+      return _normalizeSegmentRoutingType(
+        raw,
+        mode: segmentTransportModes[index],
+      );
+    });
     final filteredRouteVia =
         _routeVia
             .where((v) {
@@ -973,10 +2767,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       'name': _tripNameCtrl.text.trim(),
       'days': _totalTripDays,
       'totalDays': _totalTripDays,
+      'totalNights': _totalTripNights,
       'startDate': _ymd(tripStart),
       'endDate': _ymd(tripEnd),
       'updatedAt': FieldValue.serverTimestamp(),
-      'totalKm': _totalKm,
+      'totalKm': _waypoints.length >= 2 ? _totalKm : null,
+      'estimatedDurationMin': _routeDurationMin,
+      'tripType': _normalizedTripType,
+      'experienceLevel': _normalizedExperienceLevel(),
+      'difficultyLabel': _currentDifficultyLabel(),
+      'requiredSkills': _currentRequiredSkills(),
       'transportMode': _transportMode,
       'routeVia': filteredRouteVia,
       'requires_gear_list': requiresGearList,
@@ -990,14 +2790,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
             final nights = _effectiveWaypointNights(idx);
             final offset = _offsetDaysBeforeWaypoint(idx);
             final start = tripStart.add(Duration(days: offset));
-            final end = start.add(Duration(days: math.max(0, nights - 1)));
+            final stayEnd = start.add(Duration(days: math.max(0, nights - 1)));
+            final checkout = start.add(Duration(days: math.max(0, nights)));
             return {
               'name': w.name,
               'lat': w.lat,
               'lon': w.lon,
               'nights': nights,
+              'durationNights': nights,
+              'isStop': _countsTowardTripDays(idx),
               'startDate': _ymd(start),
-              'endDate': _ymd(end),
+              'endDate': _ymd(stayEnd),
+              'checkoutDate': _ymd(checkout),
             };
           }).toList(),
       if (hasTransitMode && _transitArrivalStop != null)
@@ -1010,6 +2814,15 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   }
 
   Future<bool> _persistTrip({required bool showFeedback}) async {
+    final validationMessage = _tripValidationMessage();
+    if (validationMessage != null) {
+      if (showFeedback && mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showTryprSnackBar(SnackBar(content: Text(validationMessage)));
+      }
+      return false;
+    }
     if (!_canPersistCurrentTripDraft) return false;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return false;
@@ -1073,91 +2886,16 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     setState(() => _isRenamingTripName = false);
   }
 
-  Future<int?> _promptNights({
-    required String locationName,
-    required int max,
-    int? initialValue,
-  }) async {
-    if (!mounted) return null;
-    final maxNights = math.max(1, max);
-    int value = (initialValue ?? 1).clamp(1, maxNights);
-
-    return _withMapTapSuspended(
-      () => showDialog<int>(
-        context: context,
-        builder: (ctx) {
-          return AlertDialog(
-            title: const Text('How many nights?'),
-            content: StatefulBuilder(
-              builder: (ctx2, setState2) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      locationName,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        const Text('Nights:'),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: DropdownButton<int>(
-                            value: value,
-                            isExpanded: true,
-                            items: List.generate(
-                              maxNights,
-                              (i) => DropdownMenuItem(
-                                value: i + 1,
-                                child: Text(
-                                  '${i + 1} night${i == 0 ? '' : 's'}',
-                                ),
-                              ),
-                            ),
-                            onChanged: (v) {
-                              if (v == null) return;
-                              setState2(() => value = v);
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (_tripRange != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8.0),
-                        child: Text(
-                          'Remaining nights in trip: ${_remainingNights.clamp(0, 999)}',
-                          style: const TextStyle(color: Colors.black54),
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(null),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(value),
-                child: const Text('Add'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
   Future<void> _addWaypointWithPrompt(
     String name,
     double lat,
-    double lon,
-  ) async {
+    double lon, {
+    int? insertIndex,
+    String? segmentModeOverride,
+    String? preferredRoutingType,
+    Map<String, dynamic>? campsiteData,
+    bool preferStop = true,
+  }) async {
     if (!mounted) return;
 
     final range = _tripRange;
@@ -1168,53 +2906,248 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       return;
     }
 
-    final remaining = _remainingNights;
-    if (remaining <= 0) {
+    final resolvedInsertIndex = insertIndex ?? _waypoints.length;
+    final segmentMode = _modeForWaypointInsert(
+      insertIndex: resolvedInsertIndex,
+      override: segmentModeOverride,
+    );
+    final draft = await _showDestinationModal(
+      initialName: name,
+      lat: lat,
+      lon: lon,
+      segmentMode: segmentMode,
+      preferredRoutingType: preferredRoutingType,
+      campsiteData: campsiteData,
+      preferStop: preferStop,
+    );
+    if (draft == null || !mounted) return;
+
+    final waypoint = _Waypoint(
+      draft.name,
+      lat,
+      lon,
+      nights: draft.isStop ? math.max(1, draft.nights) : 1,
+      isStop: draft.isStop,
+    );
+    _insertWaypointAt(
+      insertIndex: resolvedInsertIndex,
+      waypoint: waypoint,
+      segmentMode: segmentMode,
+      routingType: draft.routingType,
+    );
+    if (!mounted) return;
+    if (!draft.isStop) {
       ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(
-          content: Text('No nights left in the selected date range'),
+          content: Text(
+            'Added as a waypoint. Toggle it to Stop if it should use trip nights.',
+          ),
         ),
       );
-      return;
     }
+  }
 
-    final nights = await _promptNights(locationName: name, max: remaining);
-    if (nights == null) return;
-
-    if (!mounted) return;
-    setState(() {
-      final wp = _Waypoint(name, lat, lon);
-      wp.nights = nights;
-      _waypoints.add(wp);
-
-      final segments = math.max(0, _waypoints.length - 1);
-      if (_segmentRoutingTypes.length < segments) {
-        _segmentRoutingTypes = [
-          ..._segmentRoutingTypes,
-          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
-        ];
-      }
-      if (_segmentTransportModes.length < segments) {
-        _segmentTransportModes = [
-          ..._segmentTransportModes,
-          ...List.filled(
-            segments - _segmentTransportModes.length,
-            _normalizeTransportMode(_transportMode),
-          ),
-        ];
-      }
-      _coerceBlockedCarModesToHiking();
-      _clampActiveSegmentIndex();
-
-      _searchResults = [];
-      _searchCtrl.clear();
+  void _normalizeWaypointStructureAfterMutation() {
+    final segments = math.max(0, _waypoints.length - 1);
+    if (_segmentTransportModes.length > segments) {
+      _segmentTransportModes = _segmentTransportModes.take(segments).toList();
+    } else if (_segmentTransportModes.length < segments) {
+      _segmentTransportModes = [
+        ..._segmentTransportModes,
+        ...List.filled(
+          segments - _segmentTransportModes.length,
+          _normalizeTransportMode(_transportMode),
+        ),
+      ];
+    }
+    _segmentTransportModes =
+        _segmentTransportModes.map(_normalizeTransportMode).toList();
+    _coerceBlockedCarModesToHiking();
+    _segmentRoutingTypes = List<String>.generate(segments, (index) {
+      final raw =
+          index < _segmentRoutingTypes.length
+              ? _segmentRoutingTypes[index]
+              : '';
+      return _normalizeSegmentRoutingType(
+        raw,
+        mode: _segmentTransportModes[index],
+      );
     });
+    for (final waypoint in _waypoints) {
+      waypoint.nights = math.max(1, waypoint.nights);
+    }
+    _clampActiveSegmentIndex();
   }
 
   double? _coerceCoordinate(dynamic raw) {
     if (raw is num) return raw.toDouble();
     if (raw is String) return double.tryParse(raw);
     return null;
+  }
+
+  void _setBoundaryWaypointFromAccessPoint({
+    required bool isStart,
+    required String name,
+    required double lat,
+    required double lon,
+  }) {
+    final boundary = _Waypoint(name, lat, lon, nights: 1, isStop: false);
+    setState(() {
+      if (_waypoints.isEmpty) {
+        _waypoints.add(boundary);
+      } else if (_waypoints.length == 1) {
+        final existing = _waypoints.first;
+        final otherBoundary = _Waypoint(
+          existing.name,
+          existing.lat,
+          existing.lon,
+          nights: math.max(1, existing.nights),
+          isStop: existing.isStop,
+        );
+        _waypoints
+          ..clear()
+          ..addAll(
+            isStart ? [boundary, otherBoundary] : [otherBoundary, boundary],
+          );
+      } else if (isStart) {
+        _waypoints[0] = boundary;
+      } else {
+        _waypoints[_waypoints.length - 1] = boundary;
+      }
+
+      _normalizeWaypointStructureAfterMutation();
+      _resetComputedRouteState();
+    });
+    _scheduleRouteCachePersist();
+  }
+
+  Future<void> _onPortageAccessTap(Map<String, dynamic> accessPoint) async {
+    final lat = _coerceCoordinate(accessPoint['lat']);
+    final lon = _coerceCoordinate(accessPoint['lon']);
+    if (lat == null || lon == null || !lat.isFinite || !lon.isFinite) return;
+
+    if (_tripRange == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Select a trip date range first')),
+      );
+      return;
+    }
+
+    final name = (accessPoint['name'] ?? 'Portage access').toString().trim();
+    final safeName = name.isEmpty ? 'Portage access' : name;
+    final routeKm =
+        (accessPoint['distanceKmFromRoute'] as num?)?.toDouble() ?? 0.0;
+    if (_waypoints.isEmpty) {
+      setState(() {
+        _tripType = 'portage';
+        _transportMode = 'portaging';
+        activeRoutingMode = _transportMode;
+      });
+      _setBoundaryWaypointFromAccessPoint(
+        isStart: true,
+        name: safeName,
+        lat: lat,
+        lon: lon,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(
+          content: Text(
+            '$safeName set as your launch point. Next, add campsites or portages.',
+          ),
+        ),
+      );
+      return;
+    }
+    final hasStart = _waypoints.isNotEmpty;
+    final hasEnd = _waypoints.length >= 2;
+    final startLabel =
+        !hasStart
+            ? 'Add as start point'
+            : (_waypoints.length == 1
+                ? 'Insert as start point'
+                : 'Replace start point');
+    final endLabel =
+        !hasEnd
+            ? 'Add as end point'
+            : (_waypoints.length == 1
+                ? 'Insert as end point'
+                : 'Replace end point');
+    final currentStart =
+        hasStart ? formatLocationDisplay(raw: _waypoints.first.name).title : '';
+    final currentEnd =
+        hasEnd ? formatLocationDisplay(raw: _waypoints.last.name).title : '';
+
+    final choice = await _withMapTapSuspended(
+      () => showDialog<String>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(safeName),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Use this portage access point as your trip boundary.'),
+                const SizedBox(height: 8),
+                Text(
+                  'About ${routeKm.toStringAsFixed(1)} km from the visible route network',
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Lat ${lat.toStringAsFixed(5)}, Lon ${lon.toStringAsFixed(5)}',
+                  style: const TextStyle(color: Colors.black54, fontSize: 12),
+                ),
+                if (currentStart.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Current start: $currentStart',
+                    style: const TextStyle(color: Colors.black54, fontSize: 12),
+                  ),
+                ],
+                if (currentEnd.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Current end: $currentEnd',
+                    style: const TextStyle(color: Colors.black54, fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop('start'),
+                child: Text(startLabel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop('end'),
+                child: Text(endLabel),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (choice != 'start' && choice != 'end') return;
+    final isStart = choice == 'start';
+    _setBoundaryWaypointFromAccessPoint(
+      isStart: isStart,
+      name: safeName,
+      lat: lat,
+      lon: lon,
+    );
+
+    if (!mounted) return;
+    final boundaryLabel = isStart ? 'start point' : 'end point';
+    ScaffoldMessenger.of(context).showTryprSnackBar(
+      SnackBar(content: Text('$safeName set as your $boundaryLabel')),
+    );
   }
 
   Future<void> _onHikingCampsiteTap(Map<String, dynamic> campsite) async {
@@ -1239,42 +3172,34 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         fromLastKm != null
             ? '${fromLastKm.toStringAsFixed(1)} km from last point${lastStopName == null ? '' : ' ($lastStopName)'}'
             : '${fromRouteKm.toStringAsFixed(1)} km from your route';
-
-    final shouldAdd = await _withMapTapSuspended(
-      () => showDialog<bool>(
-        context: context,
-        builder: (ctx) {
-          return AlertDialog(
-            title: Text(safeName),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(distanceLabel),
-                const SizedBox(height: 8),
-                Text(
-                  'Lat ${lat.toStringAsFixed(5)}, Lon ${lon.toStringAsFixed(5)}',
-                  style: const TextStyle(color: Colors.black54, fontSize: 12),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('Add to stay'),
-              ),
-            ],
-          );
-        },
-      ),
+    final campsiteMode = _modeForWaypointInsert(
+      override: (campsite['mode'] ?? '').toString(),
     );
-
-    if (shouldAdd != true) return;
-    await _addWaypointWithPrompt(safeName, lat, lon);
+    final routeDistanceKm = fromLastKm ?? fromRouteKm;
+    await _addWaypointWithPrompt(
+      safeName,
+      lat,
+      lon,
+      segmentModeOverride: (campsite['mode'] ?? '').toString(),
+      preferredRoutingType: _defaultRoutingTypeForMode(campsiteMode),
+      campsiteData: <String, dynamic>{
+        ...Map<String, dynamic>.from(campsite),
+        'distanceKmFromRoute': routeDistanceKm,
+        'access': campsite['access'] ?? distanceLabel,
+        if (lastStopName != null && lastStopName.isNotEmpty)
+          'accessibleFrom': lastStopName,
+        'routeDifficulty': _adventureDifficultyForDistance(
+          routeDistanceKm,
+          campsiteMode,
+        ),
+        'estimatedTime': _adventureEstimatedTimeForDistance(
+          routeDistanceKm,
+          campsiteMode,
+        ),
+        'warning': _adventureWarningForDistance(routeDistanceKm, campsiteMode),
+      },
+      preferStop: true,
+    );
   }
 
   // Small sample lookup so we don't need external geocoding packages
@@ -1373,6 +3298,25 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final q = query.trim();
     if (q.isEmpty) return const [];
 
+    if (_isPortageAccessSearchStage) {
+      var results = await searchNominatim(q);
+      if (results.isEmpty) {
+        results = _fallbackSearchResults(q);
+      }
+
+      var filtered = _filterPortageAccessResults(results);
+      if (filtered.isNotEmpty) return filtered;
+
+      final focusedQuery = _portageAccessBiasedQuery(q);
+      if (focusedQuery != q) {
+        final focusedResults = await searchNominatim(focusedQuery);
+        filtered = _filterPortageAccessResults(focusedResults);
+        if (filtered.isNotEmpty) return filtered;
+      }
+
+      return const [];
+    }
+
     var results = await searchNominatim(q);
     if (results.isEmpty) {
       results = _fallbackSearchResults(q);
@@ -1414,6 +3358,52 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     final name = (r['name'] ?? '').toString().trim();
     final raw = _rawLocationFromResult(r, fallback);
     return formatLocationDisplay(placeName: name, raw: raw);
+  }
+
+  Future<void> _handleSearchResultSelection(
+    Map<String, dynamic> result,
+    String fallbackQuery,
+  ) async {
+    if (_tripRange == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Select a trip date range first')),
+      );
+      return;
+    }
+
+    final raw = _rawLocationFromResult(result, fallbackQuery);
+    final lat =
+        (result['lat'] is num)
+            ? (result['lat'] as num).toDouble()
+            : double.tryParse(result['lat']?.toString() ?? '') ?? 0.0;
+    final lon =
+        (result['lon'] is num)
+            ? (result['lon'] as num).toDouble()
+            : double.tryParse(result['lon']?.toString() ?? '') ?? 0.0;
+
+    if (_isPortageAccessSearchStage) {
+      if (!_looksLikePortageAccessPointResult(result)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(
+            content: Text(
+              'Portage trips usually start at an access point. Search an access point first, then add campsites.',
+            ),
+          ),
+        );
+        return;
+      }
+      await _onPortageAccessTap({
+        ...result,
+        'name': raw,
+        'lat': lat,
+        'lon': lon,
+      });
+      return;
+    }
+
+    await _addWaypointWithPrompt(raw, lat, lon);
   }
 
   double get _totalKm {
@@ -1470,33 +3460,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
   void _removeWaypoint(int index) {
     setState(() {
       if (index >= 0 && index < _waypoints.length) _waypoints.removeAt(index);
-
-      final segments = math.max(0, _waypoints.length - 1);
-      if (_segmentRoutingTypes.length > segments) {
-        _segmentRoutingTypes = _segmentRoutingTypes.take(segments).toList();
-      } else if (_segmentRoutingTypes.length < segments) {
-        _segmentRoutingTypes = [
-          ..._segmentRoutingTypes,
-          ...List.filled(segments - _segmentRoutingTypes.length, 'calculated'),
-        ];
-      }
-      if (_segmentTransportModes.length > segments) {
-        _segmentTransportModes = _segmentTransportModes.take(segments).toList();
-      } else if (_segmentTransportModes.length < segments) {
-        _segmentTransportModes = [
-          ..._segmentTransportModes,
-          ...List.filled(
-            segments - _segmentTransportModes.length,
-            _normalizeTransportMode(_transportMode),
-          ),
-        ];
-      }
-      _coerceBlockedCarModesToHiking();
-      _clampActiveSegmentIndex();
+      _normalizeWaypointStructureAfterMutation();
 
       // Via points are indexed by segment; safest is to clear.
       _routeVia = [];
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
   }
 
   @override
@@ -1530,6 +3500,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     _searchDebounce?.cancel();
     _autoSaveTimer?.cancel();
     _routeCachePersistDebounce?.cancel();
+    _routeLoadingHideTimer?.cancel();
     _tripNameCtrl.dispose();
     _tripDatesCtrl.dispose();
     _searchCtrl.dispose();
@@ -1548,13 +3519,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
     setState(() {
       _transportMode = m;
+      if (_waypoints.isEmpty && !_isMixedTrip) {
+        _tripType = normalizeTripType(
+          _tripType,
+          transportMode: m,
+          segmentTransportModes: const <String>[],
+        );
+      }
       activeRoutingMode = m;
       debugPrint('activeRoutingMode=$activeRoutingMode');
-      _routeInstructions = [];
-      if (!_hasAnyTransitSegment) {
-        _transitArrivalStop = null;
-      }
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
   }
 
   void _setSegmentTransportMode(
@@ -1581,6 +3557,23 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       if (segmentIndex < 0 || segmentIndex >= _segmentTransportModes.length) {
         return;
       }
+      if (_segmentRoutingTypes.length > segments) {
+        _segmentRoutingTypes = _segmentRoutingTypes.take(segments).toList();
+      } else if (_segmentRoutingTypes.length < segments) {
+        _segmentRoutingTypes = [
+          ..._segmentRoutingTypes,
+          ...List<String>.generate(segments - _segmentRoutingTypes.length, (
+            offset,
+          ) {
+            final index = _segmentRoutingTypes.length + offset;
+            final mode =
+                index < _segmentTransportModes.length
+                    ? _segmentTransportModes[index]
+                    : _transportMode;
+            return _defaultRoutingTypeForMode(mode);
+          }),
+        ];
+      }
       _activeSegmentIndex = segmentIndex;
       var resolvedMode = normalized;
       if (resolvedMode == 'car' && _isCarModeBlockedForSegment(segmentIndex)) {
@@ -1588,6 +3581,11 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         didCoerceCarToHiking = true;
       }
       _segmentTransportModes[segmentIndex] = resolvedMode;
+      final keepDirect =
+          segmentIndex < _segmentRoutingTypes.length &&
+          _segmentRoutingTypes[segmentIndex].trim().toLowerCase() == 'direct';
+      _segmentRoutingTypes[segmentIndex] =
+          keepDirect ? 'direct' : _defaultRoutingTypeForMode(resolvedMode);
       if (updateDefaultMode) {
         _transportMode = resolvedMode;
         activeRoutingMode = resolvedMode;
@@ -1602,11 +3600,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               return after != segmentIndex;
             }).toList();
       }
-      _routeInstructions = [];
-      if (!_hasAnyTransitSegment) {
-        _transitArrivalStop = null;
-      }
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
     if (didCoerceCarToHiking) {
       _showCarDisabledOnTrailMessage();
     }
@@ -1646,7 +3642,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       } else {
         _routeVia = [..._routeVia, entry];
       }
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
   }
 
   Future<void> _onRouteTapped({
@@ -1709,7 +3707,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       current['lat'] = lat;
       current['lon'] = lon;
       _routeVia[viaIndex] = current;
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
   }
 
   void _deleteViaPoint({required int viaIndex}) {
@@ -1718,7 +3718,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
       final next = List<Map<String, dynamic>>.from(_routeVia);
       next.removeAt(viaIndex);
       _routeVia = next;
+      _resetComputedRouteState();
     });
+    _scheduleRouteCachePersist();
   }
 
   @override
@@ -1738,16 +3740,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
       if (_searchResults.isNotEmpty) {
         final r = _searchResults.first;
-        final raw = _rawLocationFromResult(r, q);
-        await _addWaypointWithPrompt(
-          raw,
-          (r['lat'] is num)
-              ? (r['lat'] as num).toDouble()
-              : double.tryParse(r['lat']?.toString() ?? '') ?? 0.0,
-          (r['lon'] is num)
-              ? (r['lon'] as num).toDouble()
-              : double.tryParse(r['lon']?.toString() ?? '') ?? 0.0,
-        );
+        await _handleSearchResultSelection(r, q);
         if (!mounted) return;
         setState(() => _searchResults = []);
         _searchCtrl.clear();
@@ -1758,24 +3751,19 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         final results = await _searchResultsForUi(q);
         if (results.isNotEmpty) {
           final first = results.first;
-          final raw = _rawLocationFromResult(first, q);
-          await _addWaypointWithPrompt(
-            raw,
-            (first['lat'] is num)
-                ? (first['lat'] as num).toDouble()
-                : double.tryParse(first['lat']?.toString() ?? '') ?? 0.0,
-            (first['lon'] is num)
-                ? (first['lon'] as num).toDouble()
-                : double.tryParse(first['lon']?.toString() ?? '') ?? 0.0,
-          );
+          await _handleSearchResultSelection(first, q);
           if (!mounted) return;
           setState(() => _searchResults = []);
           _searchCtrl.clear();
           return;
         }
         ScaffoldMessenger.of(context).showTryprSnackBar(
-          const SnackBar(
-            content: Text('No trail or campsite matches found for that search'),
+          SnackBar(
+            content: Text(
+              _isPortageAccessSearchStage
+                  ? 'No access-point matches found. Try Brent Access Point, Shall Lake, or click a blue access marker.'
+                  : 'No trail or campsite matches found for that search',
+            ),
           ),
         );
         return;
@@ -1813,27 +3801,45 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           );
         }
         final countsTowardTripDays = _countsTowardTripDays(i);
+        final isStop = _waypoints[i].isStop;
         final nights = _waypoints[i].nights;
         final effectiveNights = _effectiveWaypointNights(i);
         final display = formatLocationDisplay(raw: _waypoints[i].name);
+        final boundaryLabel =
+            isFirst && isLast
+                ? 'Start / End'
+                : isFirst
+                ? 'Start'
+                : isLast
+                ? 'End'
+                : null;
 
-        final offsetDays = _offsetDaysBeforeWaypoint(i);
         String dateStr = '';
-        if (_tripRange != null) {
+        if (_tripRange != null && countsTowardTripDays) {
+          final offsetDays = _offsetDaysBeforeWaypoint(i);
           final start = _tripRange!.start.add(Duration(days: offsetDays));
-          final end = start.add(
-            Duration(days: math.max(0, effectiveNights - 1)),
+          final checkout = start.add(
+            Duration(days: math.max(0, effectiveNights)),
           );
-          dateStr = '${_ymd(start)} → ${_ymd(end)}';
+          dateStr = '${_ymd(start)} → ${_ymd(checkout)}';
         }
 
         final maxNightsForRow =
-            _tripRange == null
-                ? 30
-                : math.max(
-                  1,
-                  _totalTripDays - (_assignedNights - effectiveNights),
-                );
+            _tripRange == null ? 30 : _maxNightsForWaypoint(i);
+
+        String staySummary;
+        if (countsTowardTripDays) {
+          staySummary =
+              '$effectiveNights night${effectiveNights == 1 ? '' : 's'}';
+        } else if (boundaryLabel != null) {
+          staySummary = '$boundaryLabel · No stay';
+        } else {
+          staySummary = 'Waypoint · No stay';
+        }
+        final staySummaryWithDates =
+            _tripRange == null || dateStr.isEmpty
+                ? staySummary
+                : '$staySummary · $dateStr';
 
         final isSegmentRow = !isLast;
         final selectedSegment = _selectedSegmentIndex;
@@ -1841,100 +3847,161 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
             isSegmentRow && selectedSegment != null && selectedSegment == i;
         final carModeBlockedForSegment =
             isSegmentRow && _isCarModeBlockedForSegment(i);
-        final segType =
-            (isSegmentRow && i < _segmentRoutingTypes.length)
-                ? _segmentRoutingTypes[i]
-                : 'calculated';
+        final segType = isSegmentRow ? _segmentRoutingTypeAt(i) : 'calculated';
         final segTypeNorm = segType.trim().toLowerCase();
         final segMode = _segmentTransportModeAt(i);
+        final primaryRoutingType = _defaultRoutingTypeForMode(segMode);
+        final primaryRoutingLabel = _primaryRoutingLabelForMode(segMode);
 
         final indicator = SizedBox(
           width: 26,
-          child: Stack(
-            fit: StackFit.expand,
+          child: Column(
             children: [
-              const SizedBox.expand(),
-              Positioned(
-                left: 12,
-                top: 0,
-                bottom: isLast ? 20 : 0,
-                child: Container(width: 2, color: Colors.grey.shade300),
-              ),
-              Positioned(
-                left: 4,
-                top: 2,
-                child: Container(
-                  width: 18,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: Colors.grey.shade400, width: 2),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Center(
-                    child: Text(
-                      '${i + 1}',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
+              const SizedBox(height: 2),
+              Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: Colors.grey.shade400, width: 2),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child:
+                      _isWaypointOnly(i)
+                          ? Icon(
+                            Icons.alt_route,
+                            size: 11,
+                            color: Colors.grey.shade700,
+                          )
+                          : Text(
+                            '${i + 1}',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
                 ),
               ),
+              if (!isLast) ...[
+                const SizedBox(height: 2),
+                Container(width: 2, height: 88, color: Colors.grey.shade300),
+              ],
             ],
           ),
         );
 
         return Padding(
           padding: const EdgeInsets.only(bottom: 10),
-          child: IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                indicator,
-                const SizedBox(width: 8),
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap:
-                        isSegmentRow ? () => _setActiveSegmentIndex(i) : null,
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color:
-                              isActiveSegment
-                                  ? Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withOpacity(0.45)
-                                  : Colors.grey.shade200,
-                          width: isActiveSegment ? 1.5 : 1.0,
-                        ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              indicator,
+              const SizedBox(width: 8),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: isSegmentRow ? () => _setActiveSegmentIndex(i) : null,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color:
+                            isActiveSegment
+                                ? Theme.of(
+                                  context,
+                                ).colorScheme.primary.withOpacity(0.45)
+                                : Colors.grey.shade200,
+                        width: isActiveSegment ? 1.5 : 1.0,
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  display.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                  ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                display.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              countsTowardTripDays
-                                  ? SizedBox(
-                                    width: 82,
-                                    child: InputDecorator(
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 122,
+                              child: Column(
+                                children: [
+                                  if (boundaryLabel != null) ...[
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.shade100,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                          color: Colors.grey.shade300,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        boundaryLabel,
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                  ],
+                                  InputDecorator(
+                                    decoration: const InputDecoration(
+                                      labelText: 'Type',
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 8,
+                                      ),
+                                    ),
+                                    child: DropdownButtonHideUnderline(
+                                      child: DropdownButton<bool>(
+                                        value: isStop,
+                                        isDense: true,
+                                        isExpanded: true,
+                                        onTap: () {
+                                          _blockMapTapFor(milliseconds: 2500);
+                                        },
+                                        items: const [
+                                          DropdownMenuItem<bool>(
+                                            value: true,
+                                            child: Text('Stop'),
+                                          ),
+                                          DropdownMenuItem<bool>(
+                                            value: false,
+                                            child: Text('Waypoint'),
+                                          ),
+                                        ],
+                                        onChanged: (value) {
+                                          if (value == null) return;
+                                          _blockMapTapFor();
+                                          _setWaypointRole(i, value);
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  if (isStop)
+                                    InputDecorator(
                                       decoration: const InputDecoration(
                                         labelText: 'Nights',
                                         isDense: true,
@@ -1945,9 +4012,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                       ),
                                       child: DropdownButtonHideUnderline(
                                         child: DropdownButton<int>(
-                                          value: nights.clamp(
+                                          value: math.max(
                                             1,
-                                            maxNightsForRow,
+                                            math.min(nights, maxNightsForRow),
                                           ),
                                           isDense: true,
                                           isExpanded: true,
@@ -1970,251 +4037,256 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                           },
                                         ),
                                       ),
-                                    ),
-                                  )
-                                  : Container(
-                                    width: 82,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 10,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey.shade100,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: Colors.grey.shade300,
+                                    )
+                                  else
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 10,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.shade100,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                          color: Colors.grey.shade300,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        'No stay',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.grey.shade700,
+                                        ),
                                       ),
                                     ),
-                                    child: Text(
-                                      isFirst ? 'Start' : 'End',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.grey.shade700,
-                                      ),
-                                    ),
-                                  ),
-                              const SizedBox(width: 6),
-                              IconButton(
-                                tooltip: 'Remove stop',
-                                visualDensity: VisualDensity.compact,
-                                constraints: const BoxConstraints.tightFor(
-                                  width: 36,
-                                  height: 36,
-                                ),
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () => _removeWaypoint(i),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          if (display.subtitle.trim().isNotEmpty) ...[
-                            Text(
-                              display.subtitle,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.black54,
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 6),
+                            const SizedBox(width: 6),
+                            IconButton(
+                              tooltip: 'Remove destination',
+                              visualDensity: VisualDensity.compact,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 36,
+                                height: 36,
+                              ),
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => _removeWaypoint(i),
+                            ),
                           ],
+                        ),
+                        const SizedBox(height: 6),
+                        if (display.subtitle.trim().isNotEmpty) ...[
                           Text(
-                            _tripRange == null
-                                ? countsTowardTripDays
-                                    ? '$nights night${nights == 1 ? '' : 's'}'
-                                    : (isFirst ? 'Start point' : 'End point')
-                                : countsTowardTripDays
-                                ? '$nights night${nights == 1 ? '' : 's'} · $dateStr'
-                                : '${isFirst ? 'Start point' : 'End point'} · $dateStr',
+                            display.subtitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontSize: 12,
                               color: Colors.black54,
                             ),
                           ),
-                          const SizedBox(height: 8),
-                          if (isSegmentRow)
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${segKm.toStringAsFixed(2)} km to next',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black54,
-                                  ),
+                          const SizedBox(height: 6),
+                        ],
+                        Text(
+                          staySummaryWithDates,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        if (isSegmentRow)
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${segKm.toStringAsFixed(2)} km to next',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
                                 ),
-                                const SizedBox(height: 8),
-                                Wrap(
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: [
-                                    const Text(
-                                      'Mode:',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                      ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  const Text(
+                                    'Mode:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
                                     ),
-                                    SizedBox(
-                                      width: 72,
-                                      child: InputDecorator(
-                                        decoration: const InputDecoration(
-                                          isDense: true,
-                                          contentPadding: EdgeInsets.symmetric(
-                                            horizontal: 6,
-                                            vertical: 2,
-                                          ),
-                                          border: OutlineInputBorder(),
+                                  ),
+                                  SizedBox(
+                                    width: 150,
+                                    child: InputDecorator(
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
                                         ),
-                                        child: DropdownButtonHideUnderline(
-                                          child: DropdownButton<String>(
-                                            value: segMode,
-                                            isDense: true,
-                                            isExpanded: true,
-                                            onTap: () {
-                                              _setActiveSegmentIndex(i);
-                                              _blockMapTapFor(
-                                                milliseconds: 2500,
-                                              );
-                                            },
-                                            items:
-                                                _transportOptions
-                                                    .map(
-                                                      (opt) => DropdownMenuItem(
-                                                        value: opt.mode,
-                                                        enabled:
-                                                            !carModeBlockedForSegment ||
-                                                            opt.mode != 'car',
-                                                        child: Text(
-                                                          opt.emoji,
-                                                          style: TextStyle(
-                                                            fontSize: 18,
-                                                            color:
-                                                                carModeBlockedForSegment &&
-                                                                        opt.mode ==
-                                                                            'car'
-                                                                    ? Colors
-                                                                        .grey
-                                                                        .shade400
-                                                                    : null,
-                                                          ),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      child: DropdownButtonHideUnderline(
+                                        child: DropdownButton<String>(
+                                          value: segMode,
+                                          isDense: true,
+                                          isExpanded: true,
+                                          onTap: () {
+                                            _setActiveSegmentIndex(i);
+                                            _blockMapTapFor(milliseconds: 2500);
+                                          },
+                                          items:
+                                              _availableTransportOptionsForTripType(
+                                                    _normalizedTripType,
+                                                  )
+                                                  .map(
+                                                    (opt) => DropdownMenuItem(
+                                                      value: opt.mode,
+                                                      enabled:
+                                                          !carModeBlockedForSegment ||
+                                                          opt.mode != 'car',
+                                                      child: Text(
+                                                        '${opt.emoji} ${opt.label}',
+                                                        style: TextStyle(
+                                                          color:
+                                                              carModeBlockedForSegment &&
+                                                                      opt.mode ==
+                                                                          'car'
+                                                                  ? Colors
+                                                                      .grey
+                                                                      .shade400
+                                                                  : null,
                                                         ),
                                                       ),
-                                                    )
-                                                    .toList(),
-                                            onChanged: (value) {
-                                              if (value == null) return;
-                                              _setActiveSegmentIndex(i);
-                                              _blockMapTapFor();
-                                              _setSegmentTransportMode(
-                                                i,
-                                                value,
-                                              );
-                                            },
-                                          ),
+                                                    ),
+                                                  )
+                                                  .toList(),
+                                          onChanged: (value) {
+                                            if (value == null) return;
+                                            _setActiveSegmentIndex(i);
+                                            _blockMapTapFor();
+                                            _setSegmentTransportMode(i, value);
+                                          },
                                         ),
                                       ),
                                     ),
-                                    const Text(
-                                      'Routing:',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    ChoiceChip(
-                                      visualDensity: VisualDensity.compact,
-                                      label: const Text(
-                                        'Calculated',
-                                        style: TextStyle(fontSize: 12),
-                                      ),
-                                      selected: segTypeNorm == 'calculated',
-                                      onSelected: (_) {
-                                        _setActiveSegmentIndex(i);
-                                        setState(() {
-                                          if (i >= 0 &&
-                                              i < _segmentRoutingTypes.length) {
-                                            _segmentRoutingTypes[i] =
-                                                'calculated';
-                                          }
-                                        });
-                                      },
-                                    ),
-                                    ChoiceChip(
-                                      visualDensity: VisualDensity.compact,
-                                      label: const Text(
-                                        'Direct',
-                                        style: TextStyle(fontSize: 12),
-                                      ),
-                                      selected: segTypeNorm == 'direct',
-                                      onSelected: (_) {
-                                        _setActiveSegmentIndex(i);
-                                        setState(() {
-                                          if (i >= 0 &&
-                                              i < _segmentRoutingTypes.length) {
-                                            _segmentRoutingTypes[i] = 'direct';
-                                          }
-                                        });
-                                      },
-                                    ),
-                                    TextButton.icon(
-                                      style: TextButton.styleFrom(
-                                        visualDensity: VisualDensity.compact,
-                                        foregroundColor: const Color(
-                                          0xFF00897B,
-                                        ),
-                                      ),
-                                      onPressed: () {
-                                        _setActiveSegmentIndex(i);
-                                        _smartFindStopBetween(afterIndex: i);
-                                      },
-                                      icon: const Text('✨'),
-                                      label: const Text(
-                                        'Find Stay Stop',
-                                        style: TextStyle(fontSize: 12),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            )
-                          else
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Last stop',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black54,
                                   ),
-                                ),
-                                const SizedBox(height: 8),
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: TextButton.icon(
+                                  const Text(
+                                    'Routing:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: Text(
+                                      primaryRoutingLabel,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                    selected: segTypeNorm == primaryRoutingType,
+                                    onSelected: (_) {
+                                      _setActiveSegmentIndex(i);
+                                      _setSegmentRoutingType(
+                                        i,
+                                        primaryRoutingType,
+                                      );
+                                    },
+                                  ),
+                                  ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: const Text(
+                                      'Direct',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                    selected: segTypeNorm == 'direct',
+                                    onSelected: (_) {
+                                      _setActiveSegmentIndex(i);
+                                      _setSegmentRoutingType(i, 'direct');
+                                    },
+                                  ),
+                                  TextButton.icon(
                                     style: TextButton.styleFrom(
                                       visualDensity: VisualDensity.compact,
                                       foregroundColor: const Color(0xFF00897B),
                                     ),
-                                    onPressed: _smartSuggestNextStop,
+                                    onPressed: () {
+                                      _setActiveSegmentIndex(i);
+                                      _smartFindStopBetween(afterIndex: i);
+                                    },
                                     icon: const Text('✨'),
-                                    label: const Text('Suggest Next Stay Stop'),
+                                    label: Text(
+                                      _isAdventureMode(segMode)
+                                          ? 'Find Campsite'
+                                          : 'Find Stay Stop',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _routingDescriptionForSelection(
+                                  segTypeNorm,
+                                  segMode,
+                                ),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Last destination',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: const Color(0xFF00897B),
+                                  ),
+                                  onPressed: _smartSuggestNextStop,
+                                  icon: const Text('✨'),
+                                  label: Text(
+                                    _isAdventureMode(
+                                          _waypoints.length >= 2
+                                              ? _segmentTransportModeAt(
+                                                _waypoints.length - 2,
+                                              )
+                                              : _transportMode,
+                                        )
+                                        ? 'Suggest Next Campsite'
+                                        : 'Suggest Next Stay Stop',
                                   ),
                                 ),
-                              ],
-                            ),
-                        ],
-                      ),
+                              ),
+                            ],
+                          ),
+                      ],
                     ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       }
@@ -2235,78 +4307,128 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Stops & routing',
+              'Destinations & routing',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 12),
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Text(
-                  'Leg mode ($selectedLegLabel)',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+                Chip(
+                  avatar: Text(tripTypeEmoji(_normalizedTripType)),
+                  label: Text(tripTypeBadgeLabel(_normalizedTripType)),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children:
-                          _transportOptions.map((opt) {
-                            final mode = opt.mode;
-                            final selected = selectedLegMode == mode;
-                            final blockedForSelectedLeg =
-                                selectedSegment != null &&
-                                mode == 'car' &&
-                                _isCarModeBlockedForSegment(selectedSegment);
-                            return Padding(
-                              padding: const EdgeInsets.only(right: 6),
-                              child: ChoiceChip(
-                                label: Text(
-                                  opt.emoji,
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    color:
-                                        blockedForSelectedLeg
-                                            ? Colors.grey.shade500
-                                            : null,
-                                  ),
-                                ),
-                                selected: selected,
-                                showCheckmark: false,
-                                visualDensity: VisualDensity.compact,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                                labelPadding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 2,
-                                ),
-                                selectedColor:
-                                    Theme.of(context).colorScheme.primary,
-                                backgroundColor: Colors.grey.shade200,
-                                onSelected:
-                                    blockedForSelectedLeg
-                                        ? null
-                                        : (v) {
-                                          if (!v) return;
-                                          _setTransportMode(mode);
-                                        },
-                              ),
-                            );
-                          }).toList(),
+                if (_isAdventureTrip)
+                  Chip(
+                    avatar: const Icon(Icons.tune, size: 18),
+                    label: Text(_currentDifficultyLabel()),
+                  ),
+                if (_isAdventureTrip)
+                  Chip(
+                    avatar: const Icon(Icons.school_outlined, size: 18),
+                    label: Text(
+                      'Experience: ${tripExperienceDisplayLabel(_experienceLevel)}',
                     ),
                   ),
-                ),
               ],
             ),
+            if (_isAdventureTrip) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Required skills: ${_currentRequiredSkills().join(', ')}',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 12),
+            ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final visibleTransportOptions =
+                    _availableTransportOptionsForTripType(_normalizedTripType);
+                final transportChips = SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children:
+                        visibleTransportOptions.map((opt) {
+                          final mode = opt.mode;
+                          final selected = selectedLegMode == mode;
+                          final blockedForSelectedLeg =
+                              selectedSegment != null &&
+                              mode == 'car' &&
+                              _isCarModeBlockedForSegment(selectedSegment);
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ChoiceChip(
+                              label: Text(
+                                '${opt.emoji} ${opt.label}',
+                                style: TextStyle(
+                                  color:
+                                      blockedForSelectedLeg
+                                          ? Colors.grey.shade500
+                                          : null,
+                                ),
+                              ),
+                              selected: selected,
+                              showCheckmark: false,
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              labelPadding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 2,
+                              ),
+                              selectedColor:
+                                  Theme.of(context).colorScheme.primary,
+                              backgroundColor: Colors.grey.shade200,
+                              onSelected:
+                                  blockedForSelectedLeg
+                                      ? null
+                                      : (v) {
+                                        if (!v) return;
+                                        _setTransportMode(mode);
+                                      },
+                            ),
+                          );
+                        }).toList(),
+                  ),
+                );
+                final isCompact = constraints.maxWidth < 430;
+
+                if (isCompact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Leg mode ($selectedLegLabel)',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      transportChips,
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Text(
+                      'Leg mode ($selectedLegLabel)',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(child: transportChips),
+                  ],
+                );
+              },
+            ),
             const SizedBox(height: 4),
-            const Text(
-              'Top pills only set the selected leg. Tap a stop card to change which leg is active.',
+            Text(
+              _modeSelectionHelperText(),
               style: TextStyle(fontSize: 11, color: Colors.black54),
             ),
-            if (_waypoints.length >= 2) ...[
+            if (_waypoints.length >= 2 && !_isPortageTrip) ...[
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -2326,7 +4448,11 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   if (_adjustRoute && _routeVia.isNotEmpty)
                     TextButton.icon(
                       onPressed: () {
-                        setState(() => _routeVia = []);
+                        setState(() {
+                          _routeVia = [];
+                          _resetComputedRouteState();
+                        });
+                        _scheduleRouteCachePersist();
                       },
                       icon: const Icon(Icons.clear),
                       label: const Text('Clear'),
@@ -2335,9 +4461,9 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             ],
             const SizedBox(height: 14),
-            if (_tripRange != null)
+            if (_tripRange != null && _hasStayStops)
               Text(
-                'Nights assigned (stay stops only): $_assignedNights / $_totalTripDays',
+                'Nights assigned (stay stops only): $_assignedNights / $_totalTripNights',
                 style: TextStyle(
                   fontSize: 13,
                   color:
@@ -2347,7 +4473,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   fontWeight: FontWeight.w700,
                 ),
               ),
-            if (_tripRange != null && !_hasValidAllocation)
+            if (_tripRange != null && _hasStayStops && !_hasValidAllocation)
               Padding(
                 padding: const EdgeInsets.only(top: 4.0),
                 child: Text(
@@ -2359,7 +4485,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               const Padding(
                 padding: EdgeInsets.only(top: 4.0),
                 child: Text(
-                  'Start and end points are transit-only and do not count toward nights.',
+                  'Only destinations marked as Stop count toward trip nights. Waypoints stay transit-only.',
                   style: TextStyle(fontSize: 11, color: Colors.black54),
                 ),
               ),
@@ -2376,33 +4502,41 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
                 ),
               ),
-            if (_hasAnyTransitSegment && _routeInstructions.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Train (suggested lines):',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 4),
-                    ..._routeInstructions.take(4).map((s) => Text('• $s')),
-                  ],
-                ),
-              ),
             const SizedBox(height: 14),
-            const Text('Stops', style: TextStyle(fontWeight: FontWeight.w900)),
+            const Text(
+              'Destinations',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
             const SizedBox(height: 10),
             if (_waypoints.isEmpty)
-              const Text('No stops yet. Search above or click the map to add.')
+              Text(
+                _isPortageTrip
+                    ? 'No destinations yet. Start with an access point above or click a blue access marker on the map.'
+                    : 'No destinations yet. Search above or click the map to add.',
+              )
             else
               Column(
                 children: [
-                  for (var i = 0; i < _waypoints.length; i++) stopItem(i),
+                  for (var i = 0; i < _waypoints.length; i++) ...[
+                    stopItem(i),
+                    if (i < _waypoints.length - 1) _buildTransitLegCard(i),
+                  ],
                 ],
               ),
             const SizedBox(height: 8),
+            if ((_tripNameCtrl.text.trim().isNotEmpty ||
+                    _waypoints.isNotEmpty) &&
+                _tripValidationMessage() != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Text(
+                  _tripValidationMessage()!,
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             if (user == null)
               const Padding(
                 padding: EdgeInsets.only(bottom: 8.0),
@@ -2416,6 +4550,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   (user == null ||
                           _tripRange == null ||
                           _waypoints.isEmpty ||
+                          _tripValidationMessage() != null ||
                           !_hasValidAllocation ||
                           _isSaving)
                       ? null
@@ -2449,7 +4584,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
       final scrollable = Scrollbar(
         controller: _panelScrollCtrl,
-        thumbVisibility: true,
+        thumbVisibility: false,
         child: SingleChildScrollView(
           controller: _panelScrollCtrl,
           child: content,
@@ -2609,10 +4744,46 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             );
 
+            final profilePill = GestureDetector(
+              onTap: _showTripBasicsDialog,
+              child: glassPill(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(tripTypeEmoji(_normalizedTripType)),
+                    const SizedBox(width: 6),
+                    Text(
+                      tripTypeDisplayLabel(_normalizedTripType),
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+            );
+
+            final difficultyPill = glassPill(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.tune, size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Difficulty: ${_currentDifficultyLabel()}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            );
+
             final content = Wrap(
               spacing: 10,
               runSpacing: 8,
-              children: [namePill, datesPill],
+              children: [
+                namePill,
+                datesPill,
+                profilePill,
+                if (_isAdventureTrip) difficultyPill,
+              ],
             );
 
             final card = ConstrainedBox(
@@ -2701,10 +4872,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                 controller: _searchCtrl,
                 textInputAction: TextInputAction.search,
                 decoration: deco(
-                  hint:
-                      _isHikingSearchMode
-                          ? 'Search trails, campsites & portages'
-                          : 'Search locations',
+                  hint: _tripTypeSearchHint(),
                   prefix: const Icon(Icons.search),
                   suffix: suffix,
                 ),
@@ -2740,7 +4908,15 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
                   final results = await _searchResultsForUi(q);
                   if (results.isEmpty) {
-                    if (_isHikingSearchMode) {
+                    if (_isPortageAccessSearchStage) {
+                      ScaffoldMessenger.of(context).showTryprSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Search an access point or click a blue access marker to start a portage trip',
+                          ),
+                        ),
+                      );
+                    } else if (_isHikingSearchMode) {
                       ScaffoldMessenger.of(context).showTryprSnackBar(
                         const SnackBar(
                           content: Text(
@@ -2760,16 +4936,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     return;
                   }
                   final r = results.first;
-                  final raw = _rawLocationFromResult(r, q);
-                  await _addWaypointWithPrompt(
-                    raw,
-                    (r['lat'] is num)
-                        ? (r['lat'] as num).toDouble()
-                        : double.tryParse(r['lat'].toString()) ?? 0.0,
-                    (r['lon'] is num)
-                        ? (r['lon'] as num).toDouble()
-                        : double.tryParse(r['lon'].toString()) ?? 0.0,
-                  );
+                  await _handleSearchResultSelection(r, q);
                 },
               ),
             );
@@ -2818,8 +4985,13 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                               r['lon'].toString(),
                                             ) ??
                                             0.0;
+                                final category = _searchResultCategory(r);
                                 return ListTile(
                                   dense: true,
+                                  leading: Icon(
+                                    category.icon,
+                                    color: category.color,
+                                  ),
                                   title: Text(
                                     display.title,
                                     maxLines: 2,
@@ -2828,25 +5000,29 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                       fontWeight: FontWeight.w800,
                                     ),
                                   ),
-                                  subtitle: Text(
-                                    display.subtitle.isNotEmpty
-                                        ? display.subtitle
-                                        : '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}',
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        category.label,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: category.color,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        display.subtitle.isNotEmpty
+                                            ? display.subtitle
+                                            : '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}',
+                                      ),
+                                    ],
                                   ),
                                   onTap: () async {
-                                    if (_tripRange == null) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showTryprSnackBar(
-                                        const SnackBar(
-                                          content: Text(
-                                            'Select a trip date range first',
-                                          ),
-                                        ),
-                                      );
-                                      return;
-                                    }
-                                    await _addWaypointWithPrompt(raw, lat, lon);
+                                    await _handleSearchResultSelection(r, raw);
                                     if (mounted) {
                                       setState(() => _searchResults = []);
                                       _searchCtrl.clear();
@@ -2864,7 +5040,21 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
             final content = Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [locationSearchField, resultsList],
+              children: [
+                locationSearchField,
+                if (_isAdventureTrip) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _isPortageAccessSearchStage
+                        ? 'Search results are filtered to access points first so your route starts from a real launch location.'
+                        : _isPortageTrip
+                        ? 'Backcountry results include campsites and portage lines. On the map, add stops by clicking campsite or access-point markers.'
+                        : 'Backcountry results include campsites, trails, and portage lines. Need a custom stop? Click the map.',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                ],
+                resultsList,
+              ],
             );
 
             final card = ConstrainedBox(
@@ -2883,6 +5073,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               ),
             );
 
+            return kIsWeb ? WebInterceptor(child: card) : card;
+          }
+
+          Widget plannerGuideIsland({required double maxWidth}) {
+            final card = ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxWidth),
+              child: _buildPlannerGuideCard(),
+            );
             return kIsWeb ? WebInterceptor(child: card) : card;
           }
 
@@ -2936,41 +5134,106 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
               compactTopLayout
                   ? contentMaxWidth
                   : math.min(640.0, contentMaxWidth * 0.56);
-          final topControls =
+          final tripDetailsControl = Listener(
+            onPointerDown: (_) => _blockMapTapFor(milliseconds: 1200),
+            child: tripDetailsIsland(
+              maxWidth: compactTopLayout ? tripDetailsMaxWidth : panelWidth,
+            ),
+          );
+          final searchControl = Listener(
+            onPointerDown: (_) => _blockMapTapFor(milliseconds: 1200),
+            child: searchIsland(maxWidth: searchMaxWidth),
+          );
+          final mapModeControl =
+              kIsWeb
+                  ? Listener(
+                    onPointerDown: (_) => _blockMapTapFor(milliseconds: 1200),
+                    child: mapModeIsland(),
+                  )
+                  : const SizedBox.shrink();
+          final plannerGuideControl =
+              _isAdventureTrip
+                  ? Listener(
+                    onPointerDown: (_) => _blockMapTapFor(milliseconds: 1200),
+                    child: SizedBox(
+                      width: panelWidth,
+                      child: plannerGuideIsland(maxWidth: panelWidth),
+                    ),
+                  )
+                  : const SizedBox.shrink();
+          final itineraryControl = Listener(
+            onPointerDown: (_) => _blockMapTapFor(milliseconds: 1200),
+            child: SizedBox(width: panelWidth, child: tripInfoPanel()),
+          );
+          final overlayContent =
               compactTopLayout
                   ? Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      tripDetailsIsland(maxWidth: tripDetailsMaxWidth),
+                      tripDetailsControl,
                       const SizedBox(height: 10),
-                      searchIsland(maxWidth: searchMaxWidth),
+                      searchControl,
                       if (kIsWeb) ...[
                         const SizedBox(height: 10),
                         Align(
                           alignment: Alignment.centerLeft,
-                          child: mapModeIsland(),
+                          child: mapModeControl,
                         ),
                       ],
+                      if (_isAdventureTrip) ...[
+                        const SizedBox(height: 12),
+                        plannerGuideControl,
+                      ],
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.topLeft,
+                          child: itineraryControl,
+                        ),
+                      ),
                     ],
                   )
                   : Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Flexible(
-                        fit: FlexFit.loose,
-                        child: tripDetailsIsland(maxWidth: tripDetailsMaxWidth),
+                      SizedBox(
+                        width: panelWidth,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            tripDetailsControl,
+                            if (_isAdventureTrip) ...[
+                              const SizedBox(height: 12),
+                              plannerGuideControl,
+                            ],
+                            const SizedBox(height: 12),
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.topLeft,
+                                child: itineraryControl,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: searchIsland(maxWidth: searchMaxWidth),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.topCenter,
+                                child: searchControl,
+                              ),
+                            ),
+                            if (kIsWeb) ...[
+                              const SizedBox(width: 12),
+                              mapModeControl,
+                            ],
+                          ],
                         ),
                       ),
-                      if (kIsWeb) ...[
-                        const SizedBox(width: 12),
-                        mapModeIsland(),
-                      ],
                     ],
                   );
 
@@ -2991,6 +5254,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                         'name': w.name,
                                         'lat': w.lat,
                                         'lon': w.lon,
+                                        'isStop': w.isStop,
                                       },
                                     )
                                     .toList(),
@@ -3004,7 +5268,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               });
                             },
                             onMapTap:
-                                (!_adjustRoute)
+                                (!_adjustRoute && _allowsCustomMapDrops)
                                     ? (lat, lon) async =>
                                         _addDroppedPinFromMapTap(lat, lon)
                                     : null,
@@ -3017,16 +5281,26 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                         'name': w.name,
                                         'lat': w.lat,
                                         'lon': w.lon,
+                                        'isStop': w.isStop,
                                       },
                                     )
                                     .toList(),
                             transportMode: _transportMode,
                             segmentTransportModes: _segmentTransportModes,
-                            routeVia: _routeVia,
+                            routeVia: _isPortageTrip ? const [] : _routeVia,
                             segmentRoutingTypes: _segmentRoutingTypes,
                             onRouteInstructions: (lines) {
                               if (!mounted) return;
                               setState(() => _routeInstructions = lines);
+                              _scheduleRouteCachePersist();
+                            },
+                            onRouteSegmentDetails: (segments) {
+                              if (!mounted) return;
+                              setState(
+                                () =>
+                                    _routeSegmentDetails =
+                                        readRouteSegmentDetails(segments),
+                              );
                               _scheduleRouteCachePersist();
                             },
                             onRouteGeometry: (geometry) {
@@ -3036,8 +5310,18 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             },
                             onTransitArrivalStop: (arrivalStop) {
                               if (!mounted) return;
-                              setState(() => _transitArrivalStop = arrivalStop);
+                              setState(
+                                () =>
+                                    _transitArrivalStop =
+                                        arrivalStop.isEmpty
+                                            ? null
+                                            : arrivalStop,
+                              );
                             },
+                            onRouteComputingChanged:
+                                _handleRouteComputingChanged,
+                            onRouteError: _handleRouteError,
+                            focusedRouteStep: _focusedTransitStep,
                             onRouteSummary: (distanceMeters, durationSeconds) {
                               if (!mounted) return;
                               setState(() {
@@ -3046,13 +5330,14 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                               });
                             },
                             onHikingCampsiteTap: _onHikingCampsiteTap,
+                            onPortageAccessTap: _onPortageAccessTap,
                             onMapTap:
-                                (!_adjustRoute)
+                                (!_adjustRoute && _allowsCustomMapDrops)
                                     ? (lat, lon) async =>
                                         _addDroppedPinFromMapTap(lat, lon)
                                     : null,
                             onRouteTapAddVia:
-                                (_adjustRoute)
+                                (_adjustRoute && !_isPortageTrip)
                                     ? (afterIndex, lat, lon) {
                                       if (_isMapTapBlocked) return;
                                       _onRouteTapped(
@@ -3063,7 +5348,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                     }
                                     : null,
                             onViaDragEnd:
-                                (_adjustRoute)
+                                (_adjustRoute && !_isPortageTrip)
                                     ? (viaIndex, lat, lon) {
                                       if (_isMapTapBlocked) return;
                                       _moveViaPoint(
@@ -3074,7 +5359,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                                     }
                                     : null,
                             onViaTapDelete:
-                                (_adjustRoute)
+                                (_adjustRoute && !_isPortageTrip)
                                     ? (viaIndex) {
                                       if (_isMapTapBlocked) return;
                                       _deleteViaPoint(viaIndex: viaIndex);
@@ -3099,30 +5384,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                     sidePadding,
                     topPadding,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Listener(
-                        onPointerDown:
-                            (_) => _blockMapTapFor(milliseconds: 1200),
-                        child: topControls,
-                      ),
-                      const SizedBox(height: 12),
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.topLeft,
-                          child: Listener(
-                            onPointerDown:
-                                (_) => _blockMapTapFor(milliseconds: 1200),
-                            child: SizedBox(
-                              width: panelWidth,
-                              child: tripInfoPanel(),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: overlayContent,
                 ),
               ),
             ],

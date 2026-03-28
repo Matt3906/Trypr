@@ -9,6 +9,232 @@ import 'package:trypr/screens/unlisted_page_responses_screen.dart';
 import 'package:trypr/screens/verified_trip_builder_screen.dart';
 import 'package:intl/intl.dart';
 
+CollectionReference<Map<String, dynamic>> _usersCollection() {
+  return FirebaseFirestore.instance.collection('users');
+}
+
+CollectionReference<Map<String, dynamic>> _adminsCollection() {
+  return FirebaseFirestore.instance.collection('admins');
+}
+
+class _AdminTripRecord {
+  final String ownerUid;
+  final String tripId;
+  final DocumentReference<Map<String, dynamic>> reference;
+  final Map<String, dynamic> data;
+
+  const _AdminTripRecord({
+    required this.ownerUid,
+    required this.tripId,
+    required this.reference,
+    required this.data,
+  });
+}
+
+class _AdminTripsQueryResult {
+  final List<_AdminTripRecord> trips;
+  final int failedUsers;
+
+  const _AdminTripsQueryResult({
+    required this.trips,
+    required this.failedUsers,
+  });
+}
+
+DateTime? _dateTimeFromFirestoreValue(Object? raw) {
+  if (raw is Timestamp) return raw.toDate();
+  if (raw is DateTime) return raw;
+  if (raw is String && raw.trim().isNotEmpty) {
+    return DateTime.tryParse(raw.trim());
+  }
+  return null;
+}
+
+DateTime _adminTripSortDate(Map<String, dynamic> data) {
+  return _dateTimeFromFirestoreValue(data['updatedAt']) ??
+      _dateTimeFromFirestoreValue(data['createdAt']) ??
+      _dateTimeFromFirestoreValue(data['startDate']) ??
+      DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+Future<_AdminTripsQueryResult> _loadAdminTripsIndex() async {
+  final users = await _usersCollection().get();
+  final perUserTrips = await Future.wait(
+    users.docs.map((userDoc) async {
+      try {
+        final trips = await userDoc.reference.collection('trips').get();
+        final records = trips.docs
+            .map(
+              (tripDoc) => _AdminTripRecord(
+                ownerUid: userDoc.id,
+                tripId: tripDoc.id,
+                reference: tripDoc.reference,
+                data: tripDoc.data(),
+              ),
+            )
+            .toList(growable: false);
+        return (records: records, failed: false);
+      } catch (error) {
+        debugPrint('adminTrips load_failed user=${userDoc.id} err=$error');
+        return (records: const <_AdminTripRecord>[], failed: true);
+      }
+    }),
+  );
+
+  final trips = <_AdminTripRecord>[];
+  var failedUsers = 0;
+  for (final result in perUserTrips) {
+    trips.addAll(result.records);
+    if (result.failed) failedUsers++;
+  }
+  trips.sort(
+    (a, b) => _adminTripSortDate(b.data).compareTo(_adminTripSortDate(a.data)),
+  );
+
+  return _AdminTripsQueryResult(trips: trips, failedUsers: failedUsers);
+}
+
+String _displayInitialForName(Object? rawName) {
+  final text = rawName?.toString().trim() ?? '';
+  if (text.isEmpty) return '?';
+  for (final rune in text.runes) {
+    final char = String.fromCharCode(rune);
+    if (RegExp(r'[A-Za-z0-9]').hasMatch(char)) {
+      return char.toUpperCase();
+    }
+  }
+  return '?';
+}
+
+class _AdminLoadingState extends StatelessWidget {
+  final String message;
+  final bool center;
+
+  const _AdminLoadingState({required this.message, this.center = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const CircularProgressIndicator(),
+        const SizedBox(height: 12),
+        Text(
+          message,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.grey[700]),
+        ),
+      ],
+    );
+
+    if (center) {
+      return Center(child: content);
+    }
+    return content;
+  }
+}
+
+class _AdminErrorState extends StatelessWidget {
+  final String message;
+  final Object? error;
+  final bool center;
+
+  const _AdminErrorState({
+    required this.message,
+    this.error,
+    this.center = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final details = error?.toString().trim() ?? '';
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          message,
+          style: const TextStyle(
+            color: Color(0xFFB00020),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        if (details.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            details,
+            style: TextStyle(color: Colors.grey[700], fontSize: 12),
+          ),
+        ],
+      ],
+    );
+
+    if (center) {
+      return Center(child: content);
+    }
+    return content;
+  }
+}
+
+class _AdminAccessState extends StatelessWidget {
+  final String message;
+  final Object? error;
+
+  const _AdminAccessState({required this.message, this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Admin Control Center')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.admin_panel_settings_outlined,
+                      size: 42,
+                      color: Color(0xFF1a1a2e),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      message,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        error.toString(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: () => Navigator.of(context).maybePop(),
+                      child: const Text('Back'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// POWER ADMIN PANEL - Complete platform control center
 class AdminPanelScreen extends StatefulWidget {
   const AdminPanelScreen({super.key});
@@ -39,6 +265,38 @@ class _AdminPanelScreenState extends State<AdminPanelScreen>
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return const _AdminAccessState(
+        message: 'Sign in with an admin account to open the admin panel.',
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _adminsCollection().doc(user.uid).snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _AdminAccessState(
+            message: 'Could not verify admin access.',
+            error: snapshot.error,
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Scaffold(
+            body: _AdminLoadingState(message: 'Checking admin access...'),
+          );
+        }
+        if (!(snapshot.data?.exists ?? false)) {
+          return const _AdminAccessState(
+            message: 'Admin access is required to view this screen.',
+          );
+        }
+        return _buildAdminScaffold();
+      },
+    );
+  }
+
+  Widget _buildAdminScaffold() {
     return Scaffold(
       appBar: AppBar(
         title: const Row(
@@ -177,8 +435,16 @@ class _DashboardTab extends StatelessWidget {
         FutureBuilder<List<int>>(
           future: _getQuickStats(),
           builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _AdminErrorState(
+                message: 'Could not load platform stats.',
+                error: snapshot.error,
+              );
+            }
             if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
+              return const _AdminLoadingState(
+                message: 'Loading platform stats...',
+              );
             }
 
             final stats = snapshot.data!;
@@ -232,7 +498,7 @@ class _DashboardTab extends StatelessWidget {
   }
 
   Future<List<int>> _getQuickStats() async {
-    final users = await FirebaseFirestore.instance.collection('users').get();
+    final users = await _usersCollection().get();
     final verifiedTrips =
         await FirebaseFirestore.instance.collection('verifiedTrips').get();
     final pages =
@@ -251,14 +517,22 @@ class _DashboardTab extends StatelessWidget {
         const SizedBox(height: 16),
         StreamBuilder<QuerySnapshot>(
           stream:
-              FirebaseFirestore.instance
-                  .collection('users')
+              _usersCollection()
                   .orderBy('createdAt', descending: true)
                   .limit(5)
                   .snapshots(),
           builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _AdminErrorState(
+                message: 'Could not load recent activity.',
+                error: snapshot.error,
+              );
+            }
             if (!snapshot.hasData) {
-              return const CircularProgressIndicator();
+              return const _AdminLoadingState(
+                message: 'Loading recent activity...',
+                center: false,
+              );
             }
 
             final users = snapshot.data!.docs;
@@ -285,7 +559,7 @@ class _DashboardTab extends StatelessWidget {
                     leading: CircleAvatar(
                       backgroundColor: const Color(0xFF00B894),
                       child: Text(
-                        name[0].toUpperCase(),
+                        _displayInitialForName(name),
                         style: const TextStyle(color: Colors.white),
                       ),
                     ),
@@ -555,8 +829,7 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream:
-                FirebaseFirestore.instance
-                    .collection('users')
+                _usersCollection()
                     .orderBy(_sortBy, descending: !_ascending)
                     .snapshots(),
             builder: (context, snapshot) {
@@ -603,12 +876,13 @@ class _UsersManagementTabState extends State<_UsersManagementTab> {
                       (data['visitedCountries'] as List<dynamic>?)?.length ?? 0;
 
                   return Card(
+                    key: ValueKey('user-card-$userId'),
                     margin: const EdgeInsets.only(bottom: 12),
                     child: ExpansionTile(
                       leading: CircleAvatar(
                         backgroundColor: const Color(0xFF00B894),
                         child: Text(
-                          name[0].toUpperCase(),
+                          _displayInitialForName(name),
                           style: const TextStyle(color: Colors.white),
                         ),
                       ),
@@ -1000,25 +1274,65 @@ class _InfoRow extends StatelessWidget {
 class _TripsManagementTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collectionGroup('trips').snapshots(),
+    return FutureBuilder<_AdminTripsQueryResult>(
+      future: _loadAdminTripsIndex(),
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _AdminErrorState(
+            message: 'Could not load trips.',
+            error: snapshot.error,
+          );
+        }
         if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
+          return const _AdminLoadingState(message: 'Loading trips...');
         }
 
-        final trips = snapshot.data!.docs;
+        final result = snapshot.data!;
+        final trips = result.trips;
+        if (trips.isEmpty) {
+          if (result.failedUsers > 0) {
+            return _AdminErrorState(
+              message: 'Could not load any trips.',
+              error:
+                  'Trip reads failed for ${result.failedUsers} '
+                  'user${result.failedUsers == 1 ? '' : 's'}.',
+            );
+          }
+          return const Center(child: Text('No trips found'));
+        }
 
         return ListView.builder(
           padding: const EdgeInsets.all(16),
-          itemCount: trips.length,
+          itemCount: trips.length + (result.failedUsers > 0 ? 1 : 0),
           itemBuilder: (context, index) {
-            final doc = trips[index];
-            final data = doc.data() as Map<String, dynamic>;
+            if (result.failedUsers > 0 && index == 0) {
+              return Card(
+                color: const Color(0xFFFFF8E1),
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: const Icon(
+                    Icons.warning_amber_rounded,
+                    color: Color(0xFFB26A00),
+                  ),
+                  title: Text(
+                    'Skipped ${result.failedUsers} '
+                    'user${result.failedUsers == 1 ? '' : 's'} due to trip read errors',
+                  ),
+                  subtitle: const Text(
+                    'Showing the trips that were accessible instead of failing the whole tab.',
+                  ),
+                ),
+              );
+            }
+
+            final tripIndex = result.failedUsers > 0 ? index - 1 : index;
+            final trip = trips[tripIndex];
+            final data = trip.data;
             final tripName = data['name'] ?? 'Untitled Trip';
             final startDate = data['startDate'] ?? '';
             final waypoints =
                 (data['waypoints'] as List<dynamic>?)?.length ?? 0;
+            final tripPath = 'users/${trip.ownerUid}/trips/${trip.tripId}';
 
             return Card(
               margin: const EdgeInsets.only(bottom: 12),
@@ -1042,8 +1356,12 @@ class _TripsManagementTab extends StatelessWidget {
                         ),
                       ],
                   onSelected: (value) {
+                    if (value == 'view') {
+                      _openTrip(context, trip.reference, tripPath, trip.tripId);
+                      return;
+                    }
                     if (value == 'delete') {
-                      _deleteTrip(context, doc.reference, tripName);
+                      _deleteTrip(context, trip.reference, tripName);
                     }
                   },
                 ),
@@ -1053,6 +1371,44 @@ class _TripsManagementTab extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openTrip(
+    BuildContext context,
+    DocumentReference<Map<String, dynamic>> tripRef,
+    String tripPath,
+    String tripId,
+  ) async {
+    try {
+      final tripDoc = await tripRef.get();
+      if (!context.mounted) return;
+      if (!tripDoc.exists) {
+        ScaffoldMessenger.of(context).showTryprSnackBar(
+          const SnackBar(content: Text('Trip no longer exists')),
+        );
+        return;
+      }
+
+      final tripData = Map<String, dynamic>.from(tripDoc.data() ?? {});
+      tripData['tripRef'] = tripPath;
+      tripData.remove('sharedFrom');
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder:
+              (_) => TripDetailScreen(
+                docId: tripId,
+                data: tripData,
+                readOnly: true,
+              ),
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(content: Text('Could not open trip: $error')),
+      );
+    }
   }
 
   Future<void> _deleteTrip(
@@ -2128,14 +2484,20 @@ class _AnalyticsTab extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance
-                      .collection('users')
-                      .orderBy('createdAt')
-                      .snapshots(),
+              stream: _usersCollection().snapshots(),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return _AdminErrorState(
+                    message: 'Could not load user growth data.',
+                    error: snapshot.error,
+                    center: false,
+                  );
+                }
                 if (!snapshot.hasData) {
-                  return const CircularProgressIndicator();
+                  return const _AdminLoadingState(
+                    message: 'Loading user growth...',
+                    center: false,
+                  );
                 }
 
                 final users = snapshot.data!.docs;
@@ -2161,27 +2523,30 @@ class _AnalyticsTab extends StatelessWidget {
                       style: const TextStyle(fontSize: 16),
                     ),
                     const SizedBox(height: 12),
-                    ...monthlyUsers.entries.map((e) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          children: [
-                            SizedBox(width: 80, child: Text(e.key)),
-                            Expanded(
-                              child: LinearProgressIndicator(
-                                value: total > 0 ? e.value / total : 0,
-                                backgroundColor: Colors.grey[200],
-                                valueColor: const AlwaysStoppedAnimation<Color>(
-                                  Color(0xFF00B894),
+                    ...((monthlyUsers.entries.toList()
+                          ..sort((a, b) => a.key.compareTo(b.key)))
+                        .map((e) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                SizedBox(width: 80, child: Text(e.key)),
+                                Expanded(
+                                  child: LinearProgressIndicator(
+                                    value: total > 0 ? e.value / total : 0,
+                                    backgroundColor: Colors.grey[200],
+                                    valueColor:
+                                        const AlwaysStoppedAnimation<Color>(
+                                          Color(0xFF00B894),
+                                        ),
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 8),
+                                Text('${e.value}'),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            Text('${e.value}'),
-                          ],
-                        ),
-                      );
-                    }),
+                          );
+                        })),
                   ],
                 );
               },
@@ -2204,20 +2569,28 @@ class _AnalyticsTab extends StatelessWidget {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 16),
-            StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance
-                      .collectionGroup('trips')
-                      .snapshots(),
+            FutureBuilder<_AdminTripsQueryResult>(
+              future: _loadAdminTripsIndex(),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return _AdminErrorState(
+                    message: 'Could not load destination analytics.',
+                    error: snapshot.error,
+                    center: false,
+                  );
+                }
                 if (!snapshot.hasData) {
-                  return const CircularProgressIndicator();
+                  return const _AdminLoadingState(
+                    message: 'Loading popular destinations...',
+                    center: false,
+                  );
                 }
 
+                final result = snapshot.data!;
                 // Count destination occurrences
                 final Map<String, int> destCounts = {};
-                for (var doc in snapshot.data!.docs) {
-                  final data = doc.data() as Map<String, dynamic>;
+                for (final trip in result.trips) {
+                  final data = trip.data;
                   final waypoints = data['waypoints'] as List<dynamic>? ?? [];
                   for (var wp in waypoints) {
                     if (wp is Map) {
@@ -2239,20 +2612,34 @@ class _AnalyticsTab extends StatelessWidget {
                 }
 
                 return Column(
-                  children:
-                      top10.map((e) {
-                        return ListTile(
-                          leading: const Icon(
-                            Icons.location_on,
-                            color: Color(0xFF00B894),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (result.failedUsers > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'Skipped ${result.failedUsers} '
+                          'user${result.failedUsers == 1 ? '' : 's'} with unreadable trip collections.',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
                           ),
-                          title: Text(e.key),
-                          trailing: Text(
-                            '${e.value} trips',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        );
-                      }).toList(),
+                        ),
+                      ),
+                    ...top10.map((e) {
+                      return ListTile(
+                        leading: const Icon(
+                          Icons.location_on,
+                          color: Color(0xFF00B894),
+                        ),
+                        title: Text(e.key),
+                        trailing: Text(
+                          '${e.value} trips',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      );
+                    }),
+                  ],
                 );
               },
             ),
@@ -2277,13 +2664,36 @@ class _AnalyticsTab extends StatelessWidget {
             FutureBuilder<Map<String, int>>(
               future: _calculateEngagementMetrics(),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return _AdminErrorState(
+                    message: 'Could not load engagement metrics.',
+                    error: snapshot.error,
+                    center: false,
+                  );
+                }
                 if (!snapshot.hasData) {
-                  return const CircularProgressIndicator();
+                  return const _AdminLoadingState(
+                    message: 'Loading engagement metrics...',
+                    center: false,
+                  );
                 }
 
                 final metrics = snapshot.data!;
                 return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if ((metrics['tripReadFailures'] ?? 0) > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'Trip totals exclude ${metrics['tripReadFailures']} '
+                          'user${metrics['tripReadFailures'] == 1 ? '' : 's'} whose trip collections could not be read.',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ),
                     _MetricRow('Total Trips Created', metrics['totalTrips']!),
                     _MetricRow('Verified Trips', metrics['verifiedTrips']!),
                     _MetricRow('Unlisted Pages', metrics['pages']!),
@@ -2299,19 +2709,19 @@ class _AnalyticsTab extends StatelessWidget {
   }
 
   Future<Map<String, int>> _calculateEngagementMetrics() async {
-    final trips =
-        await FirebaseFirestore.instance.collectionGroup('trips').get();
+    final tripsResult = await _loadAdminTripsIndex();
     final verifiedTrips =
         await FirebaseFirestore.instance.collection('verifiedTrips').get();
     final pages =
         await FirebaseFirestore.instance.collection('unlistedPages').get();
-    final users = await FirebaseFirestore.instance.collection('users').get();
+    final users = await _usersCollection().get();
 
     return {
-      'totalTrips': trips.docs.length,
+      'totalTrips': tripsResult.trips.length,
       'verifiedTrips': verifiedTrips.docs.length,
       'pages': pages.docs.length,
       'users': users.docs.length,
+      'tripReadFailures': tripsResult.failedUsers,
     };
   }
 }
@@ -2731,9 +3141,59 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
 // ============================================================================
 // SETTINGS TAB
 // ============================================================================
-class _SettingsTab extends StatelessWidget {
+class _SettingsTab extends StatefulWidget {
+  const _SettingsTab();
+
+  @override
+  State<_SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<_SettingsTab> {
+  bool _updatingDebugMode = false;
+
+  DocumentReference<Map<String, dynamic>>? _adminDocRef() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || uid.trim().isEmpty) return null;
+    return _adminsCollection().doc(uid);
+  }
+
+  Future<void> _toggleDebugMode(bool enabled) async {
+    final ref = _adminDocRef();
+    if (ref == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        const SnackBar(content: Text('Admin session unavailable')),
+      );
+      return;
+    }
+
+    setState(() => _updatingDebugMode = true);
+    try {
+      await ref.set({
+        'debugMode': enabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showTryprSnackBar(
+        SnackBar(
+          content: Text(enabled ? 'Debug mode enabled' : 'Debug mode disabled'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _updatingDebugMode = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final adminDoc = _adminDocRef();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -2770,8 +3230,34 @@ class _SettingsTab extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.bug_report),
                 title: const Text('Debug Mode'),
-                subtitle: const Text('Enable detailed logging'),
-                trailing: Switch(value: false, onChanged: (value) {}),
+                subtitle: const Text(
+                  'Enable detailed logging for this admin account',
+                ),
+                trailing:
+                    adminDoc == null
+                        ? const Icon(Icons.lock_outline)
+                        : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                          stream: adminDoc.snapshots(),
+                          builder: (context, snapshot) {
+                            final debugEnabled =
+                                (snapshot.data?.data()?['debugMode'] ??
+                                    false) ==
+                                true;
+                            if (_updatingDebugMode) {
+                              return const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              );
+                            }
+                            return Switch(
+                              value: debugEnabled,
+                              onChanged: _toggleDebugMode,
+                            );
+                          },
+                        ),
               ),
               const Divider(height: 1),
               ListTile(

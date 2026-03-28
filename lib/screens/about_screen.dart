@@ -9,10 +9,12 @@ class AboutScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompact = screenWidth < 760;
     return Scaffold(
       appBar: const TopTaskbar(dockProgress: 1.0),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
+        padding: EdgeInsets.all(isCompact ? 14.0 : 16.0),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1000),
@@ -25,7 +27,7 @@ class AboutScreen extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 12.0),
                     child: Image.asset(
                       'images/TryprLogo_Black.png',
-                      height: 96,
+                      height: isCompact ? 72 : 96,
                       fit: BoxFit.contain,
                     ),
                   ),
@@ -39,67 +41,78 @@ class AboutScreen extends StatelessWidget {
                 const SizedBox(height: 16),
 
                 // Image + intro (image left, intro right). Caption sits under the image.
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      flex: 4,
-                      child: Column(
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final useStacked = constraints.maxWidth < 760;
+                    final imageColumn = Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          height: useStacked ? 220 : 320,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF5F5F5),
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.08),
+                                blurRadius: 12,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                            image: const DecorationImage(
+                              image: AssetImage('images/aboutUsPic.jpg'),
+                              fit: BoxFit.cover,
+                              alignment: Alignment.center,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'McDonald Lake, Glacier National Park - Apgar, Montana',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontStyle: FontStyle.italic,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ],
+                    );
+                    final introColumn = Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'About Trypr',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Trypr is a trip planning home built for people who love planning — not just point‑A to point‑B navigation. When traditional map tools fall short for ambitious roadtrip planning, Trypr steps in with a planner designed for real trips: rigorous route control, group collaboration, and the tools you need to actually get ready and go.',
+                        ),
+                      ],
+                    );
+
+                    if (useStacked) {
+                      return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // modern image card
-                          Container(
-                            height: 320,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF5F5F5),
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 12,
-                                  offset: const Offset(0, 6),
-                                ),
-                              ],
-                              image: const DecorationImage(
-                                image: AssetImage('images/aboutUsPic.jpg'),
-                                fit: BoxFit.cover,
-                                alignment: Alignment.center,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          // caption sits directly below image and spans beyond its width visually
-                          const Text(
-                            'McDonald Lake, Glacier National Park - Apgar, Montana',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontStyle: FontStyle.italic,
-                              color: Colors.black54,
-                            ),
-                          ),
+                          imageColumn,
+                          const SizedBox(height: 18),
+                          introColumn,
                         ],
-                      ),
-                    ),
-                    const SizedBox(width: 20),
-                    Expanded(
-                      flex: 6,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'About Trypr',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Trypr is a trip planning home built for people who love planning — not just point‑A to point‑B navigation. When traditional map tools fall short for ambitious roadtrip planning, Trypr steps in with a planner designed for real trips: rigorous route control, group collaboration, and the tools you need to actually get ready and go.',
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                      );
+                    }
+
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 4, child: imageColumn),
+                        const SizedBox(width: 20),
+                        Expanded(flex: 6, child: introColumn),
+                      ],
+                    );
+                  },
                 ),
 
                 const SizedBox(height: 20),

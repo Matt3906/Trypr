@@ -12,12 +12,15 @@ import 'package:trypr/widgets/web_interceptor.dart';
 import 'package:trypr/widgets/trip_chat_dialog_clean.dart';
 import 'package:trypr/widgets/trip_expenses_dialog.dart';
 import 'package:trypr/widgets/share_trip_dialog.dart';
+import 'package:trypr/widgets/transit_leg_tabs_card.dart';
 import 'package:trypr/services/name_lookup.dart';
 import 'package:trypr/utils/route_cache.dart';
 import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
 enum _TripDetailMapMode { map2d, globe3d }
+
+enum _TripDetailQuickAction { plan, packing, expenses, chat, share }
 
 class _TransportOption {
   final String mode;
@@ -57,6 +60,10 @@ class TripDetailScreen extends StatefulWidget {
 }
 
 class _TripDetailScreenState extends State<TripDetailScreen> {
+  static const double _mobileRouteSheetCollapsedSize = 0.18;
+  static const double _mobileRouteSheetPreviewSize = 0.40;
+  static const double _mobileRouteSheetMaxSize = 0.75;
+
   int _days = 1;
   bool _saving = false;
   bool _editing = false;
@@ -75,7 +82,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   List<Map<String, dynamic>> _routeVia = const [];
   List<String> _routeInstructions = const [];
   List<Map<String, dynamic>> _routeGeometry3d = const [];
+  List<Map<String, dynamic>> _routeSegmentDetails = const [];
   Map<String, dynamic>? _selectedMapPoint;
+  Map<String, dynamic>? _focusedTransitStep;
+  int _focusedTransitStepRequestId = 0;
 
   List<String> _segmentRoutingTypes = const [];
   List<String> _segmentTransportModes = const [];
@@ -83,8 +93,18 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   bool _suspendMapTap = false;
   _TripDetailMapMode _mapMode = _TripDetailMapMode.map2d;
+  final DraggableScrollableController _mobileRouteSheetController =
+      DraggableScrollableController();
+  double _mobileRouteSheetExtent = _mobileRouteSheetCollapsedSize;
 
   User? get _user => FirebaseAuth.instance.currentUser;
+
+  void _handleMobileRouteSheetChanged() {
+    if (!_mobileRouteSheetController.isAttached || !mounted) return;
+    final next = _mobileRouteSheetController.size;
+    if ((_mobileRouteSheetExtent - next).abs() < 0.005) return;
+    setState(() => _mobileRouteSheetExtent = next);
+  }
 
   Future<T?> _withMapTapSuspended<T>(Future<T?> Function() action) async {
     if (!mounted) return null;
@@ -255,9 +275,98 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             .toList();
   }
 
+  int _waypointNightCount(Map<String, dynamic> waypoint) {
+    final raw = waypoint['nights'];
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '') ?? 0;
+  }
+
+  bool _canEditWaypointRole(
+    int waypointIndex, {
+    List<Map<String, dynamic>>? waypoints,
+  }) {
+    final items = waypoints ?? _waypoints;
+    return waypointIndex > 0 && waypointIndex < items.length - 1;
+  }
+
+  bool _waypointIsStop(
+    int waypointIndex, {
+    List<Map<String, dynamic>>? waypoints,
+  }) {
+    final items = waypoints ?? _waypoints;
+    if (waypointIndex < 0 || waypointIndex >= items.length) return false;
+    if (!_canEditWaypointRole(waypointIndex, waypoints: items)) return false;
+    final raw = items[waypointIndex]['isStop'];
+    if (raw is bool) return raw;
+    return _waypointNightCount(items[waypointIndex]) > 0;
+  }
+
+  String _waypointRoleLabel(
+    int waypointIndex, {
+    List<Map<String, dynamic>>? waypoints,
+  }) {
+    final items = waypoints ?? _waypoints;
+    if (waypointIndex <= 0) return 'Start point';
+    if (waypointIndex >= items.length - 1) return 'End point';
+    return _waypointIsStop(waypointIndex, waypoints: items)
+        ? 'Stay stop'
+        : 'Waypoint';
+  }
+
+  bool _isWaypointOnly(
+    int waypointIndex, {
+    List<Map<String, dynamic>>? waypoints,
+  }) {
+    return _canEditWaypointRole(waypointIndex, waypoints: waypoints) &&
+        !_waypointIsStop(waypointIndex, waypoints: waypoints);
+  }
+
+  List<Map<String, dynamic>> _syncedWaypointsForSave() {
+    return _waypoints
+        .asMap()
+        .entries
+        .map((entry) {
+          final idx = entry.key;
+          final waypoint = Map<String, dynamic>.from(entry.value);
+          final isStop = _waypointIsStop(idx);
+          waypoint['isStop'] = isStop;
+          waypoint['nights'] =
+              isStop
+                  ? (_waypointNightCount(waypoint) > 0
+                      ? _waypointNightCount(waypoint)
+                      : 1)
+                  : 0;
+          return waypoint;
+        })
+        .toList(growable: false);
+  }
+
+  void _syncLiveWaypointsFromState() {
+    _liveData['waypoints'] =
+        _waypoints.map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  void _setWaypointRole(int waypointIndex, bool isStop) {
+    if (!_canEditWaypointRole(waypointIndex)) return;
+    setState(() {
+      final waypoint = _waypoints[waypointIndex];
+      waypoint['isStop'] = isStop;
+      waypoint['nights'] =
+          isStop
+              ? (_waypointNightCount(waypoint) > 0
+                  ? _waypointNightCount(waypoint)
+                  : 1)
+              : 0;
+      _syncLiveWaypointsFromState();
+    });
+  }
+
   void _applyCachedRouteStateFromLiveData() {
     _routeGeometry3d = readRouteGeometry(_liveData['routeGeometry3d']);
     _routeInstructions = readRouteInstructions(_liveData['routeInstructions']);
+    _routeSegmentDetails = readRouteSegmentDetails(
+      _liveData['routeSegmentDetails'],
+    );
   }
 
   bool _sameRouteInstructions(List<String> next) {
@@ -284,6 +393,85 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return true;
   }
 
+  bool _sameRouteSegmentDetails(List<Map<String, dynamic>> next) {
+    if (_routeSegmentDetails.length != next.length) return false;
+    for (var i = 0; i < next.length; i++) {
+      final current = _routeSegmentDetails[i];
+      final candidate = next[i];
+      final currentIndex = (current['segmentIndex'] as num?)?.toInt() ?? -1;
+      final candidateIndex = (candidate['segmentIndex'] as num?)?.toInt() ?? -1;
+      if (currentIndex != candidateIndex) return false;
+      if ((current['mode'] ?? '').toString() !=
+          (candidate['mode'] ?? '').toString()) {
+        return false;
+      }
+      final currentSteps = current['steps'];
+      final candidateSteps = candidate['steps'];
+      if (currentSteps is! List || candidateSteps is! List) return false;
+      if (currentSteps.length != candidateSteps.length) return false;
+      for (var stepIndex = 0; stepIndex < candidateSteps.length; stepIndex++) {
+        final a = currentSteps[stepIndex];
+        final b = candidateSteps[stepIndex];
+        if (a is! Map || b is! Map) return false;
+        const keys = ['mode', 'tabLabel', 'headline', 'detail', 'caption'];
+        for (final key in keys) {
+          if ((a[key] ?? '').toString() != (b[key] ?? '').toString()) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  List<Map<String, dynamic>> _legacyTransitStepsFromInstructions() {
+    return _routeInstructions
+        .map((line) {
+          final text = line.trim();
+          if (text.isEmpty) return const <String, dynamic>{};
+          final lower = text.toLowerCase();
+          if (lower.startsWith('walk')) {
+            return {'mode': 'walking', 'tabLabel': 'Walk', 'headline': text};
+          }
+          if (lower.startsWith('bike')) {
+            return {'mode': 'biking', 'tabLabel': 'Bike', 'headline': text};
+          }
+          return {'mode': 'transit', 'tabLabel': 'Train', 'headline': text};
+        })
+        .where((step) => step.isNotEmpty)
+        .take(6)
+        .toList(growable: false);
+  }
+
+  Map<String, dynamic>? _transitSegmentDetailAt(int segmentIndex) {
+    for (final detail in _routeSegmentDetails) {
+      final index = (detail['segmentIndex'] as num?)?.toInt();
+      final mode = _normalizeTransportMode((detail['mode'] ?? '').toString());
+      final steps = detail['steps'];
+      if (index == segmentIndex && mode == 'transit' && steps is List) {
+        return detail;
+      }
+    }
+
+    final transitSegments = <int>[];
+    for (var i = 0; i < _waypoints.length - 1; i++) {
+      if (_segmentTransportModeAt(i) == 'transit') {
+        transitSegments.add(i);
+      }
+    }
+    if (transitSegments.length == 1 &&
+        transitSegments.first == segmentIndex &&
+        _routeInstructions.isNotEmpty) {
+      return {
+        'segmentIndex': segmentIndex,
+        'mode': 'transit',
+        'steps': _legacyTransitStepsFromInstructions(),
+        if (_transitArrivalStop != null) 'arrivalStop': _transitArrivalStop,
+      };
+    }
+    return null;
+  }
+
   String _currentRouteCacheKey() {
     return buildRouteCacheKey(
       waypoints: _waypoints,
@@ -298,7 +486,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     final stored = (_liveData['routeCacheKey'] ?? '').toString().trim();
     return stored.isNotEmpty &&
         stored == _currentRouteCacheKey() &&
-        _routeGeometry3d.length >= 2;
+        _routeGeometry3d.length >= 2 &&
+        (!_hasTransitModeInRoute || _routeSegmentDetails.isNotEmpty);
   }
 
   Map<String, dynamic> _routeCachePayload() {
@@ -306,6 +495,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       'routeCacheKey': _currentRouteCacheKey(),
       'routeGeometry3d': simplifyRouteGeometry(_routeGeometry3d),
       'routeInstructions': _routeInstructions.take(8).toList(growable: false),
+      'routeSegmentDetails': _routeSegmentDetails,
     };
   }
 
@@ -336,6 +526,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _mobileRouteSheetController.addListener(_handleMobileRouteSheetChanged);
     // Use a mutable local copy of the trip data. If this trip points to a
     // remote `tripRef`, subscribe to that document so the UI updates in
     // realtime when the owner makes changes.
@@ -718,6 +909,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       _routeVia = updatedRouteVia;
       _routeInstructions = const [];
       _routeGeometry3d = const [];
+      _routeSegmentDetails = const [];
+      _focusedTransitStep = null;
       if (!_hasTransitModeInRoute) {
         _transitArrivalStop = null;
       }
@@ -863,6 +1056,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       _routeVia = nextRouteVia;
       _routeInstructions = const [];
       _routeGeometry3d = const [];
+      _routeSegmentDetails = const [];
+      _focusedTransitStep = null;
       if (!_hasTransitModeInRoute) {
         _transitArrivalStop = null;
       }
@@ -894,7 +1089,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     if (ownerUid != me.uid) return;
 
     try {
-      await tripRef.update({'transitArrivalStop': stop});
+      if (stop.isEmpty) {
+        await tripRef.update({'transitArrivalStop': FieldValue.delete()});
+      } else {
+        await tripRef.update({'transitArrivalStop': stop});
+      }
     } catch (_) {
       // non-fatal
     }
@@ -985,6 +1184,8 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   @override
   void dispose() {
+    _mobileRouteSheetController.removeListener(_handleMobileRouteSheetChanged);
+    _mobileRouteSheetController.dispose();
     _searchController.dispose();
     _debounce?.cancel();
     _routeCachePersistDebounce?.cancel();
@@ -1055,7 +1256,10 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               })
               .map((v) => Map<String, dynamic>.from(v))
               .toList();
+      final syncedWaypoints = _syncedWaypointsForSave();
       setState(() {
+        _waypoints = syncedWaypoints;
+        _syncLiveWaypointsFromState();
         _segmentRoutingTypes = nextSegmentRouting;
         _segmentTransportModes = nextSegmentModes;
         _routeVia = nextRouteVia;
@@ -1063,7 +1267,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
       await targetRef.update({
         'totalDays': _days,
-        'waypoints': _waypoints,
+        'waypoints': syncedWaypoints,
         'segmentRoutingTypes': nextSegmentRouting,
         'segmentTransportModes': nextSegmentModes,
         'routeVia': nextRouteVia,
@@ -1594,8 +1798,15 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   void _addWaypointFromTap(double lat, double lon) async {
     setState(() {
       final idx = _waypoints.length + 1;
-      _waypoints.add({'lat': lat, 'lon': lon, 'name': 'Point $idx'});
+      _waypoints.add({
+        'lat': lat,
+        'lon': lon,
+        'name': 'Point $idx',
+        'isStop': false,
+        'nights': 0,
+      });
       _syncSegmentDataWithWaypoints();
+      _syncLiveWaypointsFromState();
     });
   }
 
@@ -1697,9 +1908,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       setState(() {
         if (index >= 0 && index < _waypoints.length) {
           _waypoints[index] = result;
-          // Keep live data in sync so preview chips update immediately
-          _liveData['waypoints'] =
-              _waypoints.map((e) => Map<String, dynamic>.from(e)).toList();
+          _syncLiveWaypointsFromState();
         }
       });
     }
@@ -1837,6 +2046,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                         display;
                                     _waypoints[index]['lat'] = lat;
                                     _waypoints[index]['lon'] = lon;
+                                    _syncLiveWaypointsFromState();
                                     if (mounted) setState(() {});
                                     Navigator.of(ctx).pop(true);
                                   },
@@ -1860,6 +2070,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                     onPressed: () {
                       // If user changed just the name, update that and close
                       _waypoints[index]['name'] = localNameCtrl.text;
+                      _syncLiveWaypointsFromState();
                       localDebounce?.cancel();
                       Navigator.of(ctx).pop(true);
                     },
@@ -1888,6 +2099,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     setState(() {
       _waypoints.removeAt(index);
       _syncSegmentDataWithWaypoints();
+      _syncLiveWaypointsFromState();
     });
   }
 
@@ -1923,6 +2135,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       _routeVia = const [];
       _routeInstructions = const [];
       _routeGeometry3d = const [];
+      _routeSegmentDetails = const [];
     });
     try {
       await tripRef.update({'routeVia': []});
@@ -2070,102 +2283,119 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                                 padding: const EdgeInsets.symmetric(
                                   vertical: 10,
                                 ),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '${i + 1} → ${i + 2}',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w800,
-                                            ),
+                                child: LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final isCompact =
+                                        constraints.maxWidth < 460;
+                                    final segmentText = Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${i + 1} → ${i + 2}',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w800,
                                           ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            '$a → $b',
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.black54,
-                                            ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '$a → $b',
+                                          maxLines: isCompact ? 3 : 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.black54,
                                           ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    SizedBox(
-                                      width: 210,
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          DropdownButtonFormField<String>(
-                                            initialValue: currentMode,
-                                            isExpanded: true,
-                                            decoration: const InputDecoration(
-                                              isDense: true,
-                                              labelText: 'Mode',
-                                              border: OutlineInputBorder(),
-                                            ),
-                                            items:
-                                                _transportOptions
-                                                    .map(
-                                                      (opt) => DropdownMenuItem(
-                                                        value: opt.mode,
-                                                        child: Text(
-                                                          '${opt.emoji} ${opt.label}',
-                                                        ),
+                                        ),
+                                      ],
+                                    );
+                                    final controls = Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        DropdownButtonFormField<String>(
+                                          initialValue: currentMode,
+                                          isExpanded: true,
+                                          decoration: const InputDecoration(
+                                            isDense: true,
+                                            labelText: 'Mode',
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          items:
+                                              _transportOptions
+                                                  .map(
+                                                    (opt) => DropdownMenuItem(
+                                                      value: opt.mode,
+                                                      child: Text(
+                                                        '${opt.emoji} ${opt.label}',
                                                       ),
-                                                    )
-                                                    .toList(),
-                                            onChanged: (value) async {
-                                              if (value == null) return;
-                                              await _setSegmentTransportMode(
-                                                i,
-                                                value,
-                                              );
-                                              setState2(() {});
-                                            },
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Wrap(
-                                            spacing: 8,
-                                            children: [
-                                              ChoiceChip(
-                                                label: const Text('Calculated'),
-                                                selected:
-                                                    current == 'calculated',
-                                                onSelected: (v) async {
-                                                  if (!v) return;
-                                                  await _setSegmentRoutingType(
-                                                    i,
-                                                    'calculated',
-                                                  );
-                                                  setState2(() {});
-                                                },
-                                              ),
-                                              ChoiceChip(
-                                                label: const Text('Direct'),
-                                                selected: current == 'direct',
-                                                onSelected: (v) async {
-                                                  if (!v) return;
-                                                  await _setSegmentRoutingType(
-                                                    i,
-                                                    'direct',
-                                                  );
-                                                  setState2(() {});
-                                                },
-                                              ),
-                                            ],
-                                          ),
+                                                    ),
+                                                  )
+                                                  .toList(),
+                                          onChanged: (value) async {
+                                            if (value == null) return;
+                                            await _setSegmentTransportMode(
+                                              i,
+                                              value,
+                                            );
+                                            setState2(() {});
+                                          },
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: [
+                                            ChoiceChip(
+                                              label: const Text('Calculated'),
+                                              selected: current == 'calculated',
+                                              onSelected: (v) async {
+                                                if (!v) return;
+                                                await _setSegmentRoutingType(
+                                                  i,
+                                                  'calculated',
+                                                );
+                                                setState2(() {});
+                                              },
+                                            ),
+                                            ChoiceChip(
+                                              label: const Text('Direct'),
+                                              selected: current == 'direct',
+                                              onSelected: (v) async {
+                                                if (!v) return;
+                                                await _setSegmentRoutingType(
+                                                  i,
+                                                  'direct',
+                                                );
+                                                setState2(() {});
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    );
+
+                                    if (isCompact) {
+                                      return Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          segmentText,
+                                          const SizedBox(height: 12),
+                                          controls,
                                         ],
-                                      ),
-                                    ),
-                                  ],
+                                      );
+                                    }
+
+                                    return Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(child: segmentText),
+                                        const SizedBox(width: 10),
+                                        SizedBox(width: 210, child: controls),
+                                      ],
+                                    );
+                                  },
                                 ),
                               );
                             },
@@ -2238,17 +2468,20 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         'lon': lon,
         'name': display,
         'routing_query': display,
+        'isStop': false,
+        'nights': 0,
       });
       _placeSuggestions = [];
       _searchController.clear();
       _syncSegmentDataWithWaypoints();
+      _syncLiveWaypointsFromState();
     });
   }
 
-  Widget _buildOmnibox(BuildContext context) {
-    // Hide the search bar entirely for read-only viewers.
-    if (widget.readOnly) return const SizedBox.shrink();
-
+  Widget _buildOmniboxPanel(
+    BuildContext context, {
+    double maxWidth = 720,
+  }) {
     final field = TextField(
       controller: _searchController,
       textInputAction: TextInputAction.search,
@@ -2286,58 +2519,62 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       },
     );
 
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _maybePointerIntercept(
+            _glassCard(
+              borderRadius: BorderRadius.circular(999),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: field,
+            ),
+          ),
+          if (_placeSuggestions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _maybePointerIntercept(
+                _glassCard(
+                  padding: EdgeInsets.zero,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: _placeSuggestions.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (ctx, i) {
+                        final p = _placeSuggestions[i];
+                        final display = (p['display_name'] ?? '') as String;
+                        return ListTile(
+                          dense: true,
+                          title: Text(
+                            display,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onTap: () => _onSelectPlaceSuggestion(p),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOmnibox(BuildContext context) {
+    // Hide the search bar entirely for read-only viewers.
+    if (widget.readOnly) return const SizedBox.shrink();
+
     return Align(
       alignment: Alignment.topCenter,
       child: Padding(
         padding: const EdgeInsets.only(top: 16),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _maybePointerIntercept(
-                _glassCard(
-                  borderRadius: BorderRadius.circular(999),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  child: field,
-                ),
-              ),
-              if (_placeSuggestions.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: _maybePointerIntercept(
-                    _glassCard(
-                      padding: EdgeInsets.zero,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 320),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          itemCount: _placeSuggestions.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (ctx, i) {
-                            final p = _placeSuggestions[i];
-                            final display = (p['display_name'] ?? '') as String;
-                            return ListTile(
-                              dense: true,
-                              title: Text(
-                                display,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              onTap: () => _onSelectPlaceSuggestion(p),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        child: _buildOmniboxPanel(context),
       ),
     );
   }
@@ -2349,14 +2586,114 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
     return Icons.location_city;
   }
 
+  Widget _buildWaypointRoleChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0x22000000)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  Widget _buildWaypointRoleButton(int index) {
+    final isStop = _waypointIsStop(index);
+    return PopupMenuButton<bool>(
+      tooltip: 'Change destination type',
+      onSelected: (value) => _setWaypointRole(index, value),
+      itemBuilder:
+          (_) => const [
+            PopupMenuItem<bool>(value: true, child: Text('Stop')),
+            PopupMenuItem<bool>(value: false, child: Text('Waypoint')),
+          ],
+      child: _buildWaypointRoleChip(isStop ? 'Stop' : 'Waypoint'),
+    );
+  }
+
+  Widget _buildRouteTileActionButton({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        width: 34,
+        height: 34,
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.72),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Color(0x22000000)),
+          ),
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            iconSize: 18,
+            tooltip: tooltip,
+            onPressed: onPressed,
+            icon: Icon(icon, color: Colors.black87),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRouteTileDragHandle(int index) {
+    return ReorderableDragStartListener(
+      index: index,
+      child: SizedBox(
+        width: 34,
+        height: 34,
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.72),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Color(0x22000000)),
+          ),
+          child: const Center(
+            child: Icon(Icons.drag_handle, size: 18, color: Colors.black87),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRouteTileActions(int index) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        _buildRouteTileActionButton(
+          tooltip: 'Edit destination',
+          icon: Icons.tune,
+          onPressed: () => _editWaypointDialog(index),
+        ),
+        _buildRouteTileActionButton(
+          tooltip: 'Remove destination',
+          icon: Icons.delete,
+          onPressed: () => _removeWaypoint(index),
+        ),
+        _buildRouteTileDragHandle(index),
+      ],
+    );
+  }
+
   Widget _buildStopTile({
     required int index,
     required Map<String, dynamic> wp,
     required bool isLast,
     required VoidCallback? onTap,
-    Widget? trailing,
+    Widget? roleWidget,
+    Widget? actions,
   }) {
     final name = (wp['name'] ?? 'Stop ${index + 1}').toString();
+    final roleLabel = _waypointRoleLabel(index);
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
@@ -2390,10 +2727,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       border: Border.all(color: const Color(0x22000000)),
                     ),
                     child: Center(
-                      child: Text(
-                        '${index + 1}',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
+                      child:
+                          _isWaypointOnly(index)
+                              ? const Icon(
+                                Icons.alt_route,
+                                size: 17,
+                                color: Colors.black87,
+                              )
+                              : Text(
+                                '${index + 1}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                     ),
                   ),
                 ],
@@ -2401,81 +2747,125 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(_iconForStop(wp), size: 18, color: Colors.black87),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                  Row(
+                    children: [
+                      Icon(_iconForStop(wp), size: 18, color: Colors.black87),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [roleWidget ?? _buildWaypointRoleChip(roleLabel)],
+                  ),
+                  if (actions != null) ...[const SizedBox(height: 8), actions],
                 ],
               ),
             ),
-            if (trailing != null) trailing,
           ],
         ),
       ),
     );
   }
 
+  Widget _buildTransitSegmentCard(int segmentIndex) {
+    if (segmentIndex < 0 || segmentIndex + 1 >= _waypoints.length) {
+      return const SizedBox.shrink();
+    }
+    if (_segmentTransportModeAt(segmentIndex) != 'transit') {
+      return const SizedBox.shrink();
+    }
+    final detail = _transitSegmentDetailAt(segmentIndex);
+    if (detail == null) return const SizedBox.shrink();
+    final steps =
+        (detail['steps'] as List?)
+            ?.whereType<Map>()
+            .map(
+              (step) => Map<String, dynamic>.from(step.cast<String, dynamic>()),
+            )
+            .toList(growable: false) ??
+        const <Map<String, dynamic>>[];
+    if (steps.isEmpty) return const SizedBox.shrink();
+    final arrivalStop = detail['arrivalStop'];
+    final arrivalName =
+        arrivalStop is Map
+            ? (arrivalStop['name'] ?? arrivalStop['label'] ?? '').toString()
+            : '';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(44, 0, 0, 6),
+      child: TransitLegTabsCard(
+        originName:
+            (_waypoints[segmentIndex]['name'] ?? 'Stop ${segmentIndex + 1}')
+                .toString(),
+        destinationName:
+            (_waypoints[segmentIndex + 1]['name'] ?? 'Stop ${segmentIndex + 2}')
+                .toString(),
+        arrivalStopName: arrivalName,
+        steps: steps,
+        onStepSelected: _focusTransitStepOnMap,
+      ),
+    );
+  }
+
+  void _focusTransitStepOnMap(Map<String, dynamic> step) {
+    setState(() {
+      _focusedTransitStep = {
+        ...step,
+        'requestId': ++_focusedTransitStepRequestId,
+      };
+    });
+  }
+
   Widget _buildRouteControls({required bool canWriteTrip}) {
     final waypoints = _waypoints;
-
-    final transportRow = Row(
-      children: [
-        const Icon(Icons.directions, size: 18, color: Colors.black87),
-        const SizedBox(width: 8),
-        const Text(
-          'Default',
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children:
-                  _transportOptions.map((opt) {
-                    final mode = opt.mode;
-                    final selected = _transportMode == mode;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ChoiceChip(
-                        label: Text(
-                          opt.emoji,
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                        selected: selected,
-                        showCheckmark: false,
-                        visualDensity: VisualDensity.compact,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 2,
-                        ),
-                        onSelected:
-                            (!canWriteTrip)
-                                ? null
-                                : (v) {
-                                  if (!v) return;
-                                  _setTransportMode(mode);
-                                },
-                      ),
-                    );
-                  }).toList(),
-            ),
-          ),
-        ),
-      ],
+    final transportChips = SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children:
+            _transportOptions.map((opt) {
+              final mode = opt.mode;
+              final selected = _transportMode == mode;
+              return Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ChoiceChip(
+                  label: Text(opt.emoji, style: const TextStyle(fontSize: 14)),
+                  selected: selected,
+                  showCheckmark: false,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  onSelected:
+                      (!canWriteTrip)
+                          ? null
+                          : (v) {
+                            if (!v) return;
+                            _setTransportMode(mode);
+                          },
+                ),
+              );
+            }).toList(),
+      ),
     );
 
     final quickActions = Wrap(
@@ -2506,7 +2896,47 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
     return Column(
       children: [
-        transportRow,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final isCompact = constraints.maxWidth < 440;
+            if (isCompact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.directions, size: 18, color: Colors.black87),
+                      SizedBox(width: 8),
+                      Text(
+                        'Default transport',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  transportChips,
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                const Icon(Icons.directions, size: 18, color: Colors.black87),
+                const SizedBox(width: 8),
+                const Text(
+                  'Default',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: transportChips),
+              ],
+            );
+          },
+        ),
         const Padding(
           padding: EdgeInsets.only(top: 4.0),
           child: Align(
@@ -2552,7 +2982,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         ),
         const SizedBox(width: 10),
         Text(
-          '${waypoints.length} stops',
+          '${waypoints.length} destinations',
           style: const TextStyle(fontSize: 12, color: Colors.black54),
         ),
         const Spacer(),
@@ -2581,6 +3011,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   final item = _waypoints.removeAt(oldIndex);
                   _waypoints.insert(newIndex, item);
                   _syncSegmentDataWithWaypoints();
+                  _syncLiveWaypointsFromState();
                 });
               },
               children: [
@@ -2597,28 +3028,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                       wp: e.value,
                       isLast: e.key == waypoints.length - 1,
                       onTap: null,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: 'Edit stop',
-                            icon: const Icon(Icons.tune),
-                            onPressed: () => _editWaypointDialog(e.key),
-                          ),
-                          IconButton(
-                            tooltip: 'Remove stop',
-                            icon: const Icon(Icons.delete),
-                            onPressed: () => _removeWaypoint(e.key),
-                          ),
-                          ReorderableDragStartListener(
-                            index: e.key,
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 8.0),
-                              child: Icon(Icons.drag_handle),
-                            ),
-                          ),
-                        ],
-                      ),
+                      roleWidget:
+                          _canEditWaypointRole(e.key)
+                              ? _buildWaypointRoleButton(e.key)
+                              : null,
+                      actions: _buildRouteTileActions(e.key),
                     ),
                   ),
               ],
@@ -2627,14 +3041,19 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               itemCount: waypoints.length,
               itemBuilder: (ctx, i) {
                 final wp = waypoints[i];
-                return _buildStopTile(
-                  index: i,
-                  wp: wp,
-                  isLast: i == waypoints.length - 1,
-                  onTap:
-                      widget.readOnly
-                          ? null
-                          : () => _openTripPlanning(focusWaypointIndex: i),
+                return Column(
+                  children: [
+                    _buildStopTile(
+                      index: i,
+                      wp: wp,
+                      isLast: i == waypoints.length - 1,
+                      onTap:
+                          widget.readOnly
+                              ? null
+                              : () => _openTripPlanning(focusWaypointIndex: i),
+                    ),
+                    if (i < waypoints.length - 1) _buildTransitSegmentCard(i),
+                  ],
                 );
               },
             );
@@ -2670,143 +3089,130 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
       alignment: Alignment.bottomCenter,
       child: _maybePointerIntercept(
         DraggableScrollableSheet(
-          initialChildSize: 0.18,
-          minChildSize: 0.12,
-          maxChildSize: 0.75,
+          controller: _mobileRouteSheetController,
+          initialChildSize: _mobileRouteSheetCollapsedSize,
+          minChildSize: _mobileRouteSheetCollapsedSize,
+          maxChildSize: _mobileRouteSheetMaxSize,
+          snap: true,
+          snapSizes: const <double>[_mobileRouteSheetPreviewSize],
           builder: (ctx, scrollController) {
             final waypoints = _waypoints;
+            final sheetHeader = Column(
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black26,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text(
+                      'Route',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      '${waypoints.length} destinations',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (!widget.readOnly)
+                      IconButton(
+                        tooltip: _editing ? 'Done' : 'Edit',
+                        icon: Icon(_editing ? Icons.check : Icons.edit),
+                        onPressed: canWriteTrip ? _toggleEditing : null,
+                      ),
+                    if (_editing && !widget.readOnly)
+                      IconButton(
+                        tooltip: 'Save',
+                        icon: const Icon(Icons.save),
+                        onPressed: _saving ? null : _saveAll,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _buildRouteControls(canWriteTrip: canWriteTrip),
+                const SizedBox(height: 8),
+                _buildMapPointInsightCard(),
+                const SizedBox(height: 8),
+              ],
+            );
             return _glassCard(
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(18),
                 topRight: Radius.circular(18),
               ),
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-              child: Column(
-                children: [
-                  Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Text(
-                        'Route',
-                        style: TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        '${waypoints.length} stops',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.black54,
-                        ),
-                      ),
-                      const Spacer(),
-                      if (!widget.readOnly)
-                        IconButton(
-                          tooltip: _editing ? 'Done' : 'Edit',
-                          icon: Icon(_editing ? Icons.check : Icons.edit),
-                          onPressed: canWriteTrip ? _toggleEditing : null,
-                        ),
-                      if (_editing && !widget.readOnly)
-                        IconButton(
-                          tooltip: 'Save',
-                          icon: const Icon(Icons.save),
-                          onPressed: _saving ? null : _saveAll,
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _buildRouteControls(canWriteTrip: canWriteTrip),
-                  const SizedBox(height: 8),
-                  _buildMapPointInsightCard(),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child:
-                        _editing
-                            ? ReorderableListView(
-                              buildDefaultDragHandles: false,
-                              onReorder: (oldIndex, newIndex) {
-                                setState(() {
-                                  if (newIndex > oldIndex) newIndex -= 1;
-                                  final item = _waypoints.removeAt(oldIndex);
-                                  _waypoints.insert(newIndex, item);
-                                  _syncSegmentDataWithWaypoints();
-                                });
-                              },
-                              children: [
-                                for (final e in waypoints.asMap().entries)
-                                  Container(
-                                    key: ValueKey('sheet-wp-${e.key}'),
-                                    margin: const EdgeInsets.symmetric(
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(12),
-                                      color: const Color(0x08FFFFFF),
-                                    ),
-                                    child: _buildStopTile(
-                                      index: e.key,
-                                      wp: e.value,
-                                      isLast: e.key == waypoints.length - 1,
-                                      onTap: null,
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          IconButton(
-                                            tooltip: 'Edit stop',
-                                            icon: const Icon(Icons.tune),
-                                            onPressed:
-                                                () =>
-                                                    _editWaypointDialog(e.key),
-                                          ),
-                                          IconButton(
-                                            tooltip: 'Remove stop',
-                                            icon: const Icon(Icons.delete),
-                                            onPressed:
-                                                () => _removeWaypoint(e.key),
-                                          ),
-                                          ReorderableDragStartListener(
-                                            index: e.key,
-                                            child: const Padding(
-                                              padding: EdgeInsets.symmetric(
-                                                horizontal: 8.0,
-                                              ),
-                                              child: Icon(Icons.drag_handle),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            )
-                            : ListView.builder(
-                              controller: scrollController,
-                              itemCount: waypoints.length,
-                              itemBuilder: (ctx2, i) {
-                                final wp = waypoints[i];
-                                return _buildStopTile(
-                                  index: i,
-                                  wp: wp,
-                                  isLast: i == waypoints.length - 1,
-                                  onTap:
-                                      widget.readOnly
-                                          ? null
-                                          : () => _openTripPlanning(
-                                            focusWaypointIndex: i,
-                                          ),
-                                );
-                              },
+              child:
+                  _editing
+                      ? ReorderableListView(
+                        scrollController: scrollController,
+                        buildDefaultDragHandles: false,
+                        padding: EdgeInsets.zero,
+                        header: sheetHeader,
+                        footer: const SizedBox(height: 16),
+                        onReorder: (oldIndex, newIndex) {
+                          setState(() {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final item = _waypoints.removeAt(oldIndex);
+                            _waypoints.insert(newIndex, item);
+                            _syncSegmentDataWithWaypoints();
+                            _syncLiveWaypointsFromState();
+                          });
+                        },
+                        children: [
+                          for (final e in waypoints.asMap().entries)
+                            Container(
+                              key: ValueKey('sheet-wp-${e.key}'),
+                              margin: const EdgeInsets.symmetric(vertical: 2),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                color: const Color(0x08FFFFFF),
+                              ),
+                              child: _buildStopTile(
+                                index: e.key,
+                                wp: e.value,
+                                isLast: e.key == waypoints.length - 1,
+                                onTap: null,
+                                roleWidget:
+                                    _canEditWaypointRole(e.key)
+                                        ? _buildWaypointRoleButton(e.key)
+                                        : null,
+                                actions: _buildRouteTileActions(e.key),
+                              ),
                             ),
-                  ),
-                ],
-              ),
+                        ],
+                      )
+                      : ListView(
+                        controller: scrollController,
+                        padding: EdgeInsets.zero,
+                        children: [
+                          sheetHeader,
+                          for (final entry in waypoints.asMap().entries) ...[
+                            _buildStopTile(
+                              index: entry.key,
+                              wp: entry.value,
+                              isLast: entry.key == waypoints.length - 1,
+                              onTap:
+                                  widget.readOnly
+                                      ? null
+                                      : () => _openTripPlanning(
+                                        focusWaypointIndex: entry.key,
+                                      ),
+                            ),
+                            if (entry.key < waypoints.length - 1)
+                              _buildTransitSegmentCard(entry.key),
+                          ],
+                          const SizedBox(height: 16),
+                        ],
+                      ),
             );
           },
         ),
@@ -2817,10 +3223,97 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
   Widget _buildActionCluster(BuildContext context, {required num totalKm}) {
     final waypoints = _waypoints;
     final isNarrow = MediaQuery.sizeOf(context).width < 760;
-    final bottomOffset = isNarrow ? 130.0 : 24.0;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final bottomOffset =
+        isNarrow
+            ? ((screenHeight * _mobileRouteSheetExtent) + 12.0)
+                .clamp(108.0, screenHeight * 0.78)
+            : 24.0;
 
     final statsText =
-        '${waypoints.length} Stops | ${totalKm.toStringAsFixed(0)} km';
+        '${waypoints.length} Destinations | ${totalKm.toStringAsFixed(0)} km';
+
+    final statsPill = _glassCard(
+      borderRadius: BorderRadius.circular(999),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Text(
+        statsText,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    );
+
+    final saveButton =
+        widget.readOnly
+            ? null
+            : ElevatedButton(
+              onPressed: _saving ? null : _saveAll,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF111827),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (_saving)
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  else
+                    const Icon(Icons.auto_awesome, size: 18),
+                  const SizedBox(width: 8),
+                  Text(_saving ? 'Saving…' : 'Save Trip'),
+                ],
+              ),
+            );
+
+    if (isNarrow) {
+      return AnimatedPositioned(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        left: 16,
+        right: 16,
+        bottom: bottomOffset,
+        child: Align(
+          alignment: Alignment.center,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: _maybePointerIntercept(
+              _glassCard(
+                borderRadius: BorderRadius.circular(24),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Align(
+                      alignment: Alignment.center,
+                      child: statsPill,
+                    ),
+                    if (saveButton != null) ...[
+                      const SizedBox(height: 10),
+                      SizedBox(width: double.infinity, child: saveButton),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
     return Positioned(
       right: 24,
@@ -2829,52 +3322,241 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _glassCard(
-              borderRadius: BorderRadius.circular(999),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Text(
-                statsText,
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-            ),
+            statsPill,
             const SizedBox(width: 12),
-            if (!widget.readOnly)
-              ElevatedButton(
-                onPressed: _saving ? null : _saveAll,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF111827),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_saving)
-                      const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.white,
-                          ),
-                        ),
-                      )
-                    else
-                      const Icon(Icons.auto_awesome, size: 18),
-                    const SizedBox(width: 8),
-                    Text(_saving ? 'Saving…' : 'Save Trip'),
-                  ],
-                ),
-              ),
+            if (saveButton != null) saveButton,
           ],
         ),
+      ),
+    );
+  }
+
+  void _handleQuickAction(_TripDetailQuickAction action) {
+    switch (action) {
+      case _TripDetailQuickAction.plan:
+        _openTripPlanning();
+        break;
+      case _TripDetailQuickAction.packing:
+        _openPackingList();
+        break;
+      case _TripDetailQuickAction.expenses:
+        _openExpensesDialog();
+        break;
+      case _TripDetailQuickAction.chat:
+        _openTripChat();
+        break;
+      case _TripDetailQuickAction.share:
+        _shareTrip();
+        break;
+    }
+  }
+
+  Widget _buildReadOnlyBanner(BuildContext context, {bool compact = false}) {
+    if (compact) {
+      return _maybePointerIntercept(
+        _glassCard(
+          borderRadius: BorderRadius.circular(18),
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.lock_outline, size: 16),
+                  SizedBox(width: 8),
+                  Text(
+                    'Read-only preview',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pushNamed('/sign-in');
+                  },
+                  icon: const Icon(Icons.login, size: 16),
+                  label: const Text('Sign in to join'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF111827),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    textStyle: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return _maybePointerIntercept(
+      _glassCard(
+        borderRadius: BorderRadius.circular(999),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.lock_outline, size: 16),
+            const SizedBox(width: 8),
+            const Text(
+              'Read-only preview',
+              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.of(context).pushNamed('/sign-in');
+              },
+              icon: const Icon(Icons.login, size: 16),
+              label: const Text('Sign in to join'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF111827),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                textStyle: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMapModeToggleControl() {
+    final twoDSelected = _mapMode == _TripDetailMapMode.map2d;
+    return _glassCard(
+      borderRadius: BorderRadius.circular(999),
+      padding: const EdgeInsets.all(4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _MapModeToggleButton(
+            label: '2D',
+            icon: Icons.map_outlined,
+            selected: twoDSelected,
+            onTap: () => _setMapMode(_TripDetailMapMode.map2d),
+          ),
+          const SizedBox(width: 6),
+          _MapModeToggleButton(
+            label: '3D',
+            icon: Icons.public,
+            selected: !twoDSelected,
+            onTap: () => _setMapMode(_TripDetailMapMode.globe3d),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileTopChrome(
+    BuildContext context,
+    String title,
+  ) {
+    return Positioned(
+      left: 12,
+      right: 12,
+      top: 12,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _maybePointerIntercept(
+            Row(
+              children: [
+                _glassCard(
+                  borderRadius: BorderRadius.circular(999),
+                  padding: EdgeInsets.zero,
+                  child: IconButton(
+                    tooltip: 'Back',
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _glassCard(
+                    borderRadius: BorderRadius.circular(999),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+                if (!widget.readOnly) ...[
+                  const SizedBox(width: 8),
+                  _glassCard(
+                    borderRadius: BorderRadius.circular(999),
+                    padding: EdgeInsets.zero,
+                    child: PopupMenuButton<_TripDetailQuickAction>(
+                      tooltip: 'Trip actions',
+                      icon: const Icon(Icons.more_horiz),
+                      onSelected: _handleQuickAction,
+                      itemBuilder:
+                          (_) => const [
+                            PopupMenuItem<_TripDetailQuickAction>(
+                              value: _TripDetailQuickAction.plan,
+                              child: Text('Plan trip'),
+                            ),
+                            PopupMenuItem<_TripDetailQuickAction>(
+                              value: _TripDetailQuickAction.packing,
+                              child: Text('Packing list'),
+                            ),
+                            PopupMenuItem<_TripDetailQuickAction>(
+                              value: _TripDetailQuickAction.expenses,
+                              child: Text('Expenses'),
+                            ),
+                            PopupMenuItem<_TripDetailQuickAction>(
+                              value: _TripDetailQuickAction.chat,
+                              child: Text('Chat'),
+                            ),
+                            PopupMenuItem<_TripDetailQuickAction>(
+                              value: _TripDetailQuickAction.share,
+                              child: Text('Share trip'),
+                            ),
+                          ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (!widget.readOnly) ...[
+            const SizedBox(height: 8),
+            _buildOmniboxPanel(context, maxWidth: double.infinity),
+          ],
+          if (widget.readOnly) ...[
+            const SizedBox(height: 8),
+            _buildReadOnlyBanner(context, compact: true),
+          ],
+          if (kIsWeb) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: _maybePointerIntercept(_buildMapModeToggleControl()),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -2923,33 +3605,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
 
   Widget _buildMapModeToggleOverlay(BuildContext context) {
     if (!kIsWeb) return const SizedBox.shrink();
-    final twoDSelected = _mapMode == _TripDetailMapMode.map2d;
     return Positioned(
       right: 24,
       top: 80,
       child: _maybePointerIntercept(
-        _glassCard(
-          borderRadius: BorderRadius.circular(999),
-          padding: const EdgeInsets.all(4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _MapModeToggleButton(
-                label: '2D',
-                icon: Icons.map_outlined,
-                selected: twoDSelected,
-                onTap: () => _setMapMode(_TripDetailMapMode.map2d),
-              ),
-              const SizedBox(width: 6),
-              _MapModeToggleButton(
-                label: '3D',
-                icon: Icons.public,
-                selected: !twoDSelected,
-                onTap: () => _setMapMode(_TripDetailMapMode.globe3d),
-              ),
-            ],
-          ),
-        ),
+        _buildMapModeToggleControl(),
       ),
     );
   }
@@ -3585,6 +4245,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               segmentRoutingTypes: _segmentRoutingTypes,
               initialRouteGeometry: _routeGeometry3d,
               initialRouteInstructions: _routeInstructions,
+              initialRouteSegmentDetails: _routeSegmentDetails,
               preferInitialRouteData: _canUseCachedRoute,
               onRouteInstructions: (lines) {
                 if (!mounted) return;
@@ -3601,6 +4262,21 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 setState(() {
                   _routeInstructions = nextLines;
                   _liveData['routeInstructions'] = nextLines;
+                  _liveData['routeCacheKey'] = _currentRouteCacheKey();
+                });
+                _scheduleRouteCachePersist();
+              },
+              onRouteSegmentDetails: (segments) {
+                if (!mounted) return;
+                final nextSegments = readRouteSegmentDetails(segments);
+                if (_sameRouteSegmentDetails(nextSegments) &&
+                    (_liveData['routeCacheKey'] ?? '').toString().trim() ==
+                        _currentRouteCacheKey()) {
+                  return;
+                }
+                setState(() {
+                  _routeSegmentDetails = nextSegments;
+                  _liveData['routeSegmentDetails'] = nextSegments;
                   _liveData['routeCacheKey'] = _currentRouteCacheKey();
                 });
                 _scheduleRouteCachePersist();
@@ -3622,11 +4298,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
               },
               onTransitArrivalStop: (arrivalStop) {
                 if (!mounted) return;
-                setState(() => _transitArrivalStop = arrivalStop);
+                final resolvedStop =
+                    arrivalStop.isEmpty ? null : arrivalStop;
+                setState(() => _transitArrivalStop = resolvedStop);
                 if (_hasTransitModeInRoute) {
-                  _persistTransitArrivalStop(arrivalStop);
+                  _persistTransitArrivalStop(resolvedStop ?? const {});
                 }
               },
+              focusedRouteStep: _focusedTransitStep,
               secondaryPoints: secondaryPoints,
               onPointTap: _handleMapPointTap,
               showNearbyContextOverlays: false,
@@ -3649,7 +4328,7 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                   (!_editing && canWriteTrip)
                       ? (viaIndex) => _deleteViaPoint(viaIndex: viaIndex)
                       : null,
-              routeComputingBannerTop: 112,
+              routeComputingBannerTop: isNarrow ? 164 : 112,
             );
 
     return Scaffold(
@@ -3671,10 +4350,14 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
           SafeArea(
             child: Stack(
               children: [
-                _buildOmnibox(context),
-                _buildTopLeftNav(context, name.toString()),
-                _buildTopRightActions(context),
-                _buildMapModeToggleOverlay(context),
+                if (isNarrow)
+                  _buildMobileTopChrome(context, name.toString())
+                else ...[
+                  _buildOmnibox(context),
+                  _buildTopLeftNav(context, name.toString()),
+                  _buildTopRightActions(context),
+                  _buildMapModeToggleOverlay(context),
+                ],
                 if (!isNarrow)
                   Positioned(
                     left: 24,
@@ -3688,53 +4371,11 @@ class _TripDetailScreenState extends State<TripDetailScreen> {
                 _buildActionCluster(context, totalKm: totalKm),
 
                 // Read-only sign-in banner for unauthenticated share-link viewers.
-                if (widget.readOnly)
+                if (widget.readOnly && !isNarrow)
                   Positioned(
                     top: 16,
                     right: 24,
-                    child: _maybePointerIntercept(
-                      _glassCard(
-                        borderRadius: BorderRadius.circular(999),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.lock_outline, size: 16),
-                            const SizedBox(width: 8),
-                            const Text(
-                              'Read-only preview',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            ElevatedButton.icon(
-                              onPressed: () {
-                                Navigator.of(context).pushNamed('/sign-in');
-                              },
-                              icon: const Icon(Icons.login, size: 16),
-                              label: const Text('Sign in to join'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF111827),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 8,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                textStyle: const TextStyle(fontSize: 13),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                    child: _buildReadOnlyBanner(context),
                   ),
               ],
             ),

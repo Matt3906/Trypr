@@ -221,6 +221,8 @@ class _PremiumScreenState extends State<PremiumScreen> {
   }
 
   Widget _heroCard() {
+    final width = MediaQuery.sizeOf(context).width;
+    final compact = width < 640;
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(TryprRadius.xl),
@@ -232,25 +234,25 @@ class _PremiumScreenState extends State<PremiumScreen> {
         boxShadow: TryprColors.elevatedShadow,
       ),
       child: Padding(
-        padding: const EdgeInsets.all(TryprSpacing.xl),
+        padding: EdgeInsets.all(compact ? TryprSpacing.lg : TryprSpacing.xl),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
+          children: [
             Text(
               'Trypr Premium',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 30,
+                fontSize: compact ? 24 : 30,
                 fontWeight: FontWeight.w800,
                 letterSpacing: -0.6,
               ),
             ),
-            SizedBox(height: TryprSpacing.sm),
+            const SizedBox(height: TryprSpacing.sm),
             Text(
               'AI planning that saves hours on every trip.',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 16,
+                fontSize: compact ? 14 : 16,
                 fontWeight: FontWeight.w500,
               ),
             ),

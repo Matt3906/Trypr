@@ -7,6 +7,8 @@ import 'dart:js_util' as js_util;
 import 'package:trypr/services/google_maps_loader_web.dart';
 
 Object? _directionsService;
+const Duration _mapsBootstrapTimeout = Duration(seconds: 8);
+const Duration _directionsCtorTimeout = Duration(seconds: 4);
 
 class TravelRouteOption {
   final String mode;
@@ -73,13 +75,55 @@ Object? _getMaps() {
 }
 
 Future<void> _ensureDirectionsService() async {
-  await ensureGoogleMapsLoaded();
-  final maps = _getMaps();
+  await ensureGoogleMapsLoaded().timeout(_mapsBootstrapTimeout);
+  final maps = await _waitForMapsObject();
   if (maps == null) return;
 
-  if (_directionsService == null) {
-    final ctor = js_util.getProperty(maps, 'DirectionsService');
-    _directionsService = js_util.callConstructor(ctor, const []);
+  if (_directionsService != null) return;
+
+  await _importRoutesLibrary(maps);
+  final ctor = await _waitForDirectionsServiceCtor(maps);
+  if (ctor == null) return;
+  _directionsService = js_util.callConstructor(ctor, const []);
+}
+
+Future<Object?> _waitForMapsObject() async {
+  final deadline = DateTime.now().add(_directionsCtorTimeout);
+  while (DateTime.now().isBefore(deadline)) {
+    final maps = _getMaps();
+    if (maps != null) return maps;
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  return _getMaps();
+}
+
+Future<void> _importRoutesLibrary(Object maps) async {
+  try {
+    final importLibrary = js_util.getProperty(maps, 'importLibrary');
+    if (importLibrary == null) return;
+    final promise = js_util.callMethod<Object?>(maps, 'importLibrary', const [
+      'routes',
+    ]);
+    if (promise == null) return;
+    await js_util
+        .promiseToFuture<Object?>(promise)
+        .timeout(_directionsCtorTimeout);
+  } catch (_) {}
+}
+
+Future<Object?> _waitForDirectionsServiceCtor(Object maps) async {
+  final deadline = DateTime.now().add(_directionsCtorTimeout);
+  while (DateTime.now().isBefore(deadline)) {
+    try {
+      final ctor = js_util.getProperty(maps, 'DirectionsService');
+      if (ctor != null) return ctor;
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  try {
+    return js_util.getProperty(maps, 'DirectionsService');
+  } catch (_) {
+    return null;
   }
 }
 
@@ -223,7 +267,7 @@ Future<List<TravelRouteOption>> getRouteOptions({
 }) async {
   try {
     final normalizedMode = _normalizeMode(mode);
-    await _ensureDirectionsService().timeout(const Duration(milliseconds: 900));
+    await _ensureDirectionsService();
 
     final svc = _directionsService;
     final maps = _getMaps();

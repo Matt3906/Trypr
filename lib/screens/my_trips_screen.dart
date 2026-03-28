@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trypr/models/trip_model.dart';
 import 'package:trypr/utils/trypr_snackbar.dart';
 import 'package:trypr/theme/app_theme.dart';
 import 'package:trypr/widgets/map_preview.dart';
@@ -143,6 +144,38 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
     return emoji.isNotEmpty ? emoji : '🧭';
   }
 
+  List<String> _segmentModes(Map<String, dynamic> data) {
+    final raw = data['segmentTransportModes'];
+    if (raw is! List) return const <String>[];
+    return raw.map((e) => e.toString()).toList(growable: false);
+  }
+
+  String _tripTypeBadge(Map<String, dynamic> data) {
+    final type = normalizeTripType(
+      (data['tripType'] ?? '').toString(),
+      transportMode: (data['transportMode'] ?? '').toString(),
+      segmentTransportModes: _segmentModes(data),
+    );
+    return tripTypeBadgeLabel(type);
+  }
+
+  String _difficultyBadge(Map<String, dynamic> data, int stopCount) {
+    final type = normalizeTripType(
+      (data['tripType'] ?? '').toString(),
+      transportMode: (data['transportMode'] ?? '').toString(),
+      segmentTransportModes: _segmentModes(data),
+    );
+    if (!isAdventureTripType(type) && type != 'mixed') return '';
+    return inferTripDifficultyLabel(
+      tripType: type,
+      experienceLevel: (data['experienceLevel'] ?? '').toString(),
+      distanceKm: (data['totalKm'] as num?)?.toDouble(),
+      estimatedDurationMin: (data['estimatedDurationMin'] as num?)?.toDouble(),
+      stopCount: stopCount,
+      segmentTransportModes: _segmentModes(data),
+    );
+  }
+
   String? _tripRefPathFromData(Map<String, dynamic> data) {
     final raw = data['tripRef'];
     if (raw is String) {
@@ -226,9 +259,20 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
       if (local['transportMode'] == null && merged['transportMode'] != null) {
         syncPayload['transportMode'] = merged['transportMode'];
       }
+      if (local['tripType'] == null && merged['tripType'] != null) {
+        syncPayload['tripType'] = merged['tripType'];
+      }
+      if (local['experienceLevel'] == null &&
+          merged['experienceLevel'] != null) {
+        syncPayload['experienceLevel'] = merged['experienceLevel'];
+      }
       if (local['segmentTransportModes'] == null &&
           merged['segmentTransportModes'] != null) {
         syncPayload['segmentTransportModes'] = merged['segmentTransportModes'];
+      }
+      if (local['estimatedDurationMin'] == null &&
+          merged['estimatedDurationMin'] != null) {
+        syncPayload['estimatedDurationMin'] = merged['estimatedDurationMin'];
       }
       if (local['segmentRoutingTypes'] == null &&
           merged['segmentRoutingTypes'] != null) {
@@ -1027,6 +1071,11 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                               .toList(growable: false)
                                           : const <String>[];
                                   final stopCount = waypoints.length;
+                                  final tripTypeBadge = _tripTypeBadge(data);
+                                  final difficultyBadge = _difficultyBadge(
+                                    data,
+                                    stopCount,
+                                  );
                                   final isShared =
                                       ((data['sharedWith'] as List?)
                                               ?.isNotEmpty ??
@@ -1261,6 +1310,28 @@ class _MyTripsScreenState extends State<MyTripsScreen> {
                                                                 ),
                                                             fontSize: 13,
                                                           ),
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 6,
+                                                        ),
+                                                        Wrap(
+                                                          spacing: 6,
+                                                          runSpacing: 6,
+                                                          children: [
+                                                            _frostBadge(
+                                                              icon: Icons.route,
+                                                              text:
+                                                                  tripTypeBadge,
+                                                            ),
+                                                            if (difficultyBadge
+                                                                .isNotEmpty)
+                                                              _frostBadge(
+                                                                icon:
+                                                                    Icons.tune,
+                                                                text:
+                                                                    difficultyBadge,
+                                                              ),
+                                                          ],
                                                         ),
                                                       ],
                                                     ),
