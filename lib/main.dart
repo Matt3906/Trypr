@@ -21,6 +21,8 @@ import 'screens/trip_builder_screen.dart';
 import 'screens/trip_link_screen.dart';
 import 'screens/unlisted_page_screen.dart';
 import 'screens/premium_screen.dart';
+import 'screens/verified_trips_screen.dart';
+import 'screens/about_screen.dart';
 import 'services/auth_state.dart';
 import 'services/google_maps_loader.dart';
 import 'firebase_options.dart';
@@ -413,6 +415,8 @@ class MyApp extends StatelessWidget {
         '/friends': (_) => const FriendsScreen(),
         '/my-trips': (_) => const MyTripsScreen(),
         '/trip-builder': (_) => const TripBuilderScreen(),
+        '/verified-trips': (_) => const VerifiedTripsScreen(),
+        '/about': (_) => const AboutScreen(),
         '/premium': (_) => const PremiumScreen(),
       },
       onGenerateRoute: (settings) {
