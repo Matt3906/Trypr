@@ -6,7 +6,8 @@ import 'package:trypr/screens/my_trips_screen.dart';
 import 'package:trypr/screens/trip_builder_screen.dart';
 import 'package:trypr/screens/verified_trips_screen.dart';
 import 'package:trypr/screens/about_screen.dart';
-import 'package:trypr/screens/home_screen.dart';
+import 'package:trypr/screens/app_home_mobile.dart'
+    if (dart.library.html) 'package:trypr/screens/app_home_web.dart';
 import 'package:trypr/screens/account_screen.dart';
 import 'package:trypr/screens/friends_screen.dart';
 import 'package:trypr/screens/sign_in_screen.dart';
@@ -64,7 +65,6 @@ class _TopTaskbarState extends State<TopTaskbar> {
     super.initState();
 
     void syncDocs(User? u) {
-      debugPrint('syncDocs called - user: ${u?.uid}, mounted: $mounted');
       if (!mounted) return;
       setState(() {
         _userDoc =
@@ -89,12 +89,10 @@ class _TopTaskbarState extends State<TopTaskbar> {
 
     // Initialize with current user
     final currentUser = FirebaseAuth.instance.currentUser;
-    debugPrint('initState - currentUser: ${currentUser?.uid}');
     syncDocs(currentUser);
 
     // Listen to auth state changes directly from Firebase
     _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
-      debugPrint('authStateChanges fired - user: ${user?.uid}');
       syncDocs(user);
     });
 
@@ -155,7 +153,7 @@ class _TopTaskbarState extends State<TopTaskbar> {
   void _goToPrimaryLanding() {
     final navigator = Navigator.of(context);
     final Widget landing =
-        _signedIn ? const MyTripsScreen() : const HomeScreen();
+        _signedIn ? const MyTripsScreen() : const AppHomeScreen();
     navigator.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => landing),
       (route) => false,
@@ -289,9 +287,6 @@ class _TopTaskbarState extends State<TopTaskbar> {
                         // Admin Panel - only visible to admins
                         Builder(
                           builder: (ctx) {
-                            debugPrint(
-                              'Admin stream check - _adminDoc is ${_adminDoc == null ? "NULL" : "set"}',
-                            );
                             if (_adminDoc == null) {
                               return const SizedBox.shrink();
                             }
@@ -300,18 +295,11 @@ class _TopTaskbarState extends State<TopTaskbar> {
                             >(
                               stream: _adminDoc,
                               builder: (ctx, adminSnap) {
-                                // Debug: print UID and admin status
-                                final uid =
-                                    FirebaseAuth.instance.currentUser?.uid;
-                                debugPrint(
-                                  'Admin check - UID: $uid, hasData: ${adminSnap.hasData}, exists: ${adminSnap.data?.exists}, state: ${adminSnap.connectionState}, error: ${adminSnap.error}',
-                                );
                                 if (adminSnap.connectionState ==
                                     ConnectionState.waiting) {
                                   return const SizedBox.shrink();
                                 }
                                 if (adminSnap.hasError) {
-                                  debugPrint('Admin error: ${adminSnap.error}');
                                   return const SizedBox.shrink();
                                 }
                                 if (!adminSnap.hasData ||

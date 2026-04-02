@@ -14,13 +14,22 @@ import 'package:trypr/widgets/top_taskbar.dart';
 import 'package:trypr/widgets/web_interceptor.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+// ignore: avoid_web_libraries_in_flutter, uri_does_not_exist
+import 'dart:js_util' as js_util;
 import 'dart:math' as math;
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 import 'package:trypr/utils/platform_view_registry.dart';
+import 'package:web/web.dart' as web;
+
+bool _isSafeRemoteImageUrl(String value) {
+  final uri = Uri.tryParse(value.trim());
+  if (uri == null || uri.host.isEmpty) return false;
+  if (uri.scheme == 'https') return true;
+  return !kIsWeb && uri.scheme == 'http';
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -44,7 +53,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _mapFactoryRegistered = false;
   bool _mapLoaded = false;
   bool _globeReady = false;
-  html.IFrameElement? _mapIFrame;
+  web.HTMLIFrameElement? _mapIFrame;
   int _selectedStopIndex = 0;
   bool _showStopNavigator = false;
   bool _showPoiInsightCard = false;
@@ -54,8 +63,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool? _hasPremiumAccess;
   Future<bool>? _premiumAccessFuture;
   Timer? _introFocusTimer;
+  // Cancel delayed CTA reveals when the selected trip changes.
+  Timer? _showOpenButtonTimer;
   Timer? _mapReadyFallbackTimer;
   Timer? _lazyMapInitTimer;
+  StreamSubscription<web.MessageEvent>? _mapMessageSubscription;
+  String? _mapTargetOrigin;
   bool _mapInitScheduled = false;
   int _tripAnimationToken = 0;
   String? _lastAnimatedTripKey;
@@ -64,26 +77,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     defaultValue: false,
   );
 
-  String _mapPostTargetOrigin() {
+  String? _baseOrigin() {
     try {
       final origin = Uri.base.origin;
       if (origin.isNotEmpty && origin != 'null') return origin;
     } catch (_) {}
-    return '*';
+    return null;
   }
 
-  bool _isTrustedMapMessage(html.MessageEvent event) {
+  String? _originForUrl(String url) {
     try {
-      final origin = Uri.base.origin;
-      if (origin.isNotEmpty &&
-          origin != 'null' &&
-          event.origin.isNotEmpty &&
-          event.origin != origin) {
-        return false;
-      }
+      final origin = Uri.base.resolve(url).origin;
+      if (origin.isNotEmpty && origin != 'null') return origin;
     } catch (_) {}
+    return _baseOrigin();
+  }
 
-    return true;
+  String _mapPostTargetOrigin() {
+    return _mapTargetOrigin ?? _baseOrigin() ?? '*';
+  }
+
+  bool _isTrustedMapMessage(web.MessageEvent event) {
+    final trustedOrigin = _mapTargetOrigin ?? _baseOrigin();
+    if (trustedOrigin == null || event.origin.isEmpty) return false;
+    return event.origin == trustedOrigin;
   }
 
   String _resolvedMapsKey() {
@@ -91,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (fromDefine.isNotEmpty) return fromDefine;
 
     try {
-      final meta = html.document.querySelector(
+      final meta = web.document.querySelector(
         'meta[name="google-maps-api-key"]',
       );
       return meta?.getAttribute('content')?.trim() ?? '';
@@ -158,8 +175,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _introFocusTimer?.cancel();
+    _showOpenButtonTimer?.cancel();
     _mapReadyFallbackTimer?.cancel();
     _lazyMapInitTimer?.cancel();
+    _mapMessageSubscription?.cancel();
     _scrollController.dispose();
     _buttonAnimController.dispose();
     super.dispose();
@@ -227,6 +246,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
 
     _introFocusTimer?.cancel();
+    _showOpenButtonTimer?.cancel();
     _lastAnimatedTripKey = null;
     setState(() {
       _selectedTrip = trip;
@@ -237,22 +257,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _showPoiInsightCard = false;
     });
 
-    Future.delayed(const Duration(milliseconds: 1600), () {
-      if (mounted &&
-          _selectedTrip?['id'] == trip['id'] &&
-          _canEditSelectedTrip(_selectedTrip)) {
-        setState(() => _showOpenButton = true);
-        _buttonAnimController.forward(from: 0);
-      }
-    });
+    _scheduleOpenButtonReveal(trip);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _sendTripsToMap(animateCamera: true);
     });
   }
 
+  void _scheduleOpenButtonReveal(Map<String, dynamic> trip) {
+    // Use a cancellable timer so stale selections do not animate after state changes.
+    _showOpenButtonTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (!mounted ||
+          _selectedTrip?['id'] != trip['id'] ||
+          !_canEditSelectedTrip(_selectedTrip)) {
+        return;
+      }
+      setState(() => _showOpenButton = true);
+      _buttonAnimController.forward(from: 0);
+    });
+  }
+
   void _clearSelection() {
     _introFocusTimer?.cancel();
+    _showOpenButtonTimer?.cancel();
     _tripAnimationToken++;
     setState(() {
       _selectedTrip = null;
@@ -264,11 +291,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
     _buttonAnimController.reset();
     // Clear the route from the globe
-    if (kIsWeb && _mapIFrame?.contentWindow != null) {
-      _mapIFrame!.contentWindow!.postMessage({
-        'type': 'clearRoute',
-      }, _mapPostTargetOrigin());
-    }
+    _postMapMessage({'type': 'clearRoute'});
   }
 
   bool _canEditSelectedTrip(Map<String, dynamic>? trip) {
@@ -455,9 +478,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     final mapsKey = _resolvedMapsKey();
     final earthSrc = _earthAssetUrl(mapsKey: mapsKey);
+    _mapTargetOrigin = _originForUrl(earthSrc);
 
     _mapIFrame =
-        html.IFrameElement()
+        web.HTMLIFrameElement()
           ..src = earthSrc
           ..style.border = '0'
           ..style.width = '100%'
@@ -470,24 +494,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ..setAttribute('loading', 'lazy');
     _mapIFrame!.onLoad.listen((_) => _handleMapIFrameLoaded());
 
-    // Listen for postMessage events from the Earth iframe (map_ready, etc.)
-    html.window.addEventListener('message', (html.Event event) {
-      if (event is html.MessageEvent) {
-        if (!_isTrustedMapMessage(event)) return;
-        if (_messageType(event.data) == 'map_ready') {
-          if (!_globeReady) {
-            _globeReady = true;
-            // The 3D globe is now ready — send the route if a trip is selected
-            _sendTripsToMap(animateCamera: true);
-          }
-        }
-      }
-    });
+    _mapMessageSubscription ??= web.window.onMessage.listen(_handleMapMessage);
 
     if (kIsWeb) {
       registerHtmlElementViewFactory(_mapViewType, (int viewId) => _mapIFrame!);
     }
     _mapFactoryRegistered = true;
+  }
+
+  void _handleMapMessage(web.MessageEvent event) {
+    if (!mounted || !_isTrustedMapMessage(event)) return;
+    final messageData = js_util.dartify(event.data);
+    if (_messageType(messageData) != 'map_ready' || _globeReady) return;
+    _globeReady = true;
+    // Only push routes after the iframe confirms that the map runtime is ready.
+    _sendTripsToMap(animateCamera: true);
   }
 
   static String _earthAssetUrl({required String mapsKey}) {
@@ -512,11 +533,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _sendTestPing() {
-    if (!kIsWeb || _mapIFrame?.contentWindow == null) return;
-    _mapIFrame!.contentWindow!.postMessage({
+    _postMapMessage({
       'type': 'flutter_ping',
       'timestamp': DateTime.now().toIso8601String(),
-    }, _mapPostTargetOrigin());
+    });
   }
 
   double _toDouble(dynamic v) {
@@ -595,15 +615,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     double tilt = 55,
     double heading = 0,
   }) {
-    if (!kIsWeb || _mapIFrame?.contentWindow == null) return;
-    _mapIFrame!.contentWindow!.postMessage({
+    _postMapMessage({
       'type': 'flyTo',
       'lat': lat,
       'lng': lon,
       'range': range,
       'tilt': tilt,
       'heading': heading,
-    }, _mapPostTargetOrigin());
+    });
+  }
+
+  void _postMapMessage(Map<String, dynamic> payload) {
+    if (!kIsWeb || _mapIFrame?.contentWindow == null) return;
+    _mapIFrame!.contentWindow!.postMessage(
+      js_util.jsify(payload),
+      _mapPostTargetOrigin().toJS,
+    );
   }
 
   void _focusStopIndex(
@@ -702,9 +729,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final waypoints = _normalizedWaypointsFromTrip(trip);
 
     if (waypoints.isEmpty) {
-      _mapIFrame!.contentWindow!.postMessage({
-        'type': 'clearRoute',
-      }, _mapPostTargetOrigin());
+      _postMapMessage({'type': 'clearRoute'});
       return;
     }
 
@@ -764,7 +789,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       },
     };
 
-    _mapIFrame!.contentWindow!.postMessage(payload, _mapPostTargetOrigin());
+    _postMapMessage(payload);
 
     final tripKey = '${trip['id'] ?? trip['title'] ?? ''}|${waypoints.length}';
     if (animateCamera && _lastAnimatedTripKey != tripKey) {
@@ -1538,7 +1563,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   bool _isRemoteImageUrl(String value) {
-    return value.startsWith('https://') || value.startsWith('http://');
+    return _isSafeRemoteImageUrl(value);
   }
 
   bool _isNatureAreaLabel(String value) {
@@ -2042,15 +2067,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.9),
+            color: Colors.white.withValues(alpha: 0.9),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: Colors.white.withOpacity(0.6),
+              color: Colors.white.withValues(alpha: 0.6),
               width: 1.2,
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.22),
+                color: Colors.black.withValues(alpha: 0.22),
                 blurRadius: 22,
                 offset: const Offset(0, 12),
               ),
@@ -2061,19 +2086,24 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             children: [
               LayoutBuilder(
                 builder: (context, constraints) {
+                  final compactGallery = constraints.maxWidth < 360;
+                  final singleImageHeight = compactGallery ? 156.0 : 188.0;
                   if (gallery.length <= 1) {
                     return ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: SizedBox(
-                        height: 188,
+                        height: singleImageHeight,
                         width: double.infinity,
                         child: Image.network(
                           gallery.first,
                           fit: BoxFit.cover,
+                          semanticLabel: 'Preview photo for $title',
                           errorBuilder:
                               (_, __, ___) => Image.network(
                                 galleryFallbacks.first,
                                 fit: BoxFit.cover,
+                                semanticLabel:
+                                    'Fallback preview photo for $title',
                                 errorBuilder:
                                     (_, __, ___) => Container(
                                       color: const Color(0x11000000),
@@ -2094,10 +2124,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   final columnCount = gallery.length <= 4 ? 2 : 3;
                   final gridHeight =
                       previewCount <= columnCount
-                          ? 108.0
+                          ? (compactGallery ? 96.0 : 108.0)
                           : previewCount <= columnCount * 2
-                          ? 180.0
-                          : 224.0;
+                          ? (compactGallery ? 164.0 : 180.0)
+                          : (compactGallery ? 208.0 : 224.0);
 
                   return ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -2130,10 +2160,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                               Image.network(
                                 imageUrl,
                                 fit: BoxFit.cover,
+                                semanticLabel:
+                                    'Photo ${index + 1} of ${gallery.length} for $title',
                                 errorBuilder:
                                     (_, __, ___) => Image.network(
                                       fallbackForTile,
                                       fit: BoxFit.cover,
+                                      semanticLabel:
+                                          'Fallback photo ${index + 1} of ${gallery.length} for $title',
                                       errorBuilder:
                                           (_, __, ___) => Container(
                                             color: const Color(0x11000000),
@@ -2156,7 +2190,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                       vertical: 4,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.55),
+                                      color: Colors.black.withValues(
+                                        alpha: 0.55,
+                                      ),
                                       borderRadius: BorderRadius.circular(999),
                                     ),
                                     child: Text(
@@ -2172,7 +2208,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                               if (showRemaining)
                                 Container(
                                   alignment: Alignment.center,
-                                  color: Colors.black.withOpacity(0.45),
+                                  color: Colors.black.withValues(alpha: 0.45),
                                   child: Text(
                                     '+$remaining',
                                     style: const TextStyle(
@@ -2316,7 +2352,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                       vertical: 5,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.06),
+                                      color: Colors.black.withValues(
+                                        alpha: 0.06,
+                                      ),
                                       borderRadius: BorderRadius.circular(999),
                                     ),
                                     child: Text(
@@ -2371,7 +2409,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                       vertical: 8,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.045),
+                                      color: Colors.black.withValues(
+                                        alpha: 0.045,
+                                      ),
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: Row(
@@ -2493,7 +2533,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: TryprColors.primary.withOpacity(0.12),
+                  color: TryprColors.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(TryprRadius.md),
                 ),
                 child: Icon(icon, color: TryprColors.primary, size: 20),
@@ -2557,18 +2597,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           final overlayPadding = isPhone ? 12.0 : 32.0;
           final contentHorizontalPadding =
               isNarrow ? TryprSpacing.lg : TryprSpacing.xxl;
-          final selectedChipMaxWidth =
-              math
-                  .max(120.0, constraints.maxWidth - (overlayPadding * 2) - 56)
-                  .toDouble();
+          final selectedChipMaxWidth = math.max(
+            120.0,
+            math.min(420.0, constraints.maxWidth - (overlayPadding * 2) - 56),
+          );
           // The AppBar is drawn on top of the hero (extendBodyBehindAppBar = true),
           // so increase the hero height by the app bar height so the visible
           // portion fills the full viewport without the next section peeking in.
-          const double appBarHeight = 64.0;
+          const double appBarHeight = kToolbarHeight;
           final viewportHeight = MediaQuery.sizeOf(context).height;
           final heroBaseHeight =
               isPhone
-                  ? (viewportHeight * 0.78).clamp(420.0, 760.0).toDouble()
+                  ? (viewportHeight * 0.78).clamp(360.0, 760.0).toDouble()
                   : viewportHeight;
           final heroHeight = heroBaseHeight + appBarHeight;
           if (kIsWeb && _mapIFrame != null) {
@@ -2601,11 +2641,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           final showDesktopOverlayPoiCard = showFocusedStopCard && !isPhone;
           final showMobileInlinePoiCard = showFocusedStopCard && isPhone;
           final mobileEditButtonTop =
-              appBarHeight + (showStopNavigator ? 112.0 : 72.0);
+              appBarHeight + (showStopNavigator ? 104.0 : 68.0);
           final dockHeight =
               isPhone
                   ? _SavedTripsDock.mobileHeight
                   : _SavedTripsDock.desktopHeight;
+          final desktopPoiCardMaxWidth = math.min(
+            560.0,
+            constraints.maxWidth * 0.5,
+          );
           final desktopPoiCardMaxHeight = math.min(
             760.0,
             math.max(
@@ -2617,13 +2661,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             560.0,
             math.max(300.0, viewportHeight * 0.64),
           );
-          final mobilePoiCardMaxWidth =
-              math
-                  .max(
-                    280.0,
-                    constraints.maxWidth - (contentHorizontalPadding * 2),
-                  )
-                  .toDouble();
+          final mobilePoiCardMaxWidth = math.max(
+            0.0,
+            math.min(
+              520.0,
+              constraints.maxWidth - (contentHorizontalPadding * 2),
+            ),
+          );
           return SingleChildScrollView(
             controller: _scrollController,
             child: Column(
@@ -2703,6 +2747,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             child: WebInterceptor(
                               child: _GlassmorphicIconButton(
                                 icon: Icons.close,
+                                semanticLabel: 'Clear selected trip',
                                 onTap: _clearSelection,
                               ),
                             ),
@@ -2754,17 +2799,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                     stop: focusedStop,
                                     stopNumber: selectedStopNumber,
                                     totalStops: selectedStopCount,
-                                    maxWidth:
-                                        isPhone
-                                            ? math.max(
-                                              280.0,
-                                              constraints.maxWidth -
-                                                  (overlayPadding * 2),
-                                            )
-                                            : math.min(
-                                              560.0,
-                                              constraints.maxWidth * 0.5,
-                                            ),
+                                    maxWidth: desktopPoiCardMaxWidth,
                                     maxHeight: desktopPoiCardMaxHeight,
                                   ),
                                 ),
@@ -3012,8 +3047,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                       TryprSpacing.sm,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: TryprColors.primary.withOpacity(
-                                        0.1,
+                                      color: TryprColors.primary.withValues(
+                                        alpha: 0.1,
                                       ),
                                       borderRadius: BorderRadius.circular(
                                         TryprRadius.md,
@@ -3233,7 +3268,7 @@ class _VerifiedTripPreviewCardState extends State<_VerifiedTripPreviewCard> {
   int _idx = 0;
   bool _isHovered = false;
 
-  Widget _imageFromSource(String src) {
+  Widget _imageFromSource(String src, {required String semanticLabel}) {
     final s = src.trim();
     if (s.isEmpty) return const SizedBox.shrink();
     if (s.startsWith('data:image')) {
@@ -3241,6 +3276,7 @@ class _VerifiedTripPreviewCardState extends State<_VerifiedTripPreviewCard> {
         return Image.network(
           s,
           fit: BoxFit.cover,
+          semanticLabel: semanticLabel,
           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
         );
       }
@@ -3249,22 +3285,25 @@ class _VerifiedTripPreviewCardState extends State<_VerifiedTripPreviewCard> {
         return Image.memory(
           bytes,
           fit: BoxFit.cover,
+          semanticLabel: semanticLabel,
           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
         );
       } catch (_) {
         return const SizedBox.shrink();
       }
     }
-    if (s.startsWith('http')) {
+    if (_isSafeRemoteImageUrl(s)) {
       return Image.network(
         s,
         fit: BoxFit.cover,
+        semanticLabel: semanticLabel,
         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
       );
     }
     return Image.asset(
       s,
       fit: BoxFit.cover,
+      semanticLabel: semanticLabel,
       errorBuilder: (_, __, ___) => const SizedBox.shrink(),
     );
   }
@@ -3281,186 +3320,206 @@ class _VerifiedTripPreviewCardState extends State<_VerifiedTripPreviewCard> {
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: AnimatedScale(
-        duration: const Duration(milliseconds: 200),
-        scale: _isHovered ? 1.02 : 1.0,
-        child: AnimatedContainer(
+      child: Semantics(
+        button: widget.onTap != null,
+        label: '${widget.title}. ${widget.subtitle}',
+        child: AnimatedScale(
           duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.only(
-            right: TryprSpacing.md,
-            bottom: TryprSpacing.md,
-          ),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(TryprRadius.xl),
-            color: TryprColors.surface,
-            boxShadow:
-                _isHovered
-                    ? TryprColors.elevatedShadow
-                    : TryprColors.softShadow,
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(TryprRadius.xl),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: widget.onTap,
-                child: AspectRatio(
-                  aspectRatio: 4 / 3,
-                  child: LayoutBuilder(
-                    builder: (ctx, constraints) {
-                      final available =
-                          constraints.maxHeight.isFinite
-                              ? constraints.maxHeight
-                              : 320.0;
-                      final footerHeight = (available * 0.25).clamp(
-                        56.0,
-                        100.0,
-                      );
-                      final imageHeight = (available - footerHeight).clamp(
-                        40.0,
-                        double.infinity,
-                      );
+          scale: _isHovered ? 1.02 : 1.0,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            margin: const EdgeInsets.only(
+              right: TryprSpacing.md,
+              bottom: TryprSpacing.md,
+            ),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(TryprRadius.xl),
+              color: TryprColors.surface,
+              boxShadow:
+                  _isHovered
+                      ? TryprColors.elevatedShadow
+                      : TryprColors.softShadow,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(TryprRadius.xl),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: widget.onTap,
+                  child: AspectRatio(
+                    aspectRatio: 4 / 3,
+                    child: LayoutBuilder(
+                      builder: (ctx, constraints) {
+                        final available =
+                            constraints.maxHeight.isFinite
+                                ? constraints.maxHeight
+                                : 320.0;
+                        final footerHeight = (available * 0.25).clamp(
+                          56.0,
+                          100.0,
+                        );
+                        final imageHeight = (available - footerHeight).clamp(
+                          40.0,
+                          double.infinity,
+                        );
 
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          SizedBox(
-                            height: imageHeight,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                _imageFromSource(current),
-                                // Subtle gradient overlay at bottom
-                                Positioned(
-                                  bottom: 0,
-                                  left: 0,
-                                  right: 0,
-                                  height: 40,
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        colors: [
-                                          Colors.transparent,
-                                          Colors.black.withOpacity(0.1),
-                                        ],
-                                      ),
-                                    ),
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SizedBox(
+                              height: imageHeight,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  _imageFromSource(
+                                    current,
+                                    semanticLabel:
+                                        'Preview image ${clampedIdx + 1} of ${images.length} for ${widget.title}',
                                   ),
-                                ),
-                                if (images.length > 1)
+                                  // Subtle gradient overlay at bottom
                                   Positioned(
-                                    top: TryprSpacing.md,
-                                    right: TryprSpacing.md,
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.9),
-                                        borderRadius: BorderRadius.circular(
-                                          TryprRadius.full,
-                                        ),
-                                        boxShadow: TryprColors.softShadow,
-                                      ),
-                                      child: Material(
-                                        color: Colors.transparent,
-                                        child: InkWell(
-                                          borderRadius: BorderRadius.circular(
-                                            TryprRadius.full,
-                                          ),
-                                          onTap:
-                                              () => setState(
-                                                () => _idx = _idx + 1,
-                                              ),
-                                          child: const Padding(
-                                            padding: EdgeInsets.all(
-                                              TryprSpacing.sm,
-                                            ),
-                                            child: Icon(
-                                              Icons.chevron_right_rounded,
-                                              color: TryprColors.textPrimary,
-                                              size: 20,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                // Image counter pills
-                                if (images.length > 1)
-                                  Positioned(
-                                    bottom: TryprSpacing.md,
+                                    bottom: 0,
                                     left: 0,
                                     right: 0,
-                                    child: Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: List.generate(
-                                        images.length.clamp(0, 5),
-                                        (i) => Container(
-                                          width: i == clampedIdx ? 16 : 6,
-                                          height: 6,
-                                          margin: const EdgeInsets.symmetric(
-                                            horizontal: 2,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color:
-                                                i == clampedIdx
-                                                    ? Colors.white
-                                                    : Colors.white.withOpacity(
-                                                      0.5,
+                                    height: 40,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [
+                                            Colors.transparent,
+                                            Colors.black.withValues(alpha: 0.1),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  if (images.length > 1)
+                                    Positioned(
+                                      top: TryprSpacing.md,
+                                      right: TryprSpacing.md,
+                                      child: Semantics(
+                                        button: true,
+                                        label:
+                                            'Show next photo for ${widget.title}',
+                                        child: Tooltip(
+                                          message: 'Next photo',
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: Colors.white.withValues(
+                                                alpha: 0.9,
+                                              ),
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                    TryprRadius.full,
+                                                  ),
+                                              boxShadow: TryprColors.softShadow,
+                                            ),
+                                            child: Material(
+                                              color: Colors.transparent,
+                                              child: InkWell(
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                      TryprRadius.full,
                                                     ),
-                                            borderRadius: BorderRadius.circular(
-                                              3,
+                                                onTap:
+                                                    () => setState(
+                                                      () => _idx = _idx + 1,
+                                                    ),
+                                                child: const Padding(
+                                                  padding: EdgeInsets.all(
+                                                    TryprSpacing.sm,
+                                                  ),
+                                                  child: Icon(
+                                                    Icons.chevron_right_rounded,
+                                                    color:
+                                                        TryprColors.textPrimary,
+                                                    size: 20,
+                                                  ),
+                                                ),
+                                              ),
                                             ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                              ],
+                                  // Image counter pills
+                                  if (images.length > 1)
+                                    Positioned(
+                                      bottom: TryprSpacing.md,
+                                      left: 0,
+                                      right: 0,
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: List.generate(
+                                          images.length.clamp(0, 5),
+                                          (i) => Container(
+                                            width: i == clampedIdx ? 16 : 6,
+                                            height: 6,
+                                            margin: const EdgeInsets.symmetric(
+                                              horizontal: 2,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color:
+                                                  i == clampedIdx
+                                                      ? Colors.white
+                                                      : Colors.white.withValues(
+                                                        alpha: 0.5,
+                                                      ),
+                                              borderRadius:
+                                                  BorderRadius.circular(3),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          Container(
-                            height: footerHeight,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: TryprSpacing.lg,
-                              vertical: TryprSpacing.sm,
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    widget.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: TryprColors.textPrimary,
+                            Container(
+                              height: footerHeight,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: TryprSpacing.lg,
+                                vertical: TryprSpacing.sm,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      widget.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: TryprColors.textPrimary,
+                                      ),
                                     ),
                                   ),
-                                ),
-                                const SizedBox(height: 2),
-                                Flexible(
-                                  child: Text(
-                                    widget.subtitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: TryprColors.textSecondary,
+                                  const SizedBox(height: 2),
+                                  Flexible(
+                                    child: Text(
+                                      widget.subtitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: TryprColors.textSecondary,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -3478,8 +3537,8 @@ class _SavedTripsDock extends StatelessWidget {
   final void Function(Map<String, dynamic> trip) onTripSelected;
   final bool compact;
 
-  static const double desktopHeight = 340;
-  static const double mobileHeight = 236;
+  static const double desktopHeight = 392;
+  static const double mobileHeight = 268;
 
   const _SavedTripsDock({
     required this.selectedTripId,
@@ -3500,7 +3559,7 @@ class _SavedTripsDock extends StatelessWidget {
     final rowVerticalPadding = compact ? 5.0 : 8.0;
     final listHorizontalPadding = compact ? 10.0 : 16.0;
     final rowLabelSize = compact ? 12.0 : 13.0;
-    final userTripsHeight = compact ? 100.0 : 150.0;
+    final userTripsHeight = compact ? 120.0 : 186.0;
 
     return Container(
       height: compact ? mobileHeight : desktopHeight,
@@ -3508,7 +3567,7 @@ class _SavedTripsDock extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.transparent, Colors.black.withOpacity(0.10)],
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.10)],
         ),
       ),
       child: Column(
@@ -3525,13 +3584,13 @@ class _SavedTripsDock extends StatelessWidget {
                 Icon(
                   Icons.bookmark_outline,
                   size: 16,
-                  color: Colors.white.withOpacity(0.6),
+                  color: Colors.white.withValues(alpha: 0.6),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Your Trips',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: rowLabelSize,
                     fontWeight: FontWeight.w500,
                     letterSpacing: 0.5,
@@ -3548,7 +3607,7 @@ class _SavedTripsDock extends StatelessWidget {
                       child: Text(
                         'Sign in to see your trips',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 13,
                         ),
                       ),
@@ -3561,7 +3620,7 @@ class _SavedTripsDock extends StatelessWidget {
                             child: Text(
                               'Could not load trips',
                               style: TextStyle(
-                                color: Colors.white.withOpacity(0.5),
+                                color: Colors.white.withValues(alpha: 0.5),
                                 fontSize: 13,
                               ),
                             ),
@@ -3585,14 +3644,14 @@ class _SavedTripsDock extends StatelessWidget {
                               children: [
                                 Icon(
                                   Icons.add_circle_outline,
-                                  color: Colors.white.withOpacity(0.4),
+                                  color: Colors.white.withValues(alpha: 0.4),
                                   size: 20,
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
                                   'No trips yet — start planning!',
                                   style: TextStyle(
-                                    color: Colors.white.withOpacity(0.5),
+                                    color: Colors.white.withValues(alpha: 0.5),
                                     fontSize: 13,
                                   ),
                                 ),
@@ -3699,13 +3758,13 @@ class _SavedTripsDock extends StatelessWidget {
                 Icon(
                   Icons.verified_outlined,
                   size: 16,
-                  color: Colors.white.withOpacity(0.6),
+                  color: Colors.white.withValues(alpha: 0.6),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Verified Trips',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: rowLabelSize,
                     fontWeight: FontWeight.w500,
                     letterSpacing: 0.5,
@@ -3728,7 +3787,7 @@ class _SavedTripsDock extends StatelessWidget {
                     child: Text(
                       'No verified trips yet',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.5),
+                        color: Colors.white.withValues(alpha: 0.5),
                         fontSize: 13,
                       ),
                     ),
@@ -3933,103 +3992,157 @@ class _TripCardState extends State<_TripCard> {
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-          width: cardWidth,
-          margin: const EdgeInsets.only(right: 12, bottom: 12),
-          transform:
-              _isHovered || widget.isSelected
-                  ? (Matrix4.identity()..translate(0.0, -4.0))
-                  : Matrix4.identity(),
-          decoration: BoxDecoration(
+      child: Semantics(
+        button: true,
+        selected: widget.isSelected,
+        label:
+            '${widget.title}. ${widget.stops} stops${widget.distance.isEmpty ? '' : '. ${widget.distance}'}',
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
             borderRadius: BorderRadius.circular(18),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                gradColors[0].withOpacity(widget.isSelected ? 0.85 : 0.65),
-                gradColors[1].withOpacity(widget.isSelected ? 0.85 : 0.65),
-              ],
-            ),
-            border: Border.all(
-              color:
-                  widget.isSelected
-                      ? Colors.white.withOpacity(0.7)
-                      : Colors.white.withOpacity(_isHovered ? 0.35 : 0.15),
-              width: widget.isSelected ? 2 : 1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: gradColors[0].withOpacity(
-                  widget.isSelected ? 0.4 : (_isHovered ? 0.3 : 0.15),
-                ),
-                blurRadius: widget.isSelected ? 24 : 12,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(18),
-            child: Padding(
-              padding: EdgeInsets.all(cardPadding),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Emoji badge
-                  Text(_tripEmoji, style: TextStyle(fontSize: emojiSize)),
-                  const SizedBox(height: 3),
-                  // Title
-                  Text(
-                    widget.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: titleFontSize,
-                      fontWeight: FontWeight.w700,
-                      shadows: const [
-                        Shadow(color: Color(0x40000000), blurRadius: 4),
-                      ],
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOut,
+              width: cardWidth,
+              margin: const EdgeInsets.only(right: 12, bottom: 12),
+              transform:
+                  _isHovered || widget.isSelected
+                      ? Matrix4.translationValues(0.0, -4.0, 0.0)
+                      : Matrix4.identity(),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    gradColors[0].withValues(
+                      alpha: widget.isSelected ? 0.85 : 0.65,
                     ),
-                  ),
-                  const SizedBox(height: 3),
-                  // Stops & distance
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.place,
-                        size: widget.compact ? 9 : 10,
-                        color: Colors.white70,
-                      ),
-                      const SizedBox(width: 2),
-                      Text(
-                        '${widget.stops} stops',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: metaFontSize,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      if (widget.distance.isNotEmpty) ...[
-                        const SizedBox(width: 4),
-                        Text(
-                          '·',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.5),
-                            fontSize: metaFontSize,
+                    gradColors[1].withValues(
+                      alpha: widget.isSelected ? 0.85 : 0.65,
+                    ),
+                  ],
+                ),
+                border: Border.all(
+                  color:
+                      widget.isSelected
+                          ? Colors.white.withValues(alpha: 0.7)
+                          : Colors.white.withValues(
+                            alpha: _isHovered ? 0.35 : 0.15,
                           ),
+                  width: widget.isSelected ? 2 : 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: gradColors[0].withValues(
+                      alpha:
+                          widget.isSelected ? 0.4 : (_isHovered ? 0.3 : 0.15),
+                    ),
+                    blurRadius: widget.isSelected ? 24 : 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: Padding(
+                  padding: EdgeInsets.all(cardPadding),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_tripEmoji, style: TextStyle(fontSize: emojiSize)),
+                      const SizedBox(height: 3),
+                      Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: titleFontSize,
+                          fontWeight: FontWeight.w700,
+                          shadows: const [
+                            Shadow(color: Color(0x40000000), blurRadius: 4),
+                          ],
                         ),
-                        const SizedBox(width: 4),
-                        Flexible(
+                      ),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.place,
+                            size: widget.compact ? 9 : 10,
+                            color: Colors.white70,
+                          ),
+                          const SizedBox(width: 2),
+                          Text(
+                            '${widget.stops} stops',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: metaFontSize,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          if (widget.distance.isNotEmpty) ...[
+                            const SizedBox(width: 4),
+                            Text(
+                              '·',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.5),
+                                fontSize: metaFontSize,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                widget.distance,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: metaFontSize,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if ((widget.tripTypeBadge ?? '').trim().isNotEmpty ||
+                          (widget.difficultyLabel ?? '').trim().isNotEmpty) ...[
+                        const SizedBox(height: 5),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            if ((widget.tripTypeBadge ?? '').trim().isNotEmpty)
+                              _infoBadge(
+                                widget.tripTypeBadge!,
+                                metaFontSize,
+                                primary: true,
+                              ),
+                            if ((widget.difficultyLabel ?? '')
+                                .trim()
+                                .isNotEmpty)
+                              _infoBadge(widget.difficultyLabel!, metaFontSize),
+                          ],
+                        ),
+                      ],
+                      if (widget.date.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                           child: Text(
-                            widget.distance,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            widget.date,
                             style: TextStyle(
                               color: Colors.white70,
                               fontSize: metaFontSize,
@@ -4040,47 +4153,7 @@ class _TripCardState extends State<_TripCard> {
                       ],
                     ],
                   ),
-                  if ((widget.tripTypeBadge ?? '').trim().isNotEmpty ||
-                      (widget.difficultyLabel ?? '').trim().isNotEmpty) ...[
-                    const SizedBox(height: 5),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: [
-                        if ((widget.tripTypeBadge ?? '').trim().isNotEmpty)
-                          _infoBadge(
-                            widget.tripTypeBadge!,
-                            metaFontSize,
-                            primary: true,
-                          ),
-                        if ((widget.difficultyLabel ?? '').trim().isNotEmpty)
-                          _infoBadge(widget.difficultyLabel!, metaFontSize),
-                      ],
-                    ),
-                  ],
-                  // Date pill
-                  if (widget.date.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        widget.date,
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: metaFontSize,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
+                ),
               ),
             ),
           ),
@@ -4095,14 +4168,14 @@ class _TripCardState extends State<_TripCard> {
       decoration: BoxDecoration(
         color:
             primary
-                ? Colors.black.withOpacity(0.22)
-                : Colors.white.withOpacity(0.14),
+                ? Colors.black.withValues(alpha: 0.22)
+                : Colors.white.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color:
               primary
-                  ? Colors.white.withOpacity(0.22)
-                  : Colors.white.withOpacity(0.16),
+                  ? Colors.white.withValues(alpha: 0.22)
+                  : Colors.white.withValues(alpha: 0.16),
         ),
       ),
       child: Text(
@@ -4142,45 +4215,60 @@ class _GlassmorphicButtonState extends State<_GlassmorphicButton> {
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          decoration: BoxDecoration(
+      child: Semantics(
+        button: true,
+        label: widget.label,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
             borderRadius: BorderRadius.circular(50),
-            color: Colors.white.withOpacity(_isHovered ? 0.92 : 0.82),
-            border: Border.all(
-              color: Colors.white.withOpacity(_isHovered ? 0.95 : 0.7),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(_isHovered ? 0.2 : 0.14),
-                blurRadius: _isHovered ? 20 : 14,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(50),
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(widget.icon, color: const Color(0xFF0F172A), size: 18),
-                  const SizedBox(width: 8),
-                  Text(
-                    widget.label,
-                    style: const TextStyle(
-                      color: Color(0xFF0F172A),
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(50),
+                color: Colors.white.withValues(alpha: _isHovered ? 0.92 : 0.82),
+                border: Border.all(
+                  color: Colors.white.withValues(
+                    alpha: _isHovered ? 0.95 : 0.7,
+                  ),
+                  width: 1.5,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(
+                      alpha: _isHovered ? 0.2 : 0.14,
                     ),
+                    blurRadius: _isHovered ? 20 : 14,
+                    offset: const Offset(0, 8),
                   ),
                 ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(50),
+                child: BackdropFilter(
+                  filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        widget.icon,
+                        color: const Color(0xFF0F172A),
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        widget.label,
+                        style: const TextStyle(
+                          color: Color(0xFF0F172A),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -4193,27 +4281,49 @@ class _GlassmorphicButtonState extends State<_GlassmorphicButton> {
 /// Small glassmorphic icon button
 class _GlassmorphicIconButton extends StatelessWidget {
   final IconData icon;
+  final String semanticLabel;
   final VoidCallback onTap;
 
-  const _GlassmorphicIconButton({required this.icon, required this.onTap});
+  const _GlassmorphicIconButton({
+    required this.icon,
+    required this.semanticLabel,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(50),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withOpacity(0.1),
-              border: Border.all(color: Colors.white.withOpacity(0.2)),
+    return Semantics(
+      button: true,
+      label: semanticLabel,
+      child: Tooltip(
+        message: semanticLabel,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(50),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withValues(alpha: 0.1),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  child: Icon(
+                    icon,
+                    color: Colors.white.withValues(alpha: 0.8),
+                    size: 18,
+                  ),
+                ),
+              ),
             ),
-            child: Icon(icon, color: Colors.white.withOpacity(0.8), size: 18),
           ),
         ),
       ),
@@ -4240,8 +4350,8 @@ class _GlassmorphicChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
-            color: Colors.white.withOpacity(0.1),
-            border: Border.all(color: Colors.white.withOpacity(0.2)),
+            color: Colors.white.withValues(alpha: 0.1),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
           ),
           child: Row(
             mainAxisSize:
@@ -4250,7 +4360,7 @@ class _GlassmorphicChip extends StatelessWidget {
               Icon(
                 Icons.map_outlined,
                 size: 14,
-                color: Colors.white.withOpacity(0.8),
+                color: Colors.white.withValues(alpha: 0.8),
               ),
               const SizedBox(width: 8),
               Flexible(
@@ -4259,7 +4369,7 @@ class _GlassmorphicChip extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.9),
+                    color: Colors.white.withValues(alpha: 0.9),
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
@@ -4296,26 +4406,38 @@ class _GlassmorphicStopNavigator extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(24),
-            color: Colors.white.withOpacity(0.14),
-            border: Border.all(color: Colors.white.withOpacity(0.22)),
+            color: Colors.white.withValues(alpha: 0.14),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _StopNavButton(label: '<', onTap: onPrevious),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text(
-                  'Stop $currentStop/$totalStops',
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.92),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+          child: Semantics(
+            container: true,
+            label: 'Stop navigator. Stop $currentStop of $totalStops.',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _StopNavButton(
+                  icon: Icons.chevron_left_rounded,
+                  semanticLabel: 'Previous stop',
+                  onTap: onPrevious,
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text(
+                    'Stop $currentStop/$totalStops',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.92),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-              _StopNavButton(label: '>', onTap: onNext),
-            ],
+                _StopNavButton(
+                  icon: Icons.chevron_right_rounded,
+                  semanticLabel: 'Next stop',
+                  onTap: onNext,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -4324,10 +4446,15 @@ class _GlassmorphicStopNavigator extends StatelessWidget {
 }
 
 class _StopNavButton extends StatefulWidget {
-  final String label;
+  final IconData icon;
+  final String semanticLabel;
   final VoidCallback onTap;
 
-  const _StopNavButton({required this.label, required this.onTap});
+  const _StopNavButton({
+    required this.icon,
+    required this.semanticLabel,
+    required this.onTap,
+  });
 
   @override
   State<_StopNavButton> createState() => _StopNavButtonState();
@@ -4341,24 +4468,25 @@ class _StopNavButtonState extends State<_StopNavButton> {
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          width: 26,
-          height: 26,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withOpacity(_hovered ? 0.28 : 0.18),
-            border: Border.all(color: Colors.white.withOpacity(0.25)),
-          ),
-          child: Text(
-            widget.label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w700,
-              fontSize: 14,
+      child: Tooltip(
+        message: widget.semanticLabel,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              width: 36,
+              height: 36,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: _hovered ? 0.28 : 0.18),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+              ),
+              child: Icon(widget.icon, color: Colors.white, size: 18),
             ),
           ),
         ),
