@@ -1,0 +1,22 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<p class="greeting">Hello {{ recipient_name }},</p>
+
+<p class="lead">{{ intro_text }}</p>
+
+<div class="panel">
+  <p class="panel-title">Broadcast Details</p>
+  {% if association_name %}<p class="kv-row"><span class="kv-label">Association:</span> <span class="kv-value">{{ association_name }}</span></p>{% endif %}
+  {% if posted_by %}<p class="kv-row"><span class="kv-label">Posted by:</span> <span class="kv-value">{{ posted_by }}</span></p>{% endif %}
+  {% if sent_at %}<p class="kv-row"><span class="kv-label">Sent at:</span> <span class="kv-value">{{ sent_at }}</span></p>{% endif %}
+</div>
+
+<div class="message">{{ message_body }}</div>
+
+{% if action_url and action_label %}
+<div class="button-row">
+  <a class="btn btn-primary" href="{{ action_url }}">{{ action_label }}</a>
+</div>
+{% endif %}
+{% endblock %}

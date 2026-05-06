@@ -93,6 +93,9 @@ class _Home3DScreenState extends State<Home3DScreen>
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final overlayInset = viewportWidth < 640 ? 16.0 : 32.0;
+    final openButtonBottom = viewportWidth < 640 ? 128.0 : 100.0;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -178,7 +181,7 @@ class _Home3DScreenState extends State<Home3DScreen>
                     // "Open & Edit Trip" floating button
                     if (_showOpenButton && _selectedTrip != null)
                       Positioned(
-                        bottom: 100,
+                        bottom: openButtonBottom,
                         left: 0,
                         right: 0,
                         child: Center(
@@ -197,7 +200,7 @@ class _Home3DScreenState extends State<Home3DScreen>
                     if (_selectedTrip != null)
                       Positioned(
                         top: 16,
-                        right: 32,
+                        right: overlayInset,
                         child: _GlassmorphicIconButton(
                           icon: Icons.close,
                           onTap: _clearSelection,
@@ -208,7 +211,7 @@ class _Home3DScreenState extends State<Home3DScreen>
                     if (_selectedTrip != null)
                       Positioned(
                         top: 16,
-                        left: 32,
+                        left: overlayInset,
                         child: _GlassmorphicChip(
                           text: _selectedTrip!['title'] ?? 'Trip',
                         ),
@@ -262,33 +265,41 @@ class _SavedTripsDock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final dockHeight = viewportWidth < 640 ? 184.0 : 160.0;
+    final dockHorizontalPadding = viewportWidth < 640 ? 12.0 : 16.0;
+    final cardWidth =
+        viewportWidth < 420 ? 148.0 : (viewportWidth < 600 ? 164.0 : 180.0);
 
     return Container(
-      height: 160,
+      height: dockHeight,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.transparent, Colors.black.withOpacity(0.3)],
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.3)],
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            padding: EdgeInsets.symmetric(
+              horizontal: dockHorizontalPadding + 8,
+              vertical: 8,
+            ),
             child: Row(
               children: [
                 Icon(
                   Icons.bookmark_outline,
                   size: 16,
-                  color: Colors.white.withOpacity(0.6),
+                  color: Colors.white.withValues(alpha: 0.6),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   'Saved Trips',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                     letterSpacing: 0.5,
@@ -304,7 +315,7 @@ class _SavedTripsDock extends StatelessWidget {
                       child: Text(
                         'Sign in to see your trips',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 13,
                         ),
                       ),
@@ -337,14 +348,14 @@ class _SavedTripsDock extends StatelessWidget {
                               children: [
                                 Icon(
                                   Icons.add_circle_outline,
-                                  color: Colors.white.withOpacity(0.4),
+                                  color: Colors.white.withValues(alpha: 0.4),
                                   size: 20,
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
                                   'No trips yet — start planning!',
                                   style: TextStyle(
-                                    color: Colors.white.withOpacity(0.5),
+                                    color: Colors.white.withValues(alpha: 0.5),
                                     fontSize: 13,
                                   ),
                                 ),
@@ -355,7 +366,9 @@ class _SavedTripsDock extends StatelessWidget {
 
                         return ListView.builder(
                           scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: dockHorizontalPadding,
+                          ),
                           itemCount: docs.length,
                           itemBuilder: (context, index) {
                             final doc = docs[index];
@@ -394,6 +407,7 @@ class _SavedTripsDock extends StatelessWidget {
                             final isSelected = selectedTripId == doc.id;
 
                             return _TripCard(
+                              width: cardWidth,
                               title: trip['title'] as String,
                               stops: trip['stops'] as int,
                               distance: _formatDistance(
@@ -420,6 +434,7 @@ class _SavedTripsDock extends StatelessWidget {
 
 /// Glassmorphism trip card
 class _TripCard extends StatefulWidget {
+  final double width;
   final String title;
   final int stops;
   final String distance;
@@ -428,6 +443,7 @@ class _TripCard extends StatefulWidget {
   final VoidCallback onTap;
 
   const _TripCard({
+    required this.width,
     required this.title,
     required this.stops,
     required this.distance,
@@ -452,7 +468,7 @@ class _TripCardState extends State<_TripCard> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          width: 180,
+          width: widget.width,
           margin: const EdgeInsets.only(right: 12, bottom: 16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
@@ -460,14 +476,14 @@ class _TripCardState extends State<_TripCard> {
               color:
                   widget.isSelected
                       ? const Color(0xFF00ff88)
-                      : Colors.white.withOpacity(_isHovered ? 0.3 : 0.15),
+                      : Colors.white.withValues(alpha: _isHovered ? 0.3 : 0.15),
               width: widget.isSelected ? 2 : 1,
             ),
             boxShadow:
                 widget.isSelected
                     ? [
                       BoxShadow(
-                        color: const Color(0xFF00ff88).withOpacity(0.3),
+                        color: const Color(0xFF00ff88).withValues(alpha: 0.3),
                         blurRadius: 20,
                         spreadRadius: -5,
                       ),
@@ -485,8 +501,12 @@ class _TripCardState extends State<_TripCard> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      Colors.white.withOpacity(widget.isSelected ? 0.15 : 0.08),
-                      Colors.white.withOpacity(widget.isSelected ? 0.08 : 0.03),
+                      Colors.white.withValues(
+                        alpha: widget.isSelected ? 0.15 : 0.08,
+                      ),
+                      Colors.white.withValues(
+                        alpha: widget.isSelected ? 0.08 : 0.03,
+                      ),
                     ],
                   ),
                 ),
@@ -498,7 +518,7 @@ class _TripCardState extends State<_TripCard> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.95),
+                        color: Colors.white.withValues(alpha: 0.95),
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
@@ -509,13 +529,13 @@ class _TripCardState extends State<_TripCard> {
                         Icon(
                           Icons.place_outlined,
                           size: 12,
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                         ),
                         const SizedBox(width: 4),
                         Text(
                           '${widget.stops} stops',
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.6),
+                            color: Colors.white.withValues(alpha: 0.6),
                             fontSize: 11,
                           ),
                         ),
@@ -528,13 +548,13 @@ class _TripCardState extends State<_TripCard> {
                           Icon(
                             Icons.straighten,
                             size: 12,
-                            color: Colors.white.withOpacity(0.5),
+                            color: Colors.white.withValues(alpha: 0.5),
                           ),
                           const SizedBox(width: 4),
                           Text(
                             widget.distance,
                             style: TextStyle(
-                              color: Colors.white.withOpacity(0.6),
+                              color: Colors.white.withValues(alpha: 0.6),
                               fontSize: 11,
                             ),
                           ),
@@ -545,7 +565,7 @@ class _TripCardState extends State<_TripCard> {
                       Text(
                         widget.date,
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.4),
+                          color: Colors.white.withValues(alpha: 0.4),
                           fontSize: 10,
                         ),
                       ),
@@ -592,14 +612,16 @@ class _GlassmorphicButtonState extends State<_GlassmorphicButton> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(50),
             border: Border.all(
-              color: const Color(0xFF00ff88).withOpacity(_isHovered ? 1 : 0.6),
+              color: const Color(
+                0xFF00ff88,
+              ).withValues(alpha: _isHovered ? 1 : 0.6),
               width: 2,
             ),
             boxShadow: [
               BoxShadow(
                 color: const Color(
                   0xFF00ff88,
-                ).withOpacity(_isHovered ? 0.4 : 0.2),
+                ).withValues(alpha: _isHovered ? 0.4 : 0.2),
                 blurRadius: _isHovered ? 30 : 20,
                 spreadRadius: -5,
               ),
@@ -615,10 +637,10 @@ class _GlassmorphicButtonState extends State<_GlassmorphicButton> {
                     colors: [
                       const Color(
                         0xFF00ff88,
-                      ).withOpacity(_isHovered ? 0.3 : 0.15),
+                      ).withValues(alpha: _isHovered ? 0.3 : 0.15),
                       const Color(
                         0xFF00ff88,
-                      ).withOpacity(_isHovered ? 0.15 : 0.05),
+                      ).withValues(alpha: _isHovered ? 0.15 : 0.05),
                     ],
                   ),
                 ),
@@ -666,10 +688,14 @@ class _GlassmorphicIconButton extends StatelessWidget {
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white.withOpacity(0.1),
-              border: Border.all(color: Colors.white.withOpacity(0.2)),
+              color: Colors.white.withValues(alpha: 0.1),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
             ),
-            child: Icon(icon, color: Colors.white.withOpacity(0.8), size: 18),
+            child: Icon(
+              icon,
+              color: Colors.white.withValues(alpha: 0.8),
+              size: 18,
+            ),
           ),
         ),
       ),
@@ -693,8 +719,8 @@ class _GlassmorphicChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
-            color: Colors.white.withOpacity(0.1),
-            border: Border.all(color: Colors.white.withOpacity(0.2)),
+            color: Colors.white.withValues(alpha: 0.1),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -702,13 +728,13 @@ class _GlassmorphicChip extends StatelessWidget {
               Icon(
                 Icons.map_outlined,
                 size: 14,
-                color: Colors.white.withOpacity(0.8),
+                color: Colors.white.withValues(alpha: 0.8),
               ),
               const SizedBox(width: 8),
               Text(
                 text,
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
+                  color: Colors.white.withValues(alpha: 0.9),
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
                 ),

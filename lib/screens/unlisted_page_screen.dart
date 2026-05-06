@@ -313,6 +313,27 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
           final formEnabled = data['formEnabled'] == true;
           final formTitle = data['formTitle']?.toString() ?? 'Sign Up';
           final formButtonText = data['formButtonText']?.toString() ?? 'Submit';
+          final viewportWidth = MediaQuery.sizeOf(context).width;
+          final heroHeight = (viewportWidth * 0.42).clamp(220.0, 420.0);
+          final horizontalPadding = viewportWidth < 600 ? 16.0 : 24.0;
+          final formPadding = viewportWidth < 600 ? 16.0 : 24.0;
+          final heroTitleStyle =
+              Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+                shadows: const [Shadow(blurRadius: 10, color: Colors.black54)],
+              ) ??
+              const TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                shadows: [Shadow(blurRadius: 10, color: Colors.black54)],
+              );
+          final pageTitleStyle =
+              Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ) ??
+              const TextStyle(fontSize: 32, fontWeight: FontWeight.bold);
 
           // Initialize controllers for form fields
           for (final field in formFields) {
@@ -330,13 +351,14 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                 // Hero Section
                 if (coverImage.isNotEmpty)
                   SizedBox(
-                    height: 300,
+                    height: heroHeight.toDouble(),
                     child: Stack(
                       children: [
                         Positioned.fill(
                           child: Image.network(
                             coverImage,
                             fit: BoxFit.cover,
+                            semanticLabel: '$title cover image',
                             errorBuilder:
                                 (_, __, ___) =>
                                     Container(color: Colors.grey[300]),
@@ -350,227 +372,224 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                                 end: Alignment.bottomCenter,
                                 colors: [
                                   Colors.transparent,
-                                  Colors.black.withOpacity(0.6),
+                                  Colors.black.withValues(alpha: 0.6),
                                 ],
                               ),
                             ),
                           ),
                         ),
                         Positioned(
-                          left: 24,
-                          right: 24,
-                          bottom: 24,
-                          child: Text(
-                            title,
-                            style: const TextStyle(
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                              shadows: [
-                                Shadow(blurRadius: 10, color: Colors.black54),
-                              ],
-                            ),
-                          ),
+                          left: horizontalPadding,
+                          right: horizontalPadding,
+                          bottom: horizontalPadding,
+                          child: Text(title, style: heroTitleStyle),
                         ),
                       ],
                     ),
                   )
                 else
-                  Container(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                  Padding(
+                    padding: EdgeInsets.all(horizontalPadding + 8),
+                    child: Text(title, style: pageTitleStyle),
                   ),
 
                 // Content Section
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  constraints: const BoxConstraints(maxWidth: 800),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (normalizedDescription.isNotEmpty) ...[
-                        MarkdownBody(
-                          data: normalizedDescription,
-                          selectable: true,
-                          styleSheet: MarkdownStyleSheet.fromTheme(
-                            Theme.of(context),
-                          ).copyWith(
-                            p: TextStyle(
-                              fontSize: 18,
-                              color: Colors.grey[700],
-                              height: 1.5,
-                            ),
-                            h1: const TextStyle(
-                              fontSize: 30,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            h2: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            h3: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                      ],
-                      if (normalizedContent.isNotEmpty) ...[
-                        MarkdownBody(
-                          data: normalizedContent,
-                          selectable: true,
-                          styleSheet: MarkdownStyleSheet.fromTheme(
-                            Theme.of(context),
-                          ).copyWith(
-                            p: const TextStyle(fontSize: 16, height: 1.55),
-                            h1: const TextStyle(
-                              fontSize: 34,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            h2: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            h3: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            h4: const TextStyle(
-                              fontSize: 19,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                      ],
-
-                      // Form Section
-                      if (formEnabled && !_submitted) ...[
-                        Card(
-                          elevation: 2,
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Form(
-                              key: _formKey,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Text(
-                                    formTitle,
-                                    style: const TextStyle(
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 24),
-                                  ...formFields.map((field) {
-                                    if (field is! Map) {
-                                      return const SizedBox.shrink();
-                                    }
-                                    return Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 16,
-                                      ),
-                                      child: _buildFormField(
-                                        field as Map<String, dynamic>,
-                                      ),
-                                    );
-                                  }),
-                                  const SizedBox(height: 24),
-                                  if (_submissionError != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 16,
-                                      ),
-                                      child: Text(
-                                        'Error: $_submissionError',
-                                        style: const TextStyle(
-                                          color: Colors.red,
-                                        ),
-                                      ),
-                                    ),
-                                  ElevatedButton(
-                                    onPressed:
-                                        _submitting
-                                            ? null
-                                            : () => _submitForm(data),
-                                    style: ElevatedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16,
-                                      ),
-                                      backgroundColor: const Color(0xFF00B894),
-                                      foregroundColor: Colors.white,
-                                    ),
-                                    child:
-                                        _submitting
-                                            ? const SizedBox(
-                                              height: 20,
-                                              width: 20,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                valueColor:
-                                                    AlwaysStoppedAnimation<
-                                                      Color
-                                                    >(Colors.white),
-                                              ),
-                                            )
-                                            : Text(
-                                              formButtonText,
-                                              style: const TextStyle(
-                                                fontSize: 16,
-                                              ),
-                                            ),
-                                  ),
-                                ],
+                Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: horizontalPadding,
+                      vertical: 24,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 860),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (normalizedDescription.isNotEmpty) ...[
+                            MarkdownBody(
+                              data: normalizedDescription,
+                              selectable: true,
+                              styleSheet: MarkdownStyleSheet.fromTheme(
+                                Theme.of(context),
+                              ).copyWith(
+                                p: TextStyle(
+                                  fontSize: 18,
+                                  color: Colors.grey[700],
+                                  height: 1.5,
+                                ),
+                                h1: const TextStyle(
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                h2: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                h3: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      ],
-
-                      // Success Message
-                      if (_submitted)
-                        Card(
-                          elevation: 2,
-                          color: Colors.green.shade50,
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.check_circle_outline,
-                                  size: 64,
-                                  color: Colors.green.shade700,
+                            const SizedBox(height: 24),
+                          ],
+                          if (normalizedContent.isNotEmpty) ...[
+                            MarkdownBody(
+                              data: normalizedContent,
+                              selectable: true,
+                              styleSheet: MarkdownStyleSheet.fromTheme(
+                                Theme.of(context),
+                              ).copyWith(
+                                p: const TextStyle(fontSize: 16, height: 1.55),
+                                h1: const TextStyle(
+                                  fontSize: 34,
+                                  fontWeight: FontWeight.w700,
                                 ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'Thank You!',
-                                  style: TextStyle(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green.shade900,
-                                  ),
+                                h2: const TextStyle(
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w700,
                                 ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Your submission has been received.',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.green.shade800,
-                                  ),
+                                h3: const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w700,
                                 ),
-                              ],
+                                h4: const TextStyle(
+                                  fontSize: 19,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                    ],
+                            const SizedBox(height: 32),
+                          ],
+
+                          // Form Section
+                          if (formEnabled && !_submitted) ...[
+                            Card(
+                              elevation: 2,
+                              child: Padding(
+                                padding: EdgeInsets.all(formPadding),
+                                child: Form(
+                                  key: _formKey,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        formTitle,
+                                        style: const TextStyle(
+                                          fontSize: 24,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 24),
+                                      ...formFields.map((field) {
+                                        if (field is! Map) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        return Padding(
+                                          padding: const EdgeInsets.only(
+                                            bottom: 16,
+                                          ),
+                                          child: _buildFormField(
+                                            field as Map<String, dynamic>,
+                                          ),
+                                        );
+                                      }),
+                                      const SizedBox(height: 24),
+                                      if (_submissionError != null)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            bottom: 16,
+                                          ),
+                                          child: Text(
+                                            'Error: $_submissionError',
+                                            style: const TextStyle(
+                                              color: Colors.red,
+                                            ),
+                                          ),
+                                        ),
+                                      ElevatedButton(
+                                        onPressed:
+                                            _submitting
+                                                ? null
+                                                : () => _submitForm(data),
+                                        style: ElevatedButton.styleFrom(
+                                          minimumSize: const Size.fromHeight(
+                                            52,
+                                          ),
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 16,
+                                          ),
+                                          backgroundColor: const Color(
+                                            0xFF00B894,
+                                          ),
+                                          foregroundColor: Colors.white,
+                                        ),
+                                        child:
+                                            _submitting
+                                                ? const SizedBox(
+                                                  height: 20,
+                                                  width: 20,
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                    valueColor:
+                                                        AlwaysStoppedAnimation<
+                                                          Color
+                                                        >(Colors.white),
+                                                  ),
+                                                )
+                                                : Text(
+                                                  formButtonText,
+                                                  style: const TextStyle(
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+
+                          // Success Message
+                          if (_submitted)
+                            Card(
+                              elevation: 2,
+                              color: Colors.green.shade50,
+                              child: Padding(
+                                padding: EdgeInsets.all(formPadding),
+                                child: Column(
+                                  children: [
+                                    Icon(
+                                      Icons.check_circle_outline,
+                                      size: 64,
+                                      color: Colors.green.shade700,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Thank You!',
+                                      style: TextStyle(
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green.shade900,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Your submission has been received.',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        color: Colors.green.shade800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -673,41 +692,43 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                   ? (v) => v == null || v.isEmpty ? 'Required' : null
                   : null,
           builder: (field) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  required ? '$label *' : label,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                ...options.map((opt) {
-                  return RadioListTile<String>(
-                    title: Text(opt),
-                    value: opt,
-                    groupValue: _formValues[fieldId] as String?,
-                    onChanged: (val) {
-                      setState(() => _formValues[fieldId] = val);
-                      field.didChange(val);
-                    },
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                  );
-                }),
-                if (field.hasError)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 12, top: 8),
-                    child: Text(
-                      field.errorText ?? '',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                        fontSize: 12,
-                      ),
+            return RadioGroup<String>(
+              groupValue: _formValues[fieldId] as String?,
+              onChanged: (val) {
+                setState(() => _formValues[fieldId] = val);
+                field.didChange(val);
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    required ? '$label *' : label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-              ],
+                  ...options.map((opt) {
+                    return RadioListTile<String>(
+                      title: Text(opt),
+                      value: opt,
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    );
+                  }),
+                  if (field.hasError)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 12, top: 8),
+                      child: Text(
+                        field.errorText ?? '',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             );
           },
         );
@@ -973,40 +994,54 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: nameData['first'],
-                        decoration: const InputDecoration(
-                          labelText: 'First Name',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (val) {
-                          final updated = Map<String, String>.from(nameData);
-                          updated['first'] = val;
-                          setState(() => _formValues[fieldId] = updated);
-                          field.didChange(updated);
-                        },
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isCompact = constraints.maxWidth < 560;
+                    final firstNameField = TextFormField(
+                      initialValue: nameData['first'],
+                      decoration: const InputDecoration(
+                        labelText: 'First Name',
+                        border: OutlineInputBorder(),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: nameData['last'],
-                        decoration: const InputDecoration(
-                          labelText: 'Last Name',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (val) {
-                          final updated = Map<String, String>.from(nameData);
-                          updated['last'] = val;
-                          setState(() => _formValues[fieldId] = updated);
-                          field.didChange(updated);
-                        },
+                      onChanged: (val) {
+                        final updated = Map<String, String>.from(nameData);
+                        updated['first'] = val;
+                        setState(() => _formValues[fieldId] = updated);
+                        field.didChange(updated);
+                      },
+                    );
+                    final lastNameField = TextFormField(
+                      initialValue: nameData['last'],
+                      decoration: const InputDecoration(
+                        labelText: 'Last Name',
+                        border: OutlineInputBorder(),
                       ),
-                    ),
-                  ],
+                      onChanged: (val) {
+                        final updated = Map<String, String>.from(nameData);
+                        updated['last'] = val;
+                        setState(() => _formValues[fieldId] = updated);
+                        field.didChange(updated);
+                      },
+                    );
+
+                    if (isCompact) {
+                      return Column(
+                        children: [
+                          firstNameField,
+                          const SizedBox(height: 12),
+                          lastNameField,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: firstNameField),
+                        const SizedBox(width: 12),
+                        Expanded(child: lastNameField),
+                      ],
+                    );
+                  },
                 ),
                 if (field.hasError)
                   Padding(
@@ -1088,57 +1123,71 @@ class _UnlistedPageScreenState extends State<UnlistedPageScreen> {
                   },
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        initialValue: addrData['city'],
-                        decoration: const InputDecoration(
-                          labelText: 'City',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (val) {
-                          final updated = Map<String, String>.from(addrData);
-                          updated['city'] = val;
-                          setState(() => _formValues[fieldId] = updated);
-                          field.didChange(updated);
-                        },
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isCompact = constraints.maxWidth < 640;
+                    final cityField = TextFormField(
+                      initialValue: addrData['city'],
+                      decoration: const InputDecoration(
+                        labelText: 'City',
+                        border: OutlineInputBorder(),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: addrData['province'],
-                        decoration: const InputDecoration(
-                          labelText: 'Province',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (val) {
-                          final updated = Map<String, String>.from(addrData);
-                          updated['province'] = val;
-                          setState(() => _formValues[fieldId] = updated);
-                          field.didChange(updated);
-                        },
+                      onChanged: (val) {
+                        final updated = Map<String, String>.from(addrData);
+                        updated['city'] = val;
+                        setState(() => _formValues[fieldId] = updated);
+                        field.didChange(updated);
+                      },
+                    );
+                    final provinceField = TextFormField(
+                      initialValue: addrData['province'],
+                      decoration: const InputDecoration(
+                        labelText: 'Province',
+                        border: OutlineInputBorder(),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: addrData['postal'],
-                        decoration: const InputDecoration(
-                          labelText: 'Postal',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (val) {
-                          final updated = Map<String, String>.from(addrData);
-                          updated['postal'] = val;
-                          setState(() => _formValues[fieldId] = updated);
-                          field.didChange(updated);
-                        },
+                      onChanged: (val) {
+                        final updated = Map<String, String>.from(addrData);
+                        updated['province'] = val;
+                        setState(() => _formValues[fieldId] = updated);
+                        field.didChange(updated);
+                      },
+                    );
+                    final postalField = TextFormField(
+                      initialValue: addrData['postal'],
+                      decoration: const InputDecoration(
+                        labelText: 'Postal',
+                        border: OutlineInputBorder(),
                       ),
-                    ),
-                  ],
+                      onChanged: (val) {
+                        final updated = Map<String, String>.from(addrData);
+                        updated['postal'] = val;
+                        setState(() => _formValues[fieldId] = updated);
+                        field.didChange(updated);
+                      },
+                    );
+
+                    if (isCompact) {
+                      return Column(
+                        children: [
+                          cityField,
+                          const SizedBox(height: 12),
+                          provinceField,
+                          const SizedBox(height: 12),
+                          postalField,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(flex: 2, child: cityField),
+                        const SizedBox(width: 12),
+                        Expanded(child: provinceField),
+                        const SizedBox(width: 12),
+                        Expanded(child: postalField),
+                      ],
+                    );
+                  },
                 ),
                 if (field.hasError)
                   Padding(

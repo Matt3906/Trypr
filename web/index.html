@@ -19,23 +19,115 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta
-    name="description"
-    content="Trypr is a collaborative trip planner for multi-stop adventures. Build routes in 2D or 3D, organize itineraries, packing lists, budgets, and travel together."
-  >
-  <meta property="og:title" content="Trypr | Collaborative Trip Planner">
-  <meta
-    property="og:description"
-    content="Plan multi-stop trips with route tools, shared itineraries, packing, expenses, and group chat in one place."
-  >
+
+  <title>Trypr – Plan Trips Together</title>
+  <link rel="canonical" href="https://trypr.co/">
+
+  <!-- Primary SEO -->
+  <meta name="description" content="Trypr is the collaborative trip planner for multi-stop adventures. Build 2D and 3D routes, manage itineraries, packing lists, shared budgets, and group chat — all in one place.">
+  <meta name="keywords" content="trip planner, collaborative travel, route planner, itinerary builder, group travel, packing list, travel budget, multi-stop trips">
+  <meta name="robots" content="index, follow">
+  <meta name="author" content="Trypr">
+
+  <!-- Open Graph (Facebook, LinkedIn, iMessage previews) -->
+  <meta property="og:site_name" content="Trypr">
+  <meta property="og:title" content="Trypr – Plan Trips Together">
+  <meta property="og:description" content="Collaborative trip planning with 2D &amp; 3D route building, shared itineraries, packing lists, budgets, and group chat.">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="assets/images/TryprLogo_Black.png">
+  <meta property="og:url" content="https://trypr.co/">
+  <meta property="og:image" content="https://trypr.co/icons/Icon-512.png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:locale" content="en_US">
+
+  <!-- Twitter Card -->
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Trypr | Collaborative Trip Planner">
-  <meta
-    name="twitter:description"
-    content="Plan and manage trips with routes, itineraries, packing, expenses, and collaboration."
-  >
+  <meta name="twitter:site" content="@tryprco">
+  <meta name="twitter:title" content="Trypr – Plan Trips Together">
+  <meta name="twitter:description" content="Collaborative trip planning with routes, itineraries, packing, budgets, and group chat.">
+  <meta name="twitter:image" content="https://trypr.co/icons/Icon-512.png">
+
+  <!-- JSON-LD: WebSite + Sitelinks Search Box + quick navigation links -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://trypr.co/#website",
+        "url": "https://trypr.co/",
+        "name": "Trypr",
+        "description": "Collaborative trip planner for multi-stop adventures.",
+        "potentialAction": {
+          "@type": "SearchAction",
+          "target": {
+            "@type": "EntryPoint",
+            "urlTemplate": "https://trypr.co/#search?q={search_term_string}"
+          },
+          "query-input": "required name=search_term_string"
+        }
+      },
+      {
+        "@type": "WebPage",
+        "@id": "https://trypr.co/#homepage",
+        "url": "https://trypr.co/",
+        "name": "Trypr – Plan Trips Together",
+        "isPartOf": { "@id": "https://trypr.co/#website" },
+        "description": "Plan multi-stop trips with route tools, shared itineraries, packing lists, budgets, and group collaboration.",
+        "breadcrumb": {
+          "@type": "BreadcrumbList",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "Home",
+              "item": "https://trypr.co/"
+            }
+          ]
+        }
+      },
+      {
+        "@type": "SiteLinksNavigationElement",
+        "name": "Quick Links",
+        "hasPart": [
+          {
+            "@type": "SiteLinksNavigationElement",
+            "name": "Plan a Trip",
+            "url": "https://trypr.co/#/trip-builder"
+          },
+          {
+            "@type": "SiteLinksNavigationElement",
+            "name": "My Trips",
+            "url": "https://trypr.co/#/my-trips"
+          },
+          {
+            "@type": "SiteLinksNavigationElement",
+            "name": "Explore",
+            "url": "https://trypr.co/#/explore"
+          },
+          {
+            "@type": "SiteLinksNavigationElement",
+            "name": "About Trypr",
+            "url": "https://trypr.co/about"
+          }
+        ]
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://trypr.co/#organization",
+        "name": "Trypr",
+        "url": "https://trypr.co/",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://trypr.co/icons/Icon-512.png",
+          "width": 512,
+          "height": 512
+        },
+        "sameAs": []
+      }
+    ]
+  }
+  </script>
 
   <!-- Google Maps API key for hosted builds (alternative to --dart-define=GOOGLE_MAPS_API_KEY=...) -->
   <meta name="google-maps-api-key" content="AIzaSyCGH2idy-P-0FIr_UK0rDIJjaoJknRd2nw">
@@ -57,7 +149,8 @@
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
-  <link rel="icon" type="image/png" href="assets/images/TryprLogo_Black.png"/>
+  <link rel="icon" type="image/png" href="icons/Icon-192.png"/>
+  <link rel="icon" type="image/png" sizes="512x512" href="icons/Icon-512.png"/>
 
   <!--
     Platform-view z-ordering is managed by Flutter's compositing engine.
@@ -129,7 +222,6 @@
     }
   </style>
 
-  <title>Trypr | Collaborative Trip Planner</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>

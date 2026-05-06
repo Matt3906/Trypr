@@ -1,11 +1,11 @@
+// ignore_for_file: avoid_web_libraries_in_flutter
+
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:ui' as ui;
 import 'dart:ui_web' as ui_web;
 import 'dart:math' as math;
-
-import 'dart:html' as html;
 // ignore: uri_does_not_exist
 import 'dart:js_util' as js_util;
 
@@ -13,6 +13,7 @@ import 'dart:convert';
 
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:http/http.dart' as http;
+import 'package:web/web.dart' as web;
 
 import 'package:trypr/services/directions_web.dart' as directions_web;
 import 'package:trypr/services/google_maps_loader.dart' as maps_loader;
@@ -572,7 +573,7 @@ class MapEmbed extends StatelessWidget {
     if (fromDefine.isNotEmpty) return fromDefine;
 
     try {
-      final meta = html.document.querySelector(
+      final meta = web.document.querySelector(
         'meta[name="google-maps-api-key"]',
       );
       final fromMeta = meta?.getAttribute('content')?.trim() ?? '';
@@ -721,8 +722,6 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Set<gmaps.Polyline> _polylines = const {};
   Set<gmaps.Marker> _modeSpecificMarkers = const {};
   Set<gmaps.Polyline> _modeSpecificPolylines = const {};
-  Set<gmaps.Marker> _routeComputingMarkers = const {};
-  Set<gmaps.Polyline> _routeComputingPolylines = const {};
   bool _mapsReady = false;
   bool _isRouteComputing = false;
 
@@ -759,7 +758,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   static final Set<String> _overpassUnavailableEndpoints = <String>{};
   static final Map<String, DateTime> _overpassEndpointCooldownUntil =
       <String, DateTime>{};
-  html.DivElement? _placesHost;
+  web.HTMLDivElement? _placesHost;
   Object? _placesService;
   bool _didLogRuntimeKeyPresence = false;
   bool _didAttemptCampsiteInfoOpen = false;
@@ -773,12 +772,10 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   Timer? _previewUpdateTimer;
   Timer? _routeComputingOverlayUpdateTimer;
   Timer? _routeComputingHideTimer;
-  Timer? _routeComputingAnimationTimer;
   DateTime? _routeComputingShownAt;
   Offset? _routeComputingStartOffset;
   Offset? _routeComputingTargetOffset;
   double _routeComputingCurveSeed = 0.5;
-  double _routeComputingAnimationPhase = 0.0;
   Set<gmaps.Marker> _focusedStepMarkers = const {};
   Set<gmaps.Polyline> _focusedStepPolylines = const {};
   Timer? _focusedStepHighlightTimer;
@@ -802,6 +799,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   String _lastAdventureOverlayAutoLoadSig = '';
   bool _showAdventureOverlayLoadButton = false;
   bool _isAdventureOverlayLoading = false;
+  bool _isAdventureOverlayRefreshInFlight = false;
   _PortagingOverlayCacheEntry? _lastVisiblePortagingOverlayEntry;
 
   String _normalizeTransportMode(String raw) {
@@ -1176,7 +1174,6 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     _previewUpdateTimer?.cancel();
     _routeComputingOverlayUpdateTimer?.cancel();
     _routeComputingHideTimer?.cancel();
-    _routeComputingAnimationTimer?.cancel();
     _focusedStepHighlightTimer?.cancel();
     _ghostHoverTimer?.cancel();
     _adventureOverlayRefreshTimer?.cancel();
@@ -1275,6 +1272,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     _lastAdventureOverlayAutoLoadSig = '';
     _showAdventureOverlayLoadButton = false;
     _isAdventureOverlayLoading = false;
+    _isAdventureOverlayRefreshInFlight = false;
     _modeSpecificMarkers = const {};
     _modeSpecificPolylines = const {};
   }
@@ -1464,7 +1462,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       gmaps.Marker(
         markerId: gmaps.MarkerId('${_instanceId}_focus_step_marker'),
         position: focusPoint,
-        zIndex: 71,
+        zIndexInt: 71,
         icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
           _hueFor('route_step', mode),
         ),
@@ -1611,7 +1609,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         .take(8)
         .toList(growable: false);
     final geometry = _initialSegmentGeometry(path);
-    final color = _standardRouteColor(mode).withOpacity(0.9);
+    final color = _standardRouteColor(mode).withValues(alpha: 0.9);
 
     _segmentGeometry = geometry;
     _lastInstructions = instructions;
@@ -2049,12 +2047,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
                 shape: BoxShape.circle,
                 color:
                     isDragging
-                        ? const Color(0xFF1565C0).withOpacity(0.70)
-                        : const Color(0xFF1565C0).withOpacity(0.45),
+                        ? const Color(0xFF1565C0).withValues(alpha: 0.70)
+                        : const Color(0xFF1565C0).withValues(alpha: 0.45),
                 border: Border.all(color: Colors.white, width: 2.5),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.25),
+                    color: Colors.black.withValues(alpha: 0.25),
                     blurRadius: 6,
                     spreadRadius: 1,
                   ),
@@ -2358,7 +2356,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
 
   String _metaContent(String name) {
     try {
-      final meta = html.document.querySelector('meta[name="$name"]');
+      final meta = web.document.querySelector('meta[name="$name"]');
       return meta?.getAttribute('content')?.trim() ?? '';
     } catch (_) {
       return '';
@@ -2562,190 +2560,6 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
   }
 
-  void _startRouteComputingNativeAnimation() {
-    _routeComputingAnimationTimer?.cancel();
-    _routeComputingAnimationPhase = 0.0;
-    _rebuildRouteComputingNativeOverlay();
-    _routeComputingAnimationTimer = Timer.periodic(
-      const Duration(milliseconds: 90),
-      (_) {
-        if (!mounted || !_isRouteComputing) {
-          _routeComputingAnimationTimer?.cancel();
-          _routeComputingAnimationTimer = null;
-          return;
-        }
-        _routeComputingAnimationPhase =
-            (_routeComputingAnimationPhase + 0.08) % 1.0;
-        _rebuildRouteComputingNativeOverlay();
-      },
-    );
-  }
-
-  void _stopRouteComputingNativeAnimation() {
-    _routeComputingAnimationTimer?.cancel();
-    _routeComputingAnimationTimer = null;
-    _routeComputingAnimationPhase = 0.0;
-    if (_routeComputingMarkers.isEmpty && _routeComputingPolylines.isEmpty) {
-      return;
-    }
-    setState(() {
-      _routeComputingMarkers = const {};
-      _routeComputingPolylines = const {};
-    });
-  }
-
-  List<gmaps.LatLng> _routeComputingArcPoints(
-    gmaps.LatLng start,
-    gmaps.LatLng end,
-  ) {
-    final dx = end.longitude - start.longitude;
-    final dy = end.latitude - start.latitude;
-    final distance = math.sqrt((dx * dx) + (dy * dy));
-    if (distance <= 0.000001) return [start, end];
-
-    final normalX = -dy / distance;
-    final normalY = dx / distance;
-    final directionSign = _routeComputingCurveSeed >= 0.5 ? 1.0 : -1.0;
-    final curveStrength = distance * (0.12 + (0.08 * _routeComputingCurveSeed));
-    final control = gmaps.LatLng(
-      ((start.latitude + end.latitude) / 2) + (normalY * curveStrength * directionSign),
-      ((start.longitude + end.longitude) / 2) + (normalX * curveStrength * directionSign),
-    );
-
-    return List<gmaps.LatLng>.generate(24, (index) {
-      final t = index / 23.0;
-      final omt = 1.0 - t;
-      return gmaps.LatLng(
-        (omt * omt * start.latitude) +
-            (2 * omt * t * control.latitude) +
-            (t * t * end.latitude),
-        (omt * omt * start.longitude) +
-            (2 * omt * t * control.longitude) +
-            (t * t * end.longitude),
-      );
-    });
-  }
-
-  gmaps.LatLng _interpolateLatLng(gmaps.LatLng a, gmaps.LatLng b, double t) {
-    return gmaps.LatLng(
-      a.latitude + ((b.latitude - a.latitude) * t),
-      a.longitude + ((b.longitude - a.longitude) * t),
-    );
-  }
-
-  List<gmaps.LatLng> _routeComputingBeamPoints(
-    List<gmaps.LatLng> path,
-    double progress,
-  ) {
-    if (path.length < 2) return path;
-    final headPosition = (path.length - 1) * (0.14 + (0.82 * progress));
-    final tailSpan = math.max(2.0, (path.length - 1) * 0.22);
-    final startPosition = math.max(0.0, headPosition - tailSpan);
-    final startIndex = startPosition.floor();
-    final endIndex = math.min(path.length - 1, headPosition.ceil());
-    final out = <gmaps.LatLng>[
-      _interpolateLatLng(
-        path[startIndex],
-        path[math.min(path.length - 1, startIndex + 1)],
-        startPosition - startIndex,
-      ),
-    ];
-    for (var i = startIndex + 1; i <= endIndex; i++) {
-      out.add(path[i]);
-    }
-    if (out.length == 1) {
-      out.add(
-        _interpolateLatLng(
-          path[endIndex],
-          path[math.min(path.length - 1, endIndex + 1)],
-          headPosition - endIndex.floorToDouble(),
-        ),
-      );
-    }
-    return out;
-  }
-
-  void _rebuildRouteComputingNativeOverlay() {
-    if (!mounted || !_isRouteComputing || widget.points.length < 2) {
-      if (_routeComputingMarkers.isNotEmpty || _routeComputingPolylines.isNotEmpty) {
-        setState(() {
-          _routeComputingMarkers = const {};
-          _routeComputingPolylines = const {};
-        });
-      }
-      return;
-    }
-
-    final start = gmaps.LatLng(_latOf(widget.points[0]), _lonOf(widget.points[0]));
-    final target = gmaps.LatLng(_latOf(widget.points[1]), _lonOf(widget.points[1]));
-    final path = _routeComputingArcPoints(start, target);
-    final beam = _routeComputingBeamPoints(path, _routeComputingAnimationPhase);
-    final head = beam.isNotEmpty ? beam.last : target;
-
-    final faintColor =
-        Color.lerp(
-          const Color(0x4438BDF8),
-          const Color(0x3A2DD4BF),
-          _routeComputingAnimationPhase.clamp(0.0, 1.0),
-        )!;
-    final glowColor =
-        Color.lerp(
-          const Color(0xFF38BDF8),
-          const Color(0xFF2DD4BF),
-          _routeComputingAnimationPhase.clamp(0.0, 1.0),
-        )!;
-
-    final polylines = <gmaps.Polyline>{
-      gmaps.Polyline(
-        polylineId: gmaps.PolylineId('${_instanceId}_route_probe_track'),
-        points: path,
-        color: faintColor,
-        width: 4,
-        zIndex: 990,
-      ),
-      if (beam.length >= 2)
-        gmaps.Polyline(
-          polylineId: gmaps.PolylineId('${_instanceId}_route_probe_beam'),
-          points: beam,
-          color: glowColor,
-          width: 6,
-          zIndex: 995,
-        ),
-    };
-
-    final markers = <gmaps.Marker>{
-      gmaps.Marker(
-        markerId: gmaps.MarkerId('${_instanceId}_route_probe_start'),
-        position: start,
-        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
-          gmaps.BitmapDescriptor.hueAzure,
-        ),
-        zIndex: 990,
-      ),
-      gmaps.Marker(
-        markerId: gmaps.MarkerId('${_instanceId}_route_probe_target'),
-        position: target,
-        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
-          gmaps.BitmapDescriptor.hueGreen,
-        ),
-        zIndex: 990,
-      ),
-      gmaps.Marker(
-        markerId: gmaps.MarkerId('${_instanceId}_route_probe_head'),
-        position: head,
-        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(
-          gmaps.BitmapDescriptor.hueCyan,
-        ),
-        zIndex: 999,
-      ),
-    };
-
-    setState(() {
-      _routeComputingPolylines = polylines;
-      _routeComputingMarkers = markers;
-    });
-  }
-
   double _adventureOverlayMinZoom(String mode) {
     switch (_normalizeTransportMode(mode)) {
       case 'portaging':
@@ -2817,6 +2631,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       _pendingAdventureOverlayCameraSig = '';
       _showAdventureOverlayLoadButton = false;
       _isAdventureOverlayLoading = false;
+      _isAdventureOverlayRefreshInFlight = false;
       _modeSpecificPolylines = nextPolylines;
       _modeSpecificMarkers = nextMarkers;
       return;
@@ -2829,6 +2644,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       _pendingAdventureOverlayCameraSig = '';
       _showAdventureOverlayLoadButton = false;
       _isAdventureOverlayLoading = false;
+      _isAdventureOverlayRefreshInFlight = false;
       _modeSpecificPolylines = nextPolylines;
       _modeSpecificMarkers = nextMarkers;
     });
@@ -2979,7 +2795,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         viewport != null && nextSig != _lastAdventureOverlayCameraSig;
     final shouldAutoLoad =
         shouldOffer &&
-        !_isAdventureOverlayLoading &&
+        !_isAdventureOverlayRefreshInFlight &&
         nextSig != _lastAdventureOverlayAutoLoadSig;
     if (!force &&
         nextSig == _pendingAdventureOverlayCameraSig &&
@@ -2992,7 +2808,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     });
     if (shouldAutoLoad) {
       _lastAdventureOverlayAutoLoadSig = nextSig;
-      unawaited(_loadAdventureOverlaysForViewport());
+      unawaited(_loadAdventureOverlaysForViewport(showLoadingIndicator: false));
     }
   }
 
@@ -3093,23 +2909,35 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
   }
 
-  Future<void> _loadAdventureOverlaysForViewport() async {
-    if (_isAdventureOverlayLoading || !_canOfferAdventureOverlayLoad()) return;
-    if (mounted) {
+  Future<void> _loadAdventureOverlaysForViewport({
+    bool showLoadingIndicator = true,
+  }) async {
+    if (_isAdventureOverlayRefreshInFlight ||
+        !_canOfferAdventureOverlayLoad()) {
+      return;
+    }
+    _isAdventureOverlayRefreshInFlight = true;
+    if (mounted && showLoadingIndicator) {
       setState(() => _isAdventureOverlayLoading = true);
+    } else if (showLoadingIndicator) {
+      _isAdventureOverlayLoading = true;
     }
     try {
       await _refreshAdventureOverlays(force: true);
       if (!mounted) return;
-      if (widget.points.length > 1 &&
+      if (_lastRouteHadBlockingGaps &&
+          widget.points.length > 1 &&
           (_modeMatchesAnySegment('hiking') ||
               _modeMatchesAnySegment('portaging'))) {
         _lastRouteCalcSig = '';
         await _updateRoutePolyline(seq: _rebuildSeq);
       }
     } finally {
-      if (mounted) {
+      _isAdventureOverlayRefreshInFlight = false;
+      if (mounted && showLoadingIndicator) {
         setState(() => _isAdventureOverlayLoading = false);
+      } else if (showLoadingIndicator) {
+        _isAdventureOverlayLoading = false;
       }
       unawaited(_updateAdventureOverlayLoadPrompt(force: true));
     }
@@ -3522,6 +3350,37 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return _roundToStep(normalized, 0.02);
   }
 
+  List<({String endpoint, bool isProxy})> _overpassEndpointConfigs() {
+    return <({String endpoint, bool isProxy})>[
+      if (_overpassProxyUrlDefine.trim().isNotEmpty &&
+          _shouldUseRelativeOverpassProxy(_overpassProxyUrlDefine))
+        (endpoint: _overpassProxyUrlDefine, isProxy: true),
+      (endpoint: 'https://overpass-api.de/api/interpreter', isProxy: false),
+      (endpoint: 'https://lz4.overpass-api.de/api/interpreter', isProxy: false),
+      (
+        endpoint: 'https://overpass.private.coffee/api/interpreter',
+        isProxy: false,
+      ),
+      (
+        endpoint: 'https://overpass.kumi.systems/api/interpreter',
+        isProxy: false,
+      ),
+    ];
+  }
+
+  bool _hasAvailableOverpassEndpoint({bool ignoreCooldown = false}) {
+    for (final endpointConfig in _overpassEndpointConfigs()) {
+      final endpoint = endpointConfig.endpoint.trim();
+      if (endpoint.isEmpty) continue;
+      if (_overpassUnavailableEndpoints.contains(endpoint)) continue;
+      if (!ignoreCooldown && _isOverpassEndpointTemporarilyBlocked(endpoint)) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
   bool _isOverpassEndpointTemporarilyBlocked(String endpoint) {
     final until = _overpassEndpointCooldownUntil[endpoint];
     if (until == null) return false;
@@ -3702,11 +3561,47 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     return sampled;
   }
 
+  int _graphVertexCount(List<List<gmaps.LatLng>> lines) {
+    var total = 0;
+    for (final line in lines) {
+      total += line.length;
+    }
+    return total;
+  }
+
+  List<gmaps.LatLng> _simplifyRoutingGraphLine(
+    List<gmaps.LatLng> line, {
+    required int maxPoints,
+    required double minSegmentMeters,
+  }) {
+    if (line.length <= 2) return line;
+    final sampled = _downsampleLine(line, maxPoints: math.max(2, maxPoints));
+    if (sampled.length <= 2 || minSegmentMeters <= 0) return sampled;
+
+    final simplified = <gmaps.LatLng>[sampled.first];
+    for (var i = 1; i + 1 < sampled.length; i++) {
+      final point = sampled[i];
+      final lastKept = simplified.last;
+      if (_haversineMeters(lastKept, point) >= minSegmentMeters) {
+        simplified.add(point);
+      }
+    }
+    final tail = sampled.last;
+    final lastKept = simplified.last;
+    if ((lastKept.latitude - tail.latitude).abs() > 1e-8 ||
+        (lastKept.longitude - tail.longitude).abs() > 1e-8) {
+      simplified.add(tail);
+    }
+    return simplified.length >= 2
+        ? simplified
+        : <gmaps.LatLng>[line.first, line.last];
+  }
+
   bool _shouldUseRelativeOverpassProxy(String endpoint) {
     final trimmed = endpoint.trim();
     if (!trimmed.startsWith('/')) return true;
     try {
-      final location = html.window.location;
+      final location = web.window.location;
       final host = location.hostname.toString().trim().toLowerCase();
       final port = location.port.toString().trim();
       final isLocalHost = host == 'localhost' || host == '127.0.0.1';
@@ -3725,21 +3620,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     Duration requestTimeout = const Duration(seconds: 9),
     bool ignoreCooldown = false,
   }) async {
-    final endpoints = <({String endpoint, bool isProxy})>[
-      if (_overpassProxyUrlDefine.trim().isNotEmpty &&
-          _shouldUseRelativeOverpassProxy(_overpassProxyUrlDefine))
-        (endpoint: _overpassProxyUrlDefine, isProxy: true),
-      (endpoint: 'https://overpass-api.de/api/interpreter', isProxy: false),
-      (endpoint: 'https://lz4.overpass-api.de/api/interpreter', isProxy: false),
-      (
-        endpoint: 'https://overpass.private.coffee/api/interpreter',
-        isProxy: false,
-      ),
-      (
-        endpoint: 'https://overpass.kumi.systems/api/interpreter',
-        isProxy: false,
-      ),
-    ];
+    final endpoints = _overpassEndpointConfigs();
     final deadline = DateTime.now().add(
       Duration(seconds: math.max(requestTimeout.inSeconds + 4, 14)),
     );
@@ -4149,46 +4030,6 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     final savedMeters = originalMeters - trimmedMeters;
     if (savedMeters < 80.0) return null;
     return (path: trimmedPath, distanceMeters: trimmedMeters);
-  }
-
-  _RouteComputation _applyBackcountryDetourGuard({
-    required _RouteComputation route,
-    required List<gmaps.LatLng> anchors,
-    required String mode,
-    required String segType,
-  }) {
-    if (anchors.length < 2) return route;
-    if (segType == 'direct') return route;
-    final normalizedMode = _normalizeTransportMode(mode);
-    if (normalizedMode != 'hiking' && normalizedMode != 'portaging') {
-      return route;
-    }
-
-    final directMeters = _polylineDistanceMeters(anchors);
-    if (!directMeters.isFinite || directMeters <= 0.0) return route;
-    final routedMeters =
-        route.distanceMeters > 0
-            ? route.distanceMeters
-            : _polylineDistanceMeters(route.path);
-    if (!routedMeters.isFinite || routedMeters <= 0.0) return route;
-
-    final ratio = routedMeters / directMeters;
-    final excessMeters = routedMeters - directMeters;
-    final ratioLimit = normalizedMode == 'portaging' ? 1.7 : 2.4;
-    final minExcessMeters = normalizedMode == 'portaging' ? 800.0 : 1400.0;
-
-    if (ratio <= ratioLimit || excessMeters <= minExcessMeters) return route;
-
-    return _straightRoute(
-      path: anchors,
-      mode: mode,
-      color: _standardRouteColor(mode),
-      width: (mode == 'hiking' || mode == 'portaging') ? 6 : 5,
-      patterns: const [],
-      geodesic: false,
-      instruction:
-          'Direct fallback: network detour ${(routedMeters / 1000.0).toStringAsFixed(1)} km vs ${(directMeters / 1000.0).toStringAsFixed(1)} km',
-    );
   }
 
   Future<_RouteComputation?> _routeViaGoogleDirections(
@@ -5066,6 +4907,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     required List<List<gmaps.LatLng>> portageLines,
     required _PortagingOverlayCacheEntry entry,
   }) {
+    final legStartedAt = DateTime.now();
+    const maxLegSolveMs = 3500;
     final directMeters = _haversineMeters(start, end);
     if (!directMeters.isFinite || directMeters <= 0.0) return null;
 
@@ -5081,22 +4924,88 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           line,
     ];
 
+    _PortageWaterFirstLegSolution? sameLineFallback() {
+      final sameLineRoute = _fastPortageRouteAlongSameLine(
+        start: start,
+        end: end,
+        waterLines: filteredWaterLines,
+        portageLines: filteredPortageLines,
+        entry: entry,
+        maxAnchorMeters: 3200.0,
+        maxLineDistanceMeters: 3600.0,
+        maxTotalMeters: math.max(directMeters * 4.0, directMeters + 7000.0),
+      );
+      if (sameLineRoute == null) return null;
+      return _PortageWaterFirstLegSolution(
+        path: sameLineRoute.path,
+        distanceMeters: sameLineRoute.distanceMeters,
+      );
+    }
+
+    bool budgetExceeded(String stage) {
+      final elapsedMs = DateTime.now().difference(legStartedAt).inMilliseconds;
+      if (elapsedMs <= maxLegSolveMs) return false;
+      debugPrint('portageLeg abort_budget stage=$stage elapsed_ms=$elapsedMs');
+      return true;
+    }
+
+    var graphWaterLines = filteredWaterLines;
+    var graphPortageLines = filteredPortageLines;
+    final rawVertexCount =
+        _graphVertexCount(filteredWaterLines) +
+        _graphVertexCount(filteredPortageLines);
+    if (rawVertexCount > 4200) {
+      final waterMaxPoints = math.max(
+        18,
+        math.min(42, 3600 ~/ math.max(1, filteredWaterLines.length)),
+      );
+      final portageMaxPoints = math.max(
+        24,
+        math.min(72, 1200 ~/ math.max(1, filteredPortageLines.length)),
+      );
+      graphWaterLines = <List<gmaps.LatLng>>[
+        for (final line in filteredWaterLines)
+          if (line.length >= 2)
+            _simplifyRoutingGraphLine(
+              line,
+              maxPoints: waterMaxPoints,
+              minSegmentMeters: directMeters <= 8000.0 ? 42.0 : 58.0,
+            ),
+      ];
+      graphPortageLines = <List<gmaps.LatLng>>[
+        for (final line in filteredPortageLines)
+          if (line.length >= 2)
+            _simplifyRoutingGraphLine(
+              line,
+              maxPoints: portageMaxPoints,
+              minSegmentMeters: 18.0,
+            ),
+      ];
+      debugPrint(
+        'portageLeg simplify_graph raw_vertices=$rawVertexCount '
+        'simplified_vertices='
+        '${_graphVertexCount(graphWaterLines) + _graphVertexCount(graphPortageLines)} '
+        'water_lines=${graphWaterLines.length} '
+        'portage_lines=${graphPortageLines.length}',
+      );
+    }
+
     final startWaterEntries = _portageWaterEntryCandidatesForAnchor(
       anchor: start,
       destination: end,
-      waterLines: filteredWaterLines,
+      waterLines: graphWaterLines,
       entry: entry,
     );
     final endWaterEntries = _portageWaterEntryCandidatesForAnchor(
       anchor: end,
       destination: start,
-      waterLines: filteredWaterLines,
+      waterLines: graphWaterLines,
       entry: entry,
     );
 
     final networkLines = <List<gmaps.LatLng>>[
-      ...filteredWaterLines,
-      ...filteredPortageLines,
+      ...graphWaterLines,
+      ...graphPortageLines,
     ];
     if (networkLines.isEmpty) {
       if (startWaterEntries.isNotEmpty &&
@@ -5108,6 +5017,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         );
       }
       return null;
+    }
+    if (budgetExceeded('network_ready')) {
+      return sameLineFallback();
     }
 
     final nodes = <gmaps.LatLng>[];
@@ -5153,7 +5065,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       );
     }
 
-    for (final line in filteredWaterLines) {
+    for (final line in graphWaterLines) {
       var previous = line.first;
       ensureNode(previous);
       for (var i = 1; i < line.length; i++) {
@@ -5162,7 +5074,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         previous = current;
       }
     }
-    for (final line in filteredPortageLines) {
+    for (final line in graphPortageLines) {
       var previous = line.first;
       ensureNode(previous);
       for (var i = 1; i < line.length; i++) {
@@ -5183,6 +5095,13 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         );
       }
       return null;
+    }
+    if (nodes.length > 4200) {
+      debugPrint('portageLeg skip_oversized_graph nodes=${nodes.length}');
+      return sameLineFallback();
+    }
+    if (budgetExceeded('graph_built')) {
+      return sameLineFallback();
     }
 
     final weightedAdjacency = typedAdjacency
@@ -5220,71 +5139,86 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       spatialIndex,
       accessCoords,
     );
+    final heavyLegGraph =
+        rawVertexCount > 4200 ||
+        nodes.length > 2400 ||
+        graphWaterLines.length > 90;
+    final candidateLimit = heavyLegGraph ? 3 : 5;
+    final candidateSoftLimit = heavyLegGraph ? 6 : 10;
+    final snapDeadline = legStartedAt.add(
+      Duration(milliseconds: heavyLegGraph ? 1400 : 2200),
+    );
+    final snapMaxSegments = heavyLegGraph ? 650 : 1800;
+    final snapLineDistance = heavyLegGraph ? 7000.0 : 10000.0;
+    final snapAlongDistance = heavyLegGraph ? 12000.0 : 20000.0;
     final candidateRadii = <double>[2500, 5000, 9000, 15000];
+    final baseStartCandidates =
+        heavyLegGraph
+            ? const <_PortageGraphCandidate>[]
+            : _portageGraphCandidatesForAnchor(
+              anchor: start,
+              nodes: nodes,
+              spatialIndex: spatialIndex,
+              accessPoints: accessCoords,
+              entry: entry,
+              limit: candidateLimit,
+              radiiMeters: candidateRadii,
+              maxGlobalFallbackMeters: 10000,
+            );
     final startCandidates = _mergePortageCandidateGroups([
-      _portageGraphCandidatesForAnchor(
-        anchor: start,
-        nodes: nodes,
-        spatialIndex: spatialIndex,
-        accessPoints: accessCoords,
-        entry: entry,
-        limit: 5,
-        radiiMeters: candidateRadii,
-        maxGlobalFallbackMeters: 10000,
-      ),
+      baseStartCandidates,
       _snapPortageCandidatesToSegments(
         anchor: start,
         lines: networkLines,
         nodeIndexByKey: nodeIndexByKey,
         entry: entry,
-        limit: 5,
+        limit: candidateLimit,
         maxAnchorMeters: 9500.0,
-        maxLineDistanceMeters: 10000.0,
-        maxAlongSegmentMeters: 20000.0,
+        maxLineDistanceMeters: snapLineDistance,
+        maxAlongSegmentMeters: snapAlongDistance,
+        maxSegmentsToScan: snapMaxSegments,
+        deadline: snapDeadline,
+        debugLabel: 'portageLegStartSnap',
         resolvedAnchor: startAnchor,
       ),
-    ], softLimit: 10);
+    ], softLimit: candidateSoftLimit);
+    final baseEndCandidates =
+        heavyLegGraph
+            ? const <_PortageGraphCandidate>[]
+            : _portageGraphCandidatesForAnchor(
+              anchor: end,
+              nodes: nodes,
+              spatialIndex: spatialIndex,
+              accessPoints: accessCoords,
+              entry: entry,
+              limit: candidateLimit,
+              radiiMeters: candidateRadii,
+              maxGlobalFallbackMeters: 10000,
+            );
     final endCandidates = _mergePortageCandidateGroups([
-      _portageGraphCandidatesForAnchor(
-        anchor: end,
-        nodes: nodes,
-        spatialIndex: spatialIndex,
-        accessPoints: accessCoords,
-        entry: entry,
-        limit: 5,
-        radiiMeters: candidateRadii,
-        maxGlobalFallbackMeters: 10000,
-      ),
+      baseEndCandidates,
       _snapPortageCandidatesToSegments(
         anchor: end,
         lines: networkLines,
         nodeIndexByKey: nodeIndexByKey,
         entry: entry,
-        limit: 5,
+        limit: candidateLimit,
         maxAnchorMeters: 9500.0,
-        maxLineDistanceMeters: 10000.0,
-        maxAlongSegmentMeters: 20000.0,
+        maxLineDistanceMeters: snapLineDistance,
+        maxAlongSegmentMeters: snapAlongDistance,
+        maxSegmentsToScan: snapMaxSegments,
+        deadline: snapDeadline,
+        debugLabel: 'portageLegEndSnap',
         resolvedAnchor: endAnchor,
       ),
-    ], softLimit: 10);
+    ], softLimit: candidateSoftLimit);
+    if (budgetExceeded('candidates_ready')) {
+      return sameLineFallback();
+    }
 
     if (startCandidates.isEmpty || endCandidates.isEmpty) {
-      final sameLineRoute = _fastPortageRouteAlongSameLine(
-        start: start,
-        end: end,
-        waterLines: filteredWaterLines,
-        portageLines: filteredPortageLines,
-        entry: entry,
-        maxAnchorMeters: 3200.0,
-        maxLineDistanceMeters: 3600.0,
-        maxTotalMeters: math.max(directMeters * 4.0, directMeters + 7000.0),
-      );
-      if (sameLineRoute != null) {
-        return _PortageWaterFirstLegSolution(
-          path: sameLineRoute.path,
-          distanceMeters: sameLineRoute.distanceMeters,
-        );
-      }
+      final sameLine = sameLineFallback();
+      if (sameLine != null) return sameLine;
       if (filteredPortageLines.isEmpty &&
           startWaterEntries.isNotEmpty &&
           endWaterEntries.isNotEmpty &&
@@ -5305,12 +5239,17 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     var bestWeightedScore = double.infinity;
     final endNodeSet =
         endCandidates.map((candidate) => candidate.index).toSet();
+    final searchDeadline = legStartedAt.add(
+      const Duration(milliseconds: maxLegSolveMs),
+    );
 
     for (final startCandidate in startCandidates) {
       final tree = _shortestTrailTreeFromSource(
         startCandidate.index,
         weightedAdjacency,
         stopNodes: endNodeSet,
+        deadline: searchDeadline,
+        debugLabel: 'portageLegSearch',
       );
       for (final endCandidate in endCandidates) {
         final weightedMeters = tree.dist[endCandidate.index];
@@ -5328,6 +5267,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
           bestEndNode = endCandidate.index;
         }
       }
+      if (DateTime.now().isAfter(searchDeadline)) {
+        break;
+      }
     }
 
     if (bestPrev == null ||
@@ -5335,22 +5277,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         bestEndCandidate == null ||
         bestStartNode < 0 ||
         bestEndNode < 0) {
-      final sameLineRoute = _fastPortageRouteAlongSameLine(
-        start: start,
-        end: end,
-        waterLines: filteredWaterLines,
-        portageLines: filteredPortageLines,
-        entry: entry,
-        maxAnchorMeters: 3200.0,
-        maxLineDistanceMeters: 3600.0,
-        maxTotalMeters: math.max(directMeters * 4.0, directMeters + 7000.0),
-      );
-      if (sameLineRoute != null) {
-        return _PortageWaterFirstLegSolution(
-          path: sameLineRoute.path,
-          distanceMeters: sameLineRoute.distanceMeters,
-        );
-      }
+      final sameLine = sameLineFallback();
+      if (sameLine != null) return sameLine;
       if (filteredPortageLines.isEmpty &&
           startWaterEntries.isNotEmpty &&
           endWaterEntries.isNotEmpty &&
@@ -5572,7 +5500,10 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
 
     commitSegment(currentPoints, currentIsCarry);
-    return out.length >= 2 ? out : const [];
+    final hasCarrySegment = out.any(
+      (segment) => segment.color == _portagingCarryRouteColor,
+    );
+    return hasCarrySegment ? out : const [];
   }
 
   List<List<gmaps.LatLng>> _selectGraphLinesForAnchors(
@@ -5908,6 +5839,9 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     double maxAnchorMeters = 12000.0,
     double maxLineDistanceMeters = 14000.0,
     double maxAlongSegmentMeters = 22000.0,
+    int? maxSegmentsToScan,
+    DateTime? deadline,
+    String? debugLabel,
     ({gmaps.LatLng graphAnchor, double connectorMeters, bool usedAccess})?
     resolvedAnchor,
   }) {
@@ -5916,6 +5850,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
 
     final byIndex = <int, _PortageGraphCandidate>{};
+    var scannedSegments = 0;
+    var timedOut = false;
 
     void scanSource(
       gmaps.LatLng sourcePoint, {
@@ -5933,14 +5869,32 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
       }
       shortlisted.sort((a, b) => a.distance.compareTo(b.distance));
 
-      final lineCap = math.max(limit * 3, 24);
+      final lineCap = math.min(shortlisted.length, math.max(limit * 2, 12));
       for (
         var lineIndex = 0;
         lineIndex < shortlisted.length && lineIndex < lineCap;
         lineIndex++
       ) {
+        if (deadline != null &&
+            (lineIndex & 3) == 0 &&
+            DateTime.now().isAfter(deadline)) {
+          timedOut = true;
+          break;
+        }
         final line = shortlisted[lineIndex].line;
         for (var i = 0; i + 1 < line.length; i++) {
+          scannedSegments++;
+          if (maxSegmentsToScan != null &&
+              scannedSegments > maxSegmentsToScan) {
+            timedOut = true;
+            break;
+          }
+          if (deadline != null &&
+              (scannedSegments & 127) == 0 &&
+              DateTime.now().isAfter(deadline)) {
+            timedOut = true;
+            break;
+          }
           final a = line[i];
           final b = line[i + 1];
           final startIndex = nodeIndexByKey[_trailNodeKey(a)];
@@ -5994,6 +5948,7 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
             }
           }
         }
+        if (timedOut) break;
       }
     }
 
@@ -6003,6 +5958,12 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
         resolvedAnchor.graphAnchor,
         baseConnectorMeters: resolvedAnchor.connectorMeters,
         usedAccess: true,
+      );
+    }
+    if (timedOut && debugLabel != null && debugLabel.isNotEmpty) {
+      debugPrint(
+        '$debugLabel partial_results candidates=${byIndex.length} '
+        'segments_scanned=$scannedSegments',
       );
     }
 
@@ -6495,6 +6456,8 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     int source,
     List<List<_TrailEdge>> adjacency, {
     Set<int>? stopNodes,
+    DateTime? deadline,
+    String? debugLabel,
   }) {
     final n = adjacency.length;
     final dist = List<double>.filled(n, double.infinity);
@@ -6507,9 +6470,22 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     dist[source] = 0.0;
     final pendingStops = stopNodes != null ? Set<int>.from(stopNodes) : null;
     final heap = _MinNodeHeap()..add(_NodeDistance(source, 0.0));
+    var visitedCount = 0;
 
     while (!heap.isEmpty) {
+      if (deadline != null &&
+          (visitedCount & 255) == 0 &&
+          DateTime.now().isAfter(deadline)) {
+        if (debugLabel != null && debugLabel.isNotEmpty) {
+          debugPrint(
+            '$debugLabel timed_out visited=$visitedCount nodes=$n '
+            'pending=${pendingStops?.length ?? 0}',
+          );
+        }
+        break;
+      }
       final current = heap.removeFirst();
+      visitedCount++;
       final u = current.node;
       final best = current.meters;
       if (best > dist[u] + 1e-9) continue;
@@ -6797,6 +6773,20 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
   _PortagingOverlayCacheEntry _mergePortagingOverlayEntries(
     List<_PortagingOverlayCacheEntry> entries,
   ) {
+    if (entries.isEmpty) {
+      return _PortagingOverlayCacheEntry(
+        fetchedAt: DateTime.now(),
+        waterLines: const <List<gmaps.LatLng>>[],
+        waterPolygons: const <List<gmaps.LatLng>>[],
+        portageLines: const <List<gmaps.LatLng>>[],
+        campsites: const <Map<String, dynamic>>[],
+        accessPoints: const <Map<String, dynamic>>[],
+        geoJson: const <String, dynamic>{
+          'type': 'FeatureCollection',
+          'features': <Map<String, dynamic>>[],
+        },
+      );
+    }
     final waterLines = <List<gmaps.LatLng>>[];
     final waterPolygons = <List<gmaps.LatLng>>[];
     final portageLines = <List<gmaps.LatLng>>[];
@@ -7507,37 +7497,6 @@ class _MapEmbedWebStatefulState extends State<_MapEmbedWebStateful> {
     }
   }
 
-  List<double> _dijkstraFromSources(
-    List<int> sources,
-    List<List<_TrailEdge>> adjacency,
-  ) {
-    final n = adjacency.length;
-    final dist = List<double>.filled(n, double.infinity);
-    final heap = _MinNodeHeap();
-    for (final s in sources) {
-      if (s < 0 || s >= n) continue;
-      dist[s] = 0.0;
-      heap.add(_NodeDistance(s, 0.0));
-    }
-
-    while (!heap.isEmpty) {
-      final current = heap.removeFirst();
-      final u = current.node;
-      final best = current.meters;
-      if (best > dist[u] + 1e-9) continue;
-
-      for (final edge in adjacency[u]) {
-        final alt = dist[u] + edge.meters;
-        if (alt + 1e-9 < dist[edge.to]) {
-          dist[edge.to] = alt;
-          heap.add(_NodeDistance(edge.to, alt));
-        }
-      }
-    }
-
-    return dist;
-  }
-
   Future<_PortagingOverlayCacheEntry?> _fetchPortagingOverlayData({
     required List<gmaps.LatLng> anchors,
     gmaps.LatLng? focusPoint,
@@ -7623,18 +7582,23 @@ out body geom;
       requestTimeout: const Duration(seconds: 12),
     );
     if (data == null && focusPoint != null) {
-      final litePadDegrees = math.min(padDegrees, 0.12);
-      final liteSouth = focusPoint.latitude - litePadDegrees;
-      final liteWest = focusPoint.longitude - litePadDegrees;
-      final liteNorth = focusPoint.latitude + litePadDegrees;
-      final liteEast = focusPoint.longitude + litePadDegrees;
-      final liteCampsiteQuery =
-          includeCampsites
-              ? '''
+      if (!_hasAvailableOverpassEndpoint()) {
+        debugPrint(
+          'portagingOverpassLite skip_focus_retry all_endpoints_blocked',
+        );
+      } else {
+        final litePadDegrees = math.min(padDegrees, 0.12);
+        final liteSouth = focusPoint.latitude - litePadDegrees;
+        final liteWest = focusPoint.longitude - litePadDegrees;
+        final liteNorth = focusPoint.latitude + litePadDegrees;
+        final liteEast = focusPoint.longitude + litePadDegrees;
+        final liteCampsiteQuery =
+            includeCampsites
+                ? '''
   node["tourism"~"camp_site|camp_pitch"]($liteSouth,$liteWest,$liteNorth,$liteEast);
 '''
-              : '';
-      final liteQuery = '''
+                : '';
+        final liteQuery = '''
 [out:json][timeout:18];
 (
   way["waterway"~"river|stream|canal|drain|ditch"]($liteSouth,$liteWest,$liteNorth,$liteEast);
@@ -7657,12 +7621,12 @@ $liteCampsiteQuery
 );
 out body geom;
 ''';
-      data = await _fetchOverpassData(
-        query: liteQuery,
-        logPrefix: 'portagingOverpassLite',
-        requestTimeout: const Duration(seconds: 8),
-        ignoreCooldown: true,
-      );
+        data = await _fetchOverpassData(
+          query: liteQuery,
+          logPrefix: 'portagingOverpassLite',
+          requestTimeout: const Duration(seconds: 8),
+        );
+      }
     }
     if (data == null) return null;
 
@@ -7987,6 +7951,13 @@ out body geom;
     if (anchors.length < 2) return null;
     Future<_RouteComputation?> retryWithFocusLookup(String reason) async {
       if (forceFocusLookup) return null;
+      if (!_hasAvailableOverpassEndpoint()) {
+        debugPrint(
+          'portageRoute skip_retry_focus_lookup reason=$reason '
+          'all_endpoints_blocked',
+        );
+        return null;
+      }
       debugPrint('portageRoute retry_focus_lookup reason=$reason');
       return _routeViaPortageGraph(segPoints, forceFocusLookup: true);
     }
@@ -8055,13 +8026,30 @@ out body geom;
     }
     if (entry == null && _lastVisiblePortagingOverlayEntry != null) {
       final visibleEntry = _lastVisiblePortagingOverlayEntry!;
-      entry = visibleEntry;
-      debugPrint(
-        'portageRoute using_visible_overlay_cache '
-        'water=${visibleEntry.waterLines.length} '
-        'portage=${visibleEntry.portageLines.length} '
-        'access=${visibleEntry.accessPoints.length}',
-      );
+      final visibleGraphLines =
+          visibleEntry.waterLines.length + visibleEntry.portageLines.length;
+      final directMeters =
+          anchors.length >= 2
+              ? _haversineMeters(anchors.first, anchors.last)
+              : 0;
+      final shouldSkipVisibleFallback =
+          visibleGraphLines > 3200 ||
+          (visibleGraphLines > 1800 && directMeters > 2500.0);
+      if (shouldSkipVisibleFallback) {
+        debugPrint(
+          'portageRoute skipped_visible_overlay_cache '
+          'graph_lines=$visibleGraphLines '
+          'direct_meters=${directMeters.toStringAsFixed(0)}',
+        );
+      } else {
+        entry = visibleEntry;
+        debugPrint(
+          'portageRoute using_visible_overlay_cache '
+          'water=${visibleEntry.waterLines.length} '
+          'portage=${visibleEntry.portageLines.length} '
+          'access=${visibleEntry.accessPoints.length}',
+        );
+      }
     }
     if (entry == null) return null;
 
@@ -8775,30 +8763,37 @@ out body geom;
     final shouldUseSegmentedFocusQuery =
         routePath.length >= 2 && (preferFocusOnly || skipBroadOverlayQuery);
     if (shouldUseSegmentedFocusQuery) {
-      final segmentedPadDegrees = _quantizedOverlayPadDegrees(
-        (focusPadDegrees * (preferFocusOnly ? 0.78 : 0.88))
-            .clamp(0.08, 0.14)
-            .toDouble(),
-      );
-      debugPrint(
-        'portagingOverlays using_segmented_focus_query '
-        'preferFocusOnly=$preferFocusOnly '
-        'stops=${widget.points.length} '
-        'route_km=${(routeMeters / 1000.0).toStringAsFixed(1)} '
-        'pad=${segmentedPadDegrees.toStringAsFixed(2)}',
-      );
-      entry = await _loadSegmentedPortagingOverlayEntry(
-        routePath: routePath,
-        modeAnchors: modeAnchors,
-        focusPoint: focus,
-        padDegrees: segmentedPadDegrees,
-        includeCampsites: true,
-        maxFocusQueries: preferFocusOnly ? 4 : 5,
-        logPrefix: 'portagingOverlays',
-      );
-      overlayGraphCacheKey =
-          'segmented:${_pathSignature(_samplePath(distancePath, target: 6))}'
-          ':pad=${segmentedPadDegrees.toStringAsFixed(2)}';
+      if (!_hasAvailableOverpassEndpoint()) {
+        debugPrint(
+          'portagingOverlays skip_segmented_focus_query '
+          'all_endpoints_blocked',
+        );
+      } else {
+        final segmentedPadDegrees = _quantizedOverlayPadDegrees(
+          (focusPadDegrees * (preferFocusOnly ? 0.78 : 0.88))
+              .clamp(0.08, 0.14)
+              .toDouble(),
+        );
+        debugPrint(
+          'portagingOverlays using_segmented_focus_query '
+          'preferFocusOnly=$preferFocusOnly '
+          'stops=${widget.points.length} '
+          'route_km=${(routeMeters / 1000.0).toStringAsFixed(1)} '
+          'pad=${segmentedPadDegrees.toStringAsFixed(2)}',
+        );
+        entry = await _loadSegmentedPortagingOverlayEntry(
+          routePath: routePath,
+          modeAnchors: modeAnchors,
+          focusPoint: focus,
+          padDegrees: segmentedPadDegrees,
+          includeCampsites: true,
+          maxFocusQueries: preferFocusOnly ? 4 : 5,
+          logPrefix: 'portagingOverlays',
+        );
+        overlayGraphCacheKey =
+            'segmented:${_pathSignature(_samplePath(distancePath, target: 6))}'
+            ':pad=${segmentedPadDegrees.toStringAsFixed(2)}';
+      }
     } else if (routeCacheKey.isNotEmpty) {
       final routeCached = _portagingOverlayCache[routeCacheKey];
       debugPrint(
@@ -9508,6 +9503,7 @@ out body geom;
     Map<int, List<gmaps.LatLng>> segGeometry, {
     List<gmaps.LatLng>? overlayAnchors,
   }) async {
+    final devicePixelRatio = View.of(context).devicePixelRatio;
     final routePath =
         overlayAnchors != null && overlayAnchors.isNotEmpty
             ? overlayAnchors
@@ -9544,7 +9540,7 @@ out body geom;
 
     double dpr = 1.0;
     try {
-      dpr = View.of(context).devicePixelRatio;
+      dpr = devicePixelRatio;
     } catch (_) {
       dpr = 1.0;
     }
@@ -9673,7 +9669,7 @@ out body geom;
 
   Object? _mapsObject() {
     try {
-      final google = js_util.getProperty(html.window, 'google');
+      final google = js_util.getProperty(web.window, 'google');
       if (google == null) return null;
       return js_util.getProperty(google, 'maps');
     } catch (_) {
@@ -9699,11 +9695,11 @@ out body geom;
     } catch (_) {}
 
     _placesHost ??=
-        html.DivElement()
+        web.HTMLDivElement()
           ..id = 'trypr-map-places-host'
           ..style.display = 'none';
-    if (_placesHost!.parent == null) {
-      html.document.body?.append(_placesHost!);
+    if (_placesHost!.parentNode == null) {
+      web.document.body?.append(_placesHost!);
     }
 
     try {
@@ -10076,7 +10072,7 @@ out body geom;
             _straightRoute(
               path: fallbackPath,
               mode: mode,
-              color: _standardRouteColor(mode).withOpacity(0.72),
+              color: _standardRouteColor(mode).withValues(alpha: 0.72),
               width: 4,
               patterns: const [],
               geodesic: mode == 'plane',
@@ -10164,7 +10160,7 @@ out body geom;
         final fallback = _straightRoute(
           path: basePts.map((p) => gmaps.LatLng(_latOf(p), _lonOf(p))).toList(),
           mode: fallbackMode,
-          color: _standardRouteColor(fallbackMode).withOpacity(0.82),
+          color: _standardRouteColor(fallbackMode).withValues(alpha: 0.82),
           width:
               (fallbackMode == 'hiking' || fallbackMode == 'portaging') ? 6 : 4,
           patterns: const [],
@@ -10414,12 +10410,16 @@ out body geom;
       hasBlockingPortageGap = unresolvedPortageSegs.isNotEmpty;
       if (hasBlockingPortageGap) {
         final unresolvedSegments = unresolvedPortageSegs.keys.toList()..sort();
-        final firstSeg = unresolvedSegments.first;
-        final failedSegPoints = unresolvedPortageSegs[firstSeg]!;
-        _emitRouteErrorOnce(
-          signature: '$calculationSig:portage:$firstSeg',
-          message: _portageInaccessibleMessage(failedSegPoints),
-        );
+        if (unresolvedSegments.isEmpty) {
+          hasBlockingPortageGap = false;
+        } else {
+          final firstSeg = unresolvedSegments.first;
+          final failedSegPoints = unresolvedPortageSegs[firstSeg]!;
+          _emitRouteErrorOnce(
+            signature: '$calculationSig:portage:$firstSeg',
+            message: _portageInaccessibleMessage(failedSegPoints),
+          );
+        }
       } else {
         _lastRouteErrorSig = '';
       }
@@ -11120,9 +11120,9 @@ class _RouteBeamPainter extends CustomPainter {
         ..color = const Color(0x33FFFFFF),
     );
 
-    final metrics = path.computeMetrics();
-    if (metrics.isEmpty) return;
-    final metric = metrics.first;
+    final metricIterator = path.computeMetrics().iterator;
+    if (!metricIterator.moveNext()) return;
+    final metric = metricIterator.current;
     if (metric.length <= 1) return;
 
     final head = metric.length * (0.14 + (0.82 * progress));
@@ -11237,30 +11237,15 @@ class MapPreview3D extends StatefulWidget {
 
 class _MapPreview3DState extends State<MapPreview3D> {
   late final String _viewType;
-  late html.Element _element;
-  late html.IFrameElement _iframeElement;
-  late html.DivElement _titleElement;
-  late html.DivElement _regionElement;
-  late html.DivElement _mapWrap;
+  late web.Element _element;
+  late web.HTMLIFrameElement _iframeElement;
+  late web.HTMLDivElement _titleElement;
+  late web.HTMLDivElement _regionElement;
+  late web.HTMLDivElement _mapWrap;
 
   static bool _styleInjected = false;
 
-  static const double _mapWidthPx = _previewBubbleWidth;
   static const double _mapHeightPx = _previewMapHeight;
-
-  String _resolveApiKey() {
-    const fromDefine = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
-    if (fromDefine.isNotEmpty) return fromDefine;
-
-    try {
-      final meta = html.document.querySelector(
-        'meta[name="google-maps-api-key"]',
-      );
-      return meta?.getAttribute('content')?.trim() ?? '';
-    } catch (_) {
-      return '';
-    }
-  }
 
   String _buildEmbedUrl() {
     final lat = widget.lat;
@@ -11289,7 +11274,7 @@ class _MapPreview3DState extends State<MapPreview3D> {
 
     _ensureBubbleStyles();
 
-    final container = html.DivElement();
+    final container = web.HTMLDivElement();
     container.className = 'trypr-map3d-bubble';
     container.style.width = '${_previewBubbleWidth}px';
     container.style.height =
@@ -11298,13 +11283,13 @@ class _MapPreview3DState extends State<MapPreview3D> {
     // Keep preview above map tiles/markers without competing with app-level overlays.
     container.style.zIndex = '2';
 
-    _mapWrap = html.DivElement();
+    _mapWrap = web.HTMLDivElement();
     _mapWrap.className = 'trypr-map3d-view';
     _mapWrap.style.width = '100%';
     _mapWrap.style.height = '${_mapHeightPx}px';
 
     // Use Maps Embed API iframe for satellite view
-    _iframeElement = html.IFrameElement();
+    _iframeElement = web.HTMLIFrameElement();
     _iframeElement.src = _buildEmbedUrl();
     _iframeElement.style.width = '100%';
     _iframeElement.style.height = '100%';
@@ -11315,16 +11300,16 @@ class _MapPreview3DState extends State<MapPreview3D> {
 
     _mapWrap.append(_iframeElement);
 
-    final info = html.DivElement();
+    final info = web.HTMLDivElement();
     info.className = 'trypr-map3d-info';
 
-    _titleElement = html.DivElement();
+    _titleElement = web.HTMLDivElement();
     _titleElement.className = 'trypr-map3d-title';
-    _titleElement.text = widget.title;
+    _titleElement.textContent = widget.title;
 
-    _regionElement = html.DivElement();
+    _regionElement = web.HTMLDivElement();
     _regionElement.className = 'trypr-map3d-region';
-    _regionElement.text = widget.region;
+    _regionElement.textContent = widget.region;
     _regionElement.style.display =
         widget.region.trim().isEmpty ? 'none' : 'block';
 
@@ -11348,8 +11333,8 @@ class _MapPreview3DState extends State<MapPreview3D> {
     if (_styleInjected) return;
     _styleInjected = true;
 
-    final style = html.StyleElement();
-    style.text = '''
+    final style = web.HTMLStyleElement();
+    style.textContent = '''
 .trypr-map3d-bubble {
   position: relative;
   background: #ffffff;
@@ -11400,7 +11385,7 @@ class _MapPreview3DState extends State<MapPreview3D> {
   text-overflow: ellipsis;
 }
 ''';
-    html.document.head?.append(style);
+    web.document.head?.append(style);
   }
 
   @override
@@ -11419,10 +11404,10 @@ class _MapPreview3DState extends State<MapPreview3D> {
       _updateIframeSrc();
     }
     if (oldWidget.title != widget.title) {
-      _titleElement.text = widget.title;
+      _titleElement.textContent = widget.title;
     }
     if (oldWidget.region != widget.region) {
-      _regionElement.text = widget.region;
+      _regionElement.textContent = widget.region;
       _regionElement.style.display =
           widget.region.trim().isEmpty ? 'none' : 'block';
     }
@@ -11451,7 +11436,7 @@ class _MarkerIconCache {
 
   Future<gmaps.BitmapDescriptor> viaDot({required double dpr}) {
     return _memoized(
-      'viaDot:${Colors.green.value}:$dpr',
+      'viaDot:${Colors.green.toARGB32()}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
         logicalSize: 24.0,
@@ -11466,7 +11451,7 @@ class _MarkerIconCache {
 
   Future<gmaps.BitmapDescriptor> campsiteTriangle({required double dpr}) {
     return _memoized(
-      'campTri:${const Color(0xFFEF6C00).value}:$dpr',
+      'campTri:${const Color(0xFFEF6C00).toARGB32()}:$dpr',
       () => _buildTriangleBadge(
         dpr: dpr,
         logicalWidth: 16.0,
@@ -11479,7 +11464,7 @@ class _MarkerIconCache {
 
   Future<gmaps.BitmapDescriptor> trailheadHikePin({required double dpr}) {
     return _memoized(
-      'trailHead:${const Color(0xFF00897B).value}:$dpr',
+      'trailHead:${const Color(0xFF00897B).toARGB32()}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
         logicalSize: 20.0,
@@ -11494,7 +11479,7 @@ class _MarkerIconCache {
 
   Future<gmaps.BitmapDescriptor> portageAccessPin({required double dpr}) {
     return _memoized(
-      'portageAccess:${const Color(0xFF1565C0).value}:$dpr',
+      'portageAccess:${const Color(0xFF1565C0).toARGB32()}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
         logicalSize: 22.0,
@@ -11513,7 +11498,7 @@ class _MarkerIconCache {
     required double dpr,
   }) {
     return _memoized(
-      'num:$number:${color.value}:$dpr',
+      'num:$number:${color.toARGB32()}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
         background: color,
@@ -11530,7 +11515,7 @@ class _MarkerIconCache {
     required double dpr,
   }) {
     return _memoized(
-      'ic:${icon.codePoint}:${icon.fontFamily}:${icon.fontPackage}:${color.value}:$dpr',
+      'ic:${icon.codePoint}:${icon.fontFamily}:${icon.fontPackage}:${color.toARGB32()}:$dpr',
       () => _buildCircleBadge(
         dpr: dpr,
         background: color,
@@ -11562,7 +11547,7 @@ class _MarkerIconCache {
       final bgPaint = ui.Paint()..color = background;
       final borderPaint =
           ui.Paint()
-            ..color = Colors.white.withOpacity(0.85)
+            ..color = Colors.white.withValues(alpha: 0.85)
             ..style = ui.PaintingStyle.stroke
             ..strokeWidth = (borderWidthLogical * dpr).clamp(2.0, 6.0);
 
@@ -11614,9 +11599,10 @@ class _MarkerIconCache {
         return gmaps.BitmapDescriptor.defaultMarker;
       }
       final bytes = data.buffer.asUint8List();
-      return gmaps.BitmapDescriptor.fromBytes(
+      return gmaps.BitmapDescriptor.bytes(
         bytes,
-        size: ui.Size(logicalSize, logicalSize),
+        width: logicalSize,
+        height: logicalSize,
       );
     } catch (e) {
       debugPrint('markerCircleBadge build_failed err=$e');
@@ -11655,7 +11641,7 @@ class _MarkerIconCache {
             ..style = ui.PaintingStyle.fill;
       final strokePaint =
           ui.Paint()
-            ..color = stroke.withOpacity(0.9)
+            ..color = stroke.withValues(alpha: 0.9)
             ..style = ui.PaintingStyle.stroke
             ..strokeWidth = (1.8 * dpr).clamp(1.5, 4.0);
 
@@ -11669,9 +11655,10 @@ class _MarkerIconCache {
         return gmaps.BitmapDescriptor.defaultMarker;
       }
       final bytes = data.buffer.asUint8List();
-      return gmaps.BitmapDescriptor.fromBytes(
+      return gmaps.BitmapDescriptor.bytes(
         bytes,
-        size: ui.Size(logicalWidth, logicalHeight),
+        width: logicalWidth,
+        height: logicalHeight,
       );
     } catch (e) {
       debugPrint('markerTriangleBadge build_failed err=$e');

@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trypr-api
+    environment:
+      ENVIRONMENT: development
+      CORS_ORIGINS: "*"
+      FIREBASE_PROJECT_ID: trypr-5ee47
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: trypr_local
+      DB_HOST: postgres
+      DB_PORT: 5432
+      USE_CLOUD_SQL_PROXY: "false"
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: trypr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: trypr_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - trypr_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  trypr_postgres_data:

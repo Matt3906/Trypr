@@ -19,6 +19,7 @@ class MapEmbed extends StatefulWidget {
   final void Function(List<String> lines)? onRouteInstructions;
   final void Function(List<Map<String, dynamic>> segments)?
   onRouteSegmentDetails;
+  final void Function(Map<String, dynamic> progress)? onRouteSegmentProgress;
   final void Function(Map<String, dynamic> arrivalStop)? onTransitArrivalStop;
   final void Function(bool isComputing)? onRouteComputingChanged;
   final void Function(String message)? onRouteError;
@@ -53,6 +54,7 @@ class MapEmbed extends StatefulWidget {
     this.onRouteGeometry,
     this.onRouteInstructions,
     this.onRouteSegmentDetails,
+    this.onRouteSegmentProgress,
     this.onTransitArrivalStop,
     this.onRouteComputingChanged,
     this.onRouteError,
@@ -645,7 +647,6 @@ class _MapEmbedState extends State<MapEmbed> {
 
     final routeSig = _routeCalculationSignature();
     if (widget.preferInitialRouteData &&
-        !widget.showNearbyContextOverlays &&
         widget.initialRouteGeometry.length >= 2) {
       final cachedPath = widget.initialRouteGeometry
           .map((point) {
@@ -694,6 +695,13 @@ class _MapEmbedState extends State<MapEmbed> {
       final segPts = _segmentPoints(afterIndex: seg);
       if (segPts.length < 2) continue;
       final mode = _segmentTransportModeFor(seg);
+      widget.onRouteSegmentProgress?.call({
+        'segmentIndex': seg,
+        'totalSegments': widget.points.length - 1,
+        'status': 'loading',
+        'mode': _normalizeTransportMode(mode),
+        'routingType': segType,
+      });
       final standardColor = _standardRouteColor(mode);
       final isAdventure = _isAdventureMode(mode);
 
@@ -716,6 +724,19 @@ class _MapEmbedState extends State<MapEmbed> {
             color: Colors.indigo.shade400,
           ),
         );
+        widget.onRouteSegmentProgress?.call({
+          'segmentIndex': seg,
+          'totalSegments': widget.points.length - 1,
+          'status': 'ready',
+          'mode': _normalizeTransportMode(mode),
+          'routingType': segType,
+          'distanceMeters': segDist,
+          'durationSeconds': 0.0,
+          'geometry': fallback
+              .map((point) => {'lat': point.latitude, 'lon': point.longitude})
+              .toList(growable: false),
+          'source': 'direct_flight',
+        });
         continue;
       }
 
@@ -731,6 +752,23 @@ class _MapEmbedState extends State<MapEmbed> {
                     : Colors.green.withOpacity(0.9),
           ),
         );
+        var segDist = 0.0;
+        for (var i = 0; i + 1 < fallback.length; i++) {
+          segDist += _haversineMeters(fallback[i], fallback[i + 1]);
+        }
+        widget.onRouteSegmentProgress?.call({
+          'segmentIndex': seg,
+          'totalSegments': widget.points.length - 1,
+          'status': 'ready',
+          'mode': _normalizeTransportMode(mode),
+          'routingType': segType,
+          'distanceMeters': segDist,
+          'durationSeconds': 0.0,
+          'geometry': fallback
+              .map((point) => {'lat': point.latitude, 'lon': point.longitude})
+              .toList(growable: false),
+          'source': 'direct',
+        });
         continue;
       }
 
@@ -751,6 +789,19 @@ class _MapEmbedState extends State<MapEmbed> {
             color: const Color(0xFF546E7A).withValues(alpha: 0.7),
           ),
         );
+        widget.onRouteSegmentProgress?.call({
+          'segmentIndex': seg,
+          'totalSegments': widget.points.length - 1,
+          'status': 'fallback',
+          'mode': _normalizeTransportMode(mode),
+          'routingType': segType,
+          'distanceMeters': segDist,
+          'durationSeconds': 0.0,
+          'geometry': fallback
+              .map((point) => {'lat': point.latitude, 'lon': point.longitude})
+              .toList(growable: false),
+          'source': 'transit_fallback',
+        });
         continue;
       }
 
@@ -809,6 +860,24 @@ class _MapEmbedState extends State<MapEmbed> {
               segGeometry[seg] = latlngs;
               if (dist != null) distSum += dist;
               if (dur != null) durSum += dur;
+              widget.onRouteSegmentProgress?.call({
+                'segmentIndex': seg,
+                'totalSegments': widget.points.length - 1,
+                'status': 'ready',
+                'mode': _normalizeTransportMode(mode),
+                'routingType': segType,
+                if (dist != null) 'distanceMeters': dist,
+                if (dur != null) 'durationSeconds': dur,
+                'geometry': latlngs
+                    .map(
+                      (point) => {
+                        'lat': point.latitude,
+                        'lon': point.longitude,
+                      },
+                    )
+                    .toList(growable: false),
+                'source': 'network',
+              });
               continue;
             }
           }
@@ -857,6 +926,24 @@ class _MapEmbedState extends State<MapEmbed> {
               segGeometry[seg] = latlngs;
               if (dist != null) distSum += dist;
               if (dur != null) durSum += dur;
+              widget.onRouteSegmentProgress?.call({
+                'segmentIndex': seg,
+                'totalSegments': widget.points.length - 1,
+                'status': 'ready',
+                'mode': _normalizeTransportMode(mode),
+                'routingType': segType,
+                if (dist != null) 'distanceMeters': dist,
+                if (dur != null) 'durationSeconds': dur,
+                'geometry': latlngs
+                    .map(
+                      (point) => {
+                        'lat': point.latitude,
+                        'lon': point.longitude,
+                      },
+                    )
+                    .toList(growable: false),
+                'source': 'network',
+              });
               continue;
             }
           }
@@ -876,6 +963,23 @@ class _MapEmbedState extends State<MapEmbed> {
                   : standardColor.withOpacity(0.6),
         ),
       );
+      var fallbackDist = 0.0;
+      for (var i = 0; i + 1 < fallback.length; i++) {
+        fallbackDist += _haversineMeters(fallback[i], fallback[i + 1]);
+      }
+      widget.onRouteSegmentProgress?.call({
+        'segmentIndex': seg,
+        'totalSegments': widget.points.length - 1,
+        'status': 'fallback',
+        'mode': _normalizeTransportMode(mode),
+        'routingType': segType,
+        'distanceMeters': fallbackDist,
+        'durationSeconds': 0.0,
+        'geometry': fallback
+            .map((point) => {'lat': point.latitude, 'lon': point.longitude})
+            .toList(growable: false),
+        'source': 'direct_fallback',
+      });
     }
 
     _emitRouteGeometry(segGeometry);

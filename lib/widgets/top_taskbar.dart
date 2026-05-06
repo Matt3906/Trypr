@@ -152,10 +152,8 @@ class _TopTaskbarState extends State<TopTaskbar> {
 
   void _goToPrimaryLanding() {
     final navigator = Navigator.of(context);
-    final Widget landing =
-        _signedIn ? const MyTripsScreen() : const AppHomeScreen();
     navigator.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => landing),
+      MaterialPageRoute(builder: (_) => const AppHomeScreen()),
       (route) => false,
     );
   }

@@ -170,7 +170,9 @@ class AboutScreen extends StatelessWidget {
                           builder: (_) => const TripBuilderScreen(),
                         ),
                       );
+                      if (!context.mounted) return;
                     } catch (e) {
+                      if (!context.mounted) return;
                       ScaffoldMessenger.of(context).showTryprSnackBar(
                         const SnackBar(
                           content: Text('Trip builder is not available.'),

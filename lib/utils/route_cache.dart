@@ -332,3 +332,171 @@ String buildRouteCacheKey({
   };
   return jsonEncode(payload);
 }
+
+double haversineMetersBetween(
+  double lat1,
+  double lon1,
+  double lat2,
+  double lon2,
+) {
+  const earthRadiusMeters = 6371000.0;
+  final dLat = _degreesToRadians(lat2 - lat1);
+  final dLon = _degreesToRadians(lon2 - lon1);
+  final a =
+      math.sin(dLat / 2) * math.sin(dLat / 2) +
+      math.cos(_degreesToRadians(lat1)) *
+          math.cos(_degreesToRadians(lat2)) *
+          math.sin(dLon / 2) *
+          math.sin(dLon / 2);
+  final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a));
+  return earthRadiusMeters * c;
+}
+
+double _degreesToRadians(double degrees) => degrees * (math.pi / 180.0);
+
+List<Map<String, dynamic>> normalizeSegmentRoutePoints(Object? raw) {
+  if (raw is! List) return const [];
+  final points = <Map<String, dynamic>>[];
+  for (final item in raw) {
+    if (item is! Map) continue;
+    final lat = _toDouble(item['lat']);
+    final lon = _toDouble(item['lon'] ?? item['lng']);
+    if (!lat.isFinite || !lon.isFinite) continue;
+    points.add({
+      'lat': double.parse(lat.toStringAsFixed(6)),
+      'lon': double.parse(lon.toStringAsFixed(6)),
+      'lng': double.parse(lon.toStringAsFixed(6)),
+    });
+  }
+  return points;
+}
+
+String buildSegmentRouteCacheKey({
+  required List<Map<String, dynamic>> segmentPoints,
+  required String routingType,
+  required String mode,
+}) {
+  final payload = <String, dynamic>{
+    'routingType': normalizeSegmentRoutingType(
+      routingType,
+      mode: normalizeRouteMode(mode),
+    ),
+    'mode': normalizeRouteMode(mode),
+    'points': segmentPoints
+        .map(
+          (point) => {
+            'lat': double.parse(_toDouble(point['lat']).toStringAsFixed(6)),
+            'lon': double.parse(
+              _toDouble(point['lon'] ?? point['lng']).toStringAsFixed(6),
+            ),
+          },
+        )
+        .toList(growable: false),
+  };
+  return jsonEncode(payload);
+}
+
+bool segmentRoutePointsDriftBeyondTolerance(
+  List<Map<String, dynamic>> cachedPoints,
+  List<Map<String, dynamic>> currentPoints, {
+  double toleranceMeters = 100.0,
+}) {
+  if (cachedPoints.length != currentPoints.length) return true;
+  for (var index = 0; index < cachedPoints.length; index++) {
+    final cached = cachedPoints[index];
+    final current = currentPoints[index];
+    final drift = haversineMetersBetween(
+      _toDouble(cached['lat']),
+      _toDouble(cached['lon'] ?? cached['lng']),
+      _toDouble(current['lat']),
+      _toDouble(current['lon'] ?? current['lng']),
+    );
+    if (drift > toleranceMeters) return true;
+  }
+  return false;
+}
+
+Map<String, dynamic>? readPersistedSegmentRouteCacheEntry(
+  Object? raw, {
+  required List<Map<String, dynamic>> currentSegmentPoints,
+  required String mode,
+  required String routingType,
+  double invalidationMeters = 100.0,
+}) {
+  if (raw is! Map) return null;
+  final cachedPoints = normalizeSegmentRoutePoints(raw['segmentPoints']);
+  if (cachedPoints.isEmpty ||
+      segmentRoutePointsDriftBeyondTolerance(
+        cachedPoints,
+        currentSegmentPoints,
+        toleranceMeters: invalidationMeters,
+      )) {
+    return null;
+  }
+
+  final expectedKey = buildSegmentRouteCacheKey(
+    segmentPoints: currentSegmentPoints,
+    routingType: routingType,
+    mode: mode,
+  );
+  final storedKey = (raw['cacheKey'] ?? '').toString().trim();
+  if (storedKey.isNotEmpty && storedKey != expectedKey) {
+    return null;
+  }
+
+  final geometry = simplifyRouteGeometry(readRouteGeometry(raw['geometry']));
+  if (geometry.length < 2) return null;
+
+  return {
+    'segmentIndex': (raw['segmentIndex'] as num?)?.toInt() ?? -1,
+    'cacheKey': expectedKey,
+    'mode': normalizeRouteMode((raw['mode'] ?? mode).toString()),
+    'routingType': normalizeSegmentRoutingType(
+      (raw['routingType'] ?? routingType).toString(),
+      mode: mode,
+    ),
+    'segmentPoints': cachedPoints,
+    'geometry': geometry,
+    'distanceMeters': _toDouble(raw['distanceMeters']),
+    'durationSeconds': _toDouble(raw['durationSeconds']),
+    'instructions': readRouteInstructions(raw['instructions']),
+    if ((raw['source'] ?? '').toString().trim().isNotEmpty)
+      'source': raw['source'].toString().trim(),
+    if ((raw['updatedAt'] ?? '').toString().trim().isNotEmpty)
+      'updatedAt': raw['updatedAt'].toString().trim(),
+  };
+}
+
+Map<String, dynamic> buildPersistedSegmentRouteCacheEntry({
+  required int segmentIndex,
+  required List<Map<String, dynamic>> segmentPoints,
+  required List<Map<String, dynamic>> geometry,
+  required String mode,
+  required String routingType,
+  required double distanceMeters,
+  required double durationSeconds,
+  List<String> instructions = const [],
+  String source = 'runtime',
+}) {
+  return {
+    'segmentIndex': segmentIndex,
+    'cacheKey': buildSegmentRouteCacheKey(
+      segmentPoints: segmentPoints,
+      routingType: routingType,
+      mode: mode,
+    ),
+    'mode': normalizeRouteMode(mode),
+    'routingType': normalizeSegmentRoutingType(routingType, mode: mode),
+    'segmentPoints': normalizeSegmentRoutePoints(segmentPoints),
+    'geometry': simplifyRouteGeometry(geometry, maxPoints: 160),
+    'distanceMeters': distanceMeters,
+    'durationSeconds': durationSeconds,
+    'instructions': instructions
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .take(6)
+        .toList(growable: false),
+    'source': source,
+    'updatedAt': DateTime.now().toUtc().toIso8601String(),
+  };
+}

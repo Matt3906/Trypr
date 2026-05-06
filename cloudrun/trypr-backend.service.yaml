@@ -1,0 +1,89 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/maxScale: '10'
+    run.googleapis.com/urls: '["https://trypr-backend-39789168828.northamerica-northeast1.run.app","https://trypr-backend-kvucn5wbrq-nn.a.run.app"]'
+  labels:
+    cloud.googleapis.com/location: northamerica-northeast1
+  name: trypr-backend
+  namespace: '39789168828'
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '10'
+        run.googleapis.com/client-name: gcloud
+        run.googleapis.com/client-version: 565.0.0
+        run.googleapis.com/network-interfaces: '[{"network":"default","subnetwork":"default"}]'
+        run.googleapis.com/startup-cpu-boost: 'true'
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+      labels:
+        client.knative.dev/nonce: vulezjeufb
+        run.googleapis.com/startupProbeType: Custom
+    spec:
+      containerConcurrency: 80
+      containers:
+      - env:
+        - name: ENVIRONMENT
+          value: production
+        - name: FIREBASE_PROJECT_ID
+          value: trypr-5ee47
+        - name: CORS_ORIGINS
+          value: https://refportal.trypr.com
+        - name: FRONTEND_BASE_URL
+          value: https://refportal.trypr.com
+        - name: DB_USER
+          value: postgres
+        - name: DB_PASSWORD
+          value: <REDACTED>
+        - name: DB_NAME
+          value: postgres
+        - name: DB_HOST
+          value: 34.47.36.217
+        - name: DB_PORT
+          value: '5432'
+        - name: USE_CLOUD_SQL_PROXY
+          value: 'false'
+        - name: SMTP_HOST
+          value: 10.162.0.2
+        - name: SMTP_PORT
+          value: '587'
+        - name: SMTP_SENDER
+          value: no-reply@refportal.trypr.com
+        - name: SMTP_USERNAME
+          value: smtp-gateway
+        - name: SMTP_API_KEY
+          value: <REDACTED>
+        - name: SMTP_PASSWORD
+        - name: SMTP_USE_STARTTLS
+          value: 'true'
+        image: gcr.io/trypr-5ee47/trypr-backend:e5f631e
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz/
+            port: 8080
+          periodSeconds: 30
+          timeoutSeconds: 10
+        ports:
+        - containerPort: 8080
+          name: http1
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz/
+            port: 8080
+          periodSeconds: 20
+          timeoutSeconds: 10
+      serviceAccountName: 39789168828-compute@developer.gserviceaccount.com
+      timeoutSeconds: 300
+  traffic:
+  - latestRevision: true
+    percent: 100

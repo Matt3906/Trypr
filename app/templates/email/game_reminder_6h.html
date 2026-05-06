@@ -1,0 +1,18 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<p class="greeting">Hello {{ recipient_name }},</p>
+<p class="lead">
+  This is your assignment-today reminder for an upcoming accepted assignment.
+</p>
+
+<div class="panel">
+  <p class="panel-title">Today's Assignment</p>
+  <p class="kv-row"><span class="kv-label">Game ID:</span> <span class="kv-value">{{ game_id }}</span></p>
+  <p class="kv-row"><span class="kv-label">Assignment ID:</span> <span class="kv-value">{{ assignment_id }}</span></p>
+  {% if game_date %}<p class="kv-row"><span class="kv-label">Kickoff:</span> <span class="kv-value">{{ game_date }}</span></p>{% endif %}
+  {% if venue %}<p class="kv-row"><span class="kv-label">Venue:</span> <span class="kv-value">{{ venue }}</span></p>{% endif %}
+</div>
+
+<p class="fineprint">Safe travel and see you at the field.</p>
+{% endblock %}

@@ -36,6 +36,7 @@ class TripChatDialog {
       participants.toList(),
       currentUidForFriendsFallback: me.uid,
     );
+    if (!context.mounted) return;
 
     List<Map<String, String>> mentionSuggestions = [];
 
@@ -376,8 +377,8 @@ class TripChatDialog {
                                           ),
                                           boxShadow: [
                                             BoxShadow(
-                                              color: Colors.black.withOpacity(
-                                                0.06,
+                                              color: Colors.black.withValues(
+                                                alpha: 0.06,
                                               ),
                                               blurRadius: 8,
                                             ),

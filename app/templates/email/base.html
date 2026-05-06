@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ subject }}</title>
+    <style>
+      .preheader {
+        display: none !important;
+        visibility: hidden;
+        opacity: 0;
+        color: transparent;
+        height: 0;
+        width: 0;
+        overflow: hidden;
+        mso-hide: all;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #f3f6f9;
+        font-family: "SF Pro Text", "SF Pro Display", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: #121416;
+      }
+      .wrapper {
+        width: 100%;
+        padding: 24px 12px 30px;
+      }
+      .card {
+        max-width: 660px;
+        margin: 0 auto;
+        background: linear-gradient(160deg, #ffffff 0%, #fcfdff 65%, #f8fbfe 100%);
+        border: 1px solid #e4e8ec;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 10px 26px rgba(16, 24, 40, 0.08);
+      }
+      .header {
+        background: linear-gradient(140deg, #0f5d7a 0%, #2f6ea3 100%);
+        color: #ffffff;
+        padding: 18px 24px 22px;
+      }
+      .header-brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        margin-bottom: 12px;
+      }
+      .header-logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        object-fit: cover;
+        border: 1px solid rgba(255, 255, 255, 0.45);
+        background: rgba(255, 255, 255, 0.15);
+      }
+      .header-association {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 650;
+        line-height: 1.2;
+      }
+      .header-eyebrow {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 620;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        opacity: 0.88;
+      }
+      .header h1 {
+        margin: 7px 0 0;
+        font-size: 35px;
+        font-weight: 700;
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+      }
+      .body {
+        padding: 24px 24px 18px;
+        font-size: 18px;
+        line-height: 1.6;
+        color: #1c2735;
+      }
+      p {
+        margin: 0 0 15px;
+      }
+      .greeting {
+        margin-bottom: 8px;
+        font-weight: 580;
+      }
+      .lead {
+        margin-bottom: 16px;
+        color: #263343;
+      }
+      .panel {
+        background: linear-gradient(160deg, #f7fafc 0%, #eef3f7 100%);
+        border: 1px solid #dde5ed;
+        border-radius: 13px;
+        padding: 14px 15px;
+        margin: 16px 0;
+      }
+      .panel-title {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.2;
+        font-weight: 680;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #5b6a7d;
+      }
+      .kv-row {
+        margin-top: 8px;
+      }
+      .kv-label {
+        color: #5e6670;
+        font-weight: 650;
+      }
+      .kv-value {
+        color: #121416;
+      }
+      .message {
+        margin: 14px 0;
+        padding: 14px 15px;
+        border: 1px solid #e4e8ec;
+        border-radius: 12px;
+        background: #ffffff;
+        white-space: pre-line;
+      }
+      .note {
+        margin: 14px 0;
+        padding: 12px 14px;
+        border-left: 3px solid #2f6ea3;
+        border-radius: 10px;
+        background: linear-gradient(150deg, #eaf1f8 0%, #f3f8fc 100%);
+        color: #204362;
+      }
+      .button-row {
+        margin: 20px 0 14px;
+      }
+      .btn {
+        display: inline-block;
+        text-decoration: none;
+        border-radius: 11px;
+        padding: 11px 16px;
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1.1;
+        margin-right: 8px;
+        margin-bottom: 8px;
+        text-decoration: none !important;
+      }
+      .btn-primary {
+        background: linear-gradient(140deg, #0f5d7a 0%, #2f6ea3 100%);
+        color: #ffffff !important;
+        box-shadow: 0 6px 14px rgba(15, 93, 122, 0.22);
+      }
+      .btn-danger {
+        background: linear-gradient(140deg, #8a3131 0%, #b64646 100%);
+        color: #ffffff !important;
+        box-shadow: 0 6px 14px rgba(138, 49, 49, 0.2);
+      }
+      .btn-secondary {
+        background: linear-gradient(145deg, #ffffff 0%, #f2f7fb 100%);
+        color: #1d3348 !important;
+        border: 1px solid #d4e1ea;
+      }
+      .fineprint {
+        color: #5e6670;
+        font-size: 14px;
+      }
+      .footer {
+        color: #6b7583;
+        font-size: 12px;
+        border-top: 1px solid #e4e8ec;
+        padding: 14px 24px 20px;
+        background: #f9fbfd;
+      }
+      .footer-brand {
+        margin: 0;
+        color: #445263;
+        font-size: 12px;
+        font-weight: 650;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .footer-note {
+        margin: 5px 0 0;
+        color: #6f7b89;
+      }
+      @media (max-width: 600px) {
+        .wrapper {
+          padding: 14px 10px 20px;
+        }
+        .header {
+          padding: 16px 16px 18px;
+        }
+        .header-association {
+          font-size: 18px;
+        }
+        .header h1 {
+          font-size: 29px;
+        }
+        .body {
+          padding: 16px;
+          font-size: 17px;
+        }
+        .btn {
+          display: block;
+          margin-right: 0;
+          text-align: center;
+        }
+        .footer {
+          padding: 12px 16px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="preheader">{{ heading }}</div>
+    <div class="wrapper">
+      <div class="card">
+        <div class="header">
+          <div class="header-brand">
+            {% if logo_url %}
+            <img src="{{ logo_url }}" alt="Association logo" class="header-logo" />
+            {% endif %}
+            <p class="header-association">{{ association_name or "Refey" }}</p>
+          </div>
+          <p class="header-eyebrow">Refey Officiating</p>
+          <h1>{{ heading }}</h1>
+        </div>
+        <div class="body">
+          {% block content %}{% endblock %}
+        </div>
+        <div class="footer">
+          <p class="footer-brand">{{ association_name or "Refey" }}</p>
+          <p class="footer-note">This is an automated notification from your association scheduling system.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

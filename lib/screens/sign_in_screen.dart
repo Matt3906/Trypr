@@ -30,6 +30,7 @@ class _SignInScreenState extends State<SignInScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Sign in failed')),
       );
@@ -57,10 +58,12 @@ class _SignInScreenState extends State<SignInScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Google sign in failed')),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showTryprSnackBar(SnackBar(content: Text('Google sign in failed')));
@@ -97,10 +100,12 @@ class _SignInScreenState extends State<SignInScreen> {
       await FirebaseAuth.instance.sendPasswordResetEmail(
         email: emailCtrl.text.trim(),
       );
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showTryprSnackBar(
         const SnackBar(content: Text('Password reset email sent')),
       );
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showTryprSnackBar(
         SnackBar(content: Text(e.message ?? 'Failed to send reset email')),
       );

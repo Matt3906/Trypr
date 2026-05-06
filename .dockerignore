@@ -1,0 +1,16 @@
+.git
+.gitignore
+.vscode
+.idea
+.dart_tool
+build
+node_modules
+functions/node_modules
+.venv
+.env
+.env.*
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log

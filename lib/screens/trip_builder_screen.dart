@@ -423,28 +423,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
     );
   }
 
-  Widget _surfaceCard({required Widget child, EdgeInsetsGeometry? padding}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Material(
-        color: Colors.white,
-        elevation: 4,
-        child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
-      ),
-    );
-  }
-
-  Widget _footerBox({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(12.0),
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-      ),
-      child: child,
-    );
-  }
-
   Widget _webSafeMenuItemText(String text) {
     final t = SizedBox(width: double.infinity, child: Text(text));
     return kIsWeb ? WebInterceptor(child: t) : t;
@@ -953,16 +931,6 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
         ),
       ),
     );
-  }
-
-  bool get _hasAnyTransitSegment {
-    if (_waypoints.length < 2) {
-      return _normalizeTransportMode(_transportMode) == 'train';
-    }
-    for (var i = 0; i < _waypoints.length - 1; i++) {
-      if (_segmentTransportModeAt(i) == 'train') return true;
-    }
-    return false;
   }
 
   List<Map<String, dynamic>> _legacyTransitStepsFromInstructions() {
@@ -1926,35 +1894,41 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           style: TextStyle(fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 8),
-                        RadioListTile<bool>(
-                          value: true,
+                        RadioGroup<bool>(
                           groupValue: isStop,
-                          onChanged:
-                              canCreateStayStop
-                                  ? (_) => setState2(() {
-                                    isStop = true;
-                                    if (nights <= 0) nights = 1;
-                                  })
-                                  : null,
-                          title: const Text('Stay stop'),
-                          subtitle: Text(
-                            canCreateStayStop
-                                ? 'Overnight stay that uses trip nights and gets dated automatically.'
-                                : 'No trip nights are left yet, so overnight stays are disabled for now.',
+                          onChanged: (value) {
+                            if (value == null) return;
+                            if (value && !canCreateStayStop) return;
+                            setState2(() {
+                              isStop = value;
+                              if (isStop && nights <= 0) nights = 1;
+                            });
+                          },
+                          child: Column(
+                            children: [
+                              RadioListTile<bool>(
+                                value: true,
+                                enabled: canCreateStayStop,
+                                title: const Text('Stay stop'),
+                                subtitle: Text(
+                                  canCreateStayStop
+                                      ? 'Overnight stay that uses trip nights and gets dated automatically.'
+                                      : 'No trip nights are left yet, so overnight stays are disabled for now.',
+                                ),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                              RadioListTile<bool>(
+                                value: false,
+                                title: const Text('Waypoint'),
+                                subtitle: const Text(
+                                  'Transit-only stop for navigation, resupply, or route shaping. Uses no nights.',
+                                ),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ],
                           ),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                        RadioListTile<bool>(
-                          value: false,
-                          groupValue: isStop,
-                          onChanged: (_) => setState2(() => isStop = false),
-                          title: const Text('Waypoint'),
-                          subtitle: const Text(
-                            'Transit-only stop for navigation, resupply, or route shaping. Uses no nights.',
-                          ),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
                         ),
                         const SizedBox(height: 10),
                         if (isStop) ...[
@@ -2009,39 +1983,42 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                           style: TextStyle(fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 8),
-                        RadioListTile<String>(
-                          value: primaryRoutingType,
+                        RadioGroup<String>(
                           groupValue: routingType,
-                          onChanged:
-                              (_) => setState2(
-                                () => routingType = primaryRoutingType,
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setState2(() => routingType = value);
+                          },
+                          child: Column(
+                            children: [
+                              RadioListTile<String>(
+                                value: primaryRoutingType,
+                                title: Text(
+                                  '$primaryRoutingLabel routing (recommended)',
+                                ),
+                                subtitle: Text(
+                                  _routingDescriptionForSelection(
+                                    primaryRoutingType,
+                                    normalizedMode,
+                                  ),
+                                ),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
                               ),
-                          title: Text(
-                            '$primaryRoutingLabel routing (recommended)',
+                              RadioListTile<String>(
+                                value: 'direct',
+                                title: const Text('Direct line'),
+                                subtitle: Text(
+                                  _routingDescriptionForSelection(
+                                    'direct',
+                                    normalizedMode,
+                                  ),
+                                ),
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ],
                           ),
-                          subtitle: Text(
-                            _routingDescriptionForSelection(
-                              primaryRoutingType,
-                              normalizedMode,
-                            ),
-                          ),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                        RadioListTile<String>(
-                          value: 'direct',
-                          groupValue: routingType,
-                          onChanged:
-                              (_) => setState2(() => routingType = 'direct'),
-                          title: const Text('Direct line'),
-                          subtitle: Text(
-                            _routingDescriptionForSelection(
-                              'direct',
-                              normalizedMode,
-                            ),
-                          ),
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
                         ),
                         if (routeWarning.isNotEmpty) ...[
                           const SizedBox(height: 8),
@@ -3749,6 +3726,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
 
       if (_isHikingSearchMode) {
         final results = await _searchResultsForUi(q);
+        if (!mounted) return;
         if (results.isNotEmpty) {
           final first = results.first;
           await _handleSearchResultSelection(first, q);
@@ -3757,7 +3735,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
           _searchCtrl.clear();
           return;
         }
-        ScaffoldMessenger.of(context).showTryprSnackBar(
+        ScaffoldMessenger.of(this.context).showTryprSnackBar(
           SnackBar(
             content: Text(
               _isPortageAccessSearchStage
@@ -3912,7 +3890,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                             isActiveSegment
                                 ? Theme.of(
                                   context,
-                                ).colorScheme.primary.withOpacity(0.45)
+                                ).colorScheme.primary.withValues(alpha: 0.45)
                                 : Colors.grey.shade200,
                         width: isActiveSegment ? 1.5 : 1.0,
                       ),
@@ -4907,9 +4885,10 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                   if (q.isEmpty) return;
 
                   final results = await _searchResultsForUi(q);
+                  if (!mounted) return;
                   if (results.isEmpty) {
                     if (_isPortageAccessSearchStage) {
-                      ScaffoldMessenger.of(context).showTryprSnackBar(
+                      ScaffoldMessenger.of(this.context).showTryprSnackBar(
                         const SnackBar(
                           content: Text(
                             'Search an access point or click a blue access marker to start a portage trip',
@@ -4917,7 +4896,7 @@ class _TripBuilderScreenState extends State<TripBuilderScreen> {
                         ),
                       );
                     } else if (_isHikingSearchMode) {
-                      ScaffoldMessenger.of(context).showTryprSnackBar(
+                      ScaffoldMessenger.of(this.context).showTryprSnackBar(
                         const SnackBar(
                           content: Text(
                             'Try a trail, campsite, or portage name in backcountry mode',

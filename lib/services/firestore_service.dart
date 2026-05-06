@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:trypr/models/trip_model.dart';
 
 class FirestoreService {
@@ -98,7 +99,7 @@ class FirestoreService {
       }
       return null;
     } catch (e) {
-      print('Error fetching trip: $e');
+      debugPrint('Error fetching trip: $e');
       return null;
     }
   }
@@ -111,7 +112,7 @@ class FirestoreService {
       final docRef = await ref.add(trip.toMap());
       return docRef.id;
     } catch (e) {
-      print('Error creating trip: $e');
+      debugPrint('Error creating trip: $e');
       rethrow;
     }
   }
@@ -123,7 +124,7 @@ class FirestoreService {
       if (ref == null) throw Exception('User not signed in');
       await ref.doc(tripId).update(trip.toMap());
     } catch (e) {
-      print('Error updating trip: $e');
+      debugPrint('Error updating trip: $e');
       rethrow;
     }
   }
@@ -135,7 +136,7 @@ class FirestoreService {
       if (ref == null) throw Exception('User not signed in');
       await ref.doc(tripId).delete();
     } catch (e) {
-      print('Error deleting trip: $e');
+      debugPrint('Error deleting trip: $e');
       rethrow;
     }
   }

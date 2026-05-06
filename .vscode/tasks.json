@@ -9,8 +9,7 @@
         "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1"
       },
       "group": {
-        "kind": "build",
-        "isDefault": true
+        "kind": "build"
       },
       "presentation": {
         "reveal": "always",
@@ -29,11 +28,15 @@
       "problemMatcher": []
     },
     {
-      "label": "Flutter: Run Web Server (with Maps key)",
+      "label": "Trypr: Run Web Server",
       "type": "shell",
       "command": "bash tool/flutter_run_web_server.sh",
       "windows": {
         "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_run_chrome.ps1"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
       },
       "presentation": {
         "reveal": "always",

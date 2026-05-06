@@ -1,0 +1,25 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<p class="greeting">Hello {{ recipient_name }},</p>
+<p class="lead">
+  You have been assigned to officiate a game and your approval is required.
+  Please respond before <strong>{{ expires_at }}</strong>.
+</p>
+
+<div class="panel">
+  <p class="panel-title">Assignment Details</p>
+  <p class="kv-row"><span class="kv-label">Game ID:</span> <span class="kv-value">{{ game_id }}</span></p>
+  <p class="kv-row"><span class="kv-label">Assignment ID:</span> <span class="kv-value">{{ assignment_id }}</span></p>
+  {% if association_name %}<p class="kv-row"><span class="kv-label">Association:</span> <span class="kv-value">{{ association_name }}</span></p>{% endif %}
+  {% if game_date %}<p class="kv-row"><span class="kv-label">Game Time:</span> <span class="kv-value">{{ game_date }}</span></p>{% endif %}
+  {% if venue %}<p class="kv-row"><span class="kv-label">Venue:</span> <span class="kv-value">{{ venue }}</span></p>{% endif %}
+</div>
+
+<div class="button-row">
+  <a class="btn btn-primary" href="{{ accept_url }}">✅ Accept Assignment</a>
+  <a class="btn btn-danger" href="{{ decline_url }}">❌ Decline Assignment</a>
+</div>
+
+<p class="fineprint">If the buttons do not work, contact your assigner directly.</p>
+{% endblock %}

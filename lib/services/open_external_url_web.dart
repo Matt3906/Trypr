@@ -1,14 +1,23 @@
-// ignore_for_file: avoid_web_libraries_in_flutter
+import 'package:web/web.dart' as web;
 
-import 'dart:html' as html;
+bool _isSafeExternalScheme(Uri uri) {
+  return uri.scheme == 'https' ||
+      uri.scheme == 'http' ||
+      uri.scheme == 'mailto' ||
+      uri.scheme == 'tel';
+}
 
 Future<bool> openExternalUrlImpl(String url, {bool sameTab = true}) async {
   final trimmed = url.trim();
   if (trimmed.isEmpty) return false;
+
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null || !_isSafeExternalScheme(uri)) return false;
+
   if (sameTab) {
-    html.window.location.assign(trimmed);
+    web.window.location.assign(uri.toString());
   } else {
-    html.window.open(trimmed, '_blank');
+    web.window.open(uri.toString(), '_blank', 'noopener,noreferrer');
   }
   return true;
 }

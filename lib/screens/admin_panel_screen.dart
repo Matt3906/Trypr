@@ -58,40 +58,28 @@ DateTime _adminTripSortDate(Map<String, dynamic> data) {
 }
 
 Future<_AdminTripsQueryResult> _loadAdminTripsIndex() async {
-  final users = await _usersCollection().get();
-  final perUserTrips = await Future.wait(
-    users.docs.map((userDoc) async {
-      try {
-        final trips = await userDoc.reference.collection('trips').get();
-        final records = trips.docs
-            .map(
-              (tripDoc) => _AdminTripRecord(
-                ownerUid: userDoc.id,
-                tripId: tripDoc.id,
-                reference: tripDoc.reference,
-                data: tripDoc.data(),
-              ),
-            )
-            .toList(growable: false);
-        return (records: records, failed: false);
-      } catch (error) {
-        debugPrint('adminTrips load_failed user=${userDoc.id} err=$error');
-        return (records: const <_AdminTripRecord>[], failed: true);
-      }
-    }),
-  );
+  final snapshot =
+      await FirebaseFirestore.instance.collectionGroup('trips').get();
+  final trips = snapshot.docs
+      .map((tripDoc) {
+        final segments = tripDoc.reference.path.split('/');
+        final ownerUid =
+            segments.length >= 4 && segments[0] == 'users' ? segments[1] : '';
+        return _AdminTripRecord(
+          ownerUid: ownerUid,
+          tripId: tripDoc.id,
+          reference: tripDoc.reference,
+          data: tripDoc.data(),
+        );
+      })
+      .where((trip) => trip.ownerUid.isNotEmpty)
+      .toList(growable: false);
 
-  final trips = <_AdminTripRecord>[];
-  var failedUsers = 0;
-  for (final result in perUserTrips) {
-    trips.addAll(result.records);
-    if (result.failed) failedUsers++;
-  }
   trips.sort(
     (a, b) => _adminTripSortDate(b.data).compareTo(_adminTripSortDate(a.data)),
   );
 
-  return _AdminTripsQueryResult(trips: trips, failedUsers: failedUsers);
+  return _AdminTripsQueryResult(trips: trips, failedUsers: 0);
 }
 
 String _displayInitialForName(Object? rawName) {
@@ -391,7 +379,7 @@ class _DashboardTab extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withValues(alpha: 0.1),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -661,10 +649,10 @@ class _StatCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -712,9 +700,9 @@ class _ActionButton extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withOpacity(0.3)),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1683,7 +1671,6 @@ class _UnlistedPagesTab extends StatelessWidget {
             final title = data['title']?.toString() ?? 'Untitled';
             final description = data['description']?.toString() ?? '';
             final formEnabled = data['formEnabled'] == true;
-            final createdAt = data['createdAt'] as Timestamp?;
 
             return Card(
               margin: const EdgeInsets.only(bottom: 12),
@@ -1693,7 +1680,7 @@ class _UnlistedPagesTab extends StatelessWidget {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF00B894).withOpacity(0.1),
+                    color: const Color(0xFF00B894).withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Icon(
@@ -1879,534 +1866,6 @@ class _UnlistedPagesTab extends StatelessWidget {
   }
 }
 
-class _ResponsesTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream:
-          FirebaseFirestore.instance.collection('unlistedPages').snapshots(),
-      builder: (context, pagesSnapshot) {
-        if (!pagesSnapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final pages = pagesSnapshot.data!.docs;
-        if (pages.isEmpty) {
-          return const Center(child: Text('No pages yet'));
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: pages.length,
-          itemBuilder: (context, index) {
-            final page = pages[index];
-            final pageId = page.id;
-            final title = page.data()['title']?.toString() ?? 'Untitled';
-
-            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream:
-                  FirebaseFirestore.instance
-                      .collection('unlistedPages')
-                      .doc(pageId)
-                      .collection('responses')
-                      .orderBy('submittedAt', descending: true)
-                      .snapshots(),
-              builder: (context, responsesSnapshot) {
-                final responseCount = responsesSnapshot.data?.docs.length ?? 0;
-
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: const Color(0xFF00B894),
-                      child: Text(
-                        '$responseCount',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    title: Text(title),
-                    subtitle: Text('$responseCount responses'),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      showModalBottomSheet(
-                        context: context,
-                        isScrollControlled: true,
-                        useSafeArea: true,
-                        builder:
-                            (context) => DraggableScrollableSheet(
-                              initialChildSize: 0.9,
-                              minChildSize: 0.5,
-                              maxChildSize: 0.95,
-                              expand: false,
-                              builder:
-                                  (context, scrollController) =>
-                                      _ResponsesSheet(
-                                        pageId: pageId,
-                                        pageTitle: title,
-                                        scrollController: scrollController,
-                                      ),
-                            ),
-                      );
-                    },
-                  ),
-                );
-              },
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-class _ResponsesSheet extends StatelessWidget {
-  final String pageId;
-  final String pageTitle;
-  final ScrollController scrollController;
-
-  const _ResponsesSheet({
-    required this.pageId,
-    required this.pageTitle,
-    required this.scrollController,
-  });
-
-  static const Set<String> _responseMetaKeys = {
-    'submittedAt',
-    'submittedByUid',
-    'submittedByEmail',
-    'submittedByName',
-    'responses',
-    'formattedResponses',
-  };
-
-  bool _looksLikeFieldId(String value) {
-    final v = value.trim().toLowerCase();
-    return v.startsWith('field_') || v.startsWith('fld_');
-  }
-
-  int _fieldOrder(String? fieldId, Map<String, Map<String, dynamic>> fieldMap) {
-    if (fieldId == null || fieldId.isEmpty) return 1 << 30;
-    final order = fieldMap[fieldId]?['order'];
-    if (order is int) return order;
-    if (order is num) return order.toInt();
-    return 1 << 30;
-  }
-
-  String _humanizeFieldId(String value) {
-    var out = value;
-    if (out.startsWith('field_')) out = out.substring('field_'.length);
-    out = out.replaceAll(RegExp(r'[_\-]+'), ' ').trim();
-    out = out.replaceAll(RegExp(r'\d+$'), '').trim();
-    if (out.isEmpty) return '';
-    return out
-        .split(' ')
-        .where((p) => p.isNotEmpty)
-        .map((p) => '${p[0].toUpperCase()}${p.substring(1)}')
-        .join(' ');
-  }
-
-  String _resolveLabel({
-    required String? fieldId,
-    required String? fallbackLabel,
-    required int fallbackIndex,
-    required Map<String, Map<String, dynamic>> fieldMap,
-  }) {
-    if (fieldId != null && fieldId.isNotEmpty) {
-      final mapped = fieldMap[fieldId]?['label']?.toString();
-      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
-    }
-
-    final label = (fallbackLabel ?? '').trim();
-    if (label.isNotEmpty) {
-      if (fieldMap.containsKey(label)) {
-        final mapped = fieldMap[label]?['label']?.toString();
-        if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
-      }
-      if (!_looksLikeFieldId(label)) return label;
-      final humanized = _humanizeFieldId(label);
-      if (humanized.isNotEmpty) return humanized;
-    }
-
-    if (fieldId != null && fieldId.isNotEmpty) {
-      final humanized = _humanizeFieldId(fieldId);
-      if (humanized.isNotEmpty) return humanized;
-    }
-
-    return 'Field ${fallbackIndex + 1}';
-  }
-
-  String _resolveType({
-    required String? fieldId,
-    required String? fallbackType,
-    required Map<String, Map<String, dynamic>> fieldMap,
-  }) {
-    if (fieldId != null && fieldId.isNotEmpty) {
-      final mapped = fieldMap[fieldId]?['type']?.toString();
-      if (mapped != null && mapped.trim().isNotEmpty) return mapped.trim();
-    }
-    final t = (fallbackType ?? '').trim();
-    return t.isEmpty ? 'text' : t;
-  }
-
-  List<Map<String, dynamic>> _buildOrderedResponses(
-    Map<String, dynamic> data,
-    Map<String, Map<String, dynamic>> fieldMap,
-  ) {
-    final rows = <Map<String, dynamic>>[];
-    final formatted = data['formattedResponses'];
-
-    if (formatted is List) {
-      for (var i = 0; i < formatted.length; i++) {
-        final item = formatted[i];
-        if (item is! Map) continue;
-        final row = Map<String, dynamic>.from(item.cast<dynamic, dynamic>());
-        var fieldId =
-            row['fieldId']?.toString() ??
-            row['id']?.toString() ??
-            row['key']?.toString();
-        final rawLabel = row['label']?.toString();
-
-        if ((fieldId == null || fieldId.isEmpty) &&
-            rawLabel != null &&
-            fieldMap.containsKey(rawLabel)) {
-          fieldId = rawLabel;
-        }
-
-        rows.add({
-          'label': _resolveLabel(
-            fieldId: fieldId,
-            fallbackLabel: rawLabel,
-            fallbackIndex: i,
-            fieldMap: fieldMap,
-          ),
-          'type': _resolveType(
-            fieldId: fieldId,
-            fallbackType: row['type']?.toString(),
-            fieldMap: fieldMap,
-          ),
-          'value': row['value'],
-          '_order': _fieldOrder(fieldId, fieldMap),
-          '_fallback': i,
-        });
-      }
-    }
-
-    if (rows.isEmpty) {
-      Map<String, dynamic> rawResponses = {};
-      if (data['responses'] is Map) {
-        rawResponses = Map<String, dynamic>.from(
-          (data['responses'] as Map).cast<dynamic, dynamic>(),
-        );
-      } else {
-        rawResponses = data;
-      }
-
-      final entries =
-          rawResponses.entries
-              .where((e) => !_responseMetaKeys.contains(e.key))
-              .toList();
-
-      for (var i = 0; i < entries.length; i++) {
-        final entry = entries[i];
-        final fieldId = entry.key;
-        rows.add({
-          'label': _resolveLabel(
-            fieldId: fieldId,
-            fallbackLabel: entry.key,
-            fallbackIndex: i,
-            fieldMap: fieldMap,
-          ),
-          'type': _resolveType(
-            fieldId: fieldId,
-            fallbackType: null,
-            fieldMap: fieldMap,
-          ),
-          'value': entry.value,
-          '_order': _fieldOrder(fieldId, fieldMap),
-          '_fallback': i,
-        });
-      }
-    }
-
-    rows.sort((a, b) {
-      final orderA = (a['_order'] as int?) ?? (1 << 30);
-      final orderB = (b['_order'] as int?) ?? (1 << 30);
-      if (orderA != orderB) return orderA.compareTo(orderB);
-      final fallbackA = (a['_fallback'] as int?) ?? 0;
-      final fallbackB = (b['_fallback'] as int?) ?? 0;
-      return fallbackA.compareTo(fallbackB);
-    });
-
-    return rows
-        .map(
-          (r) => {'label': r['label'], 'type': r['type'], 'value': r['value']},
-        )
-        .toList();
-  }
-
-  String _formatResponseValue(dynamic value) {
-    if (value == null) return '(not answered)';
-    if (value is List) {
-      if (value.isEmpty) return '(none selected)';
-      return value.join(', ');
-    }
-    if (value is Map) {
-      final map = value;
-      final parts = <String>[];
-      if (map['street']?.toString().isNotEmpty == true) {
-        parts.add(map['street'].toString());
-      }
-      if (map['street2']?.toString().isNotEmpty == true) {
-        parts.add(map['street2'].toString());
-      }
-      final cityLine = <String>[];
-      if (map['city']?.toString().isNotEmpty == true) {
-        cityLine.add(map['city'].toString());
-      }
-      if (map['province']?.toString().isNotEmpty == true) {
-        cityLine.add(map['province'].toString());
-      }
-      if (map['postal']?.toString().isNotEmpty == true) {
-        cityLine.add(map['postal'].toString());
-      }
-      if (cityLine.isNotEmpty) parts.add(cityLine.join(', '));
-      if (parts.isNotEmpty) return parts.join('\n');
-
-      final generic = map.entries
-          .where((e) => e.value?.toString().trim().isNotEmpty == true)
-          .map((e) => '${e.key}: ${e.value}')
-          .join(', ');
-      return generic.isEmpty ? '(not answered)' : generic;
-    }
-    if (value is bool) return value ? 'Yes' : 'No';
-    if (value is Timestamp) {
-      return DateFormat('MMM d, yyyy • h:mm a').format(value.toDate());
-    }
-    final text = value.toString().trim();
-    return text.isEmpty ? '(not answered)' : text;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.grey[100],
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Responses: $pageTitle',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream:
-                FirebaseFirestore.instance
-                    .collection('unlistedPages')
-                    .doc(pageId)
-                    .snapshots(),
-            builder: (context, pageSnapshot) {
-              if (!pageSnapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
-              final pageData = pageSnapshot.data!.data();
-              final formFields =
-                  (pageData?['formFields'] as List<dynamic>?) ?? [];
-
-              // Create a map of field IDs to labels for ordering
-              final fieldMap = <String, Map<String, dynamic>>{};
-              for (var i = 0; i < formFields.length; i++) {
-                if (formFields[i] is Map) {
-                  final field = formFields[i] as Map;
-                  final fieldId = field['id']?.toString() ?? '';
-                  if (fieldId.isNotEmpty) {
-                    fieldMap[fieldId] = {
-                      'label': field['label']?.toString() ?? 'Field ${i + 1}',
-                      'type': field['type']?.toString() ?? 'text',
-                      'order': i,
-                    };
-                  }
-                }
-              }
-
-              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream:
-                    FirebaseFirestore.instance
-                        .collection('unlistedPages')
-                        .doc(pageId)
-                        .collection('responses')
-                        .orderBy('submittedAt', descending: true)
-                        .snapshots(),
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final docs = snapshot.data!.docs;
-
-                  if (docs.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.inbox, size: 64, color: Colors.grey[400]),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No responses yet',
-                            style: TextStyle(color: Colors.grey[600]),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-
-                  return ListView.builder(
-                    controller: scrollController,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: docs.length,
-                    itemBuilder: (context, index) {
-                      final doc = docs[index];
-                      final data = doc.data();
-                      final orderedResponses = _buildOrderedResponses(
-                        data,
-                        fieldMap,
-                      );
-
-                      final submittedAt = data['submittedAt'] as Timestamp?;
-                      final email = data['submittedByEmail']?.toString() ?? '';
-                      final name = data['submittedByName']?.toString() ?? '';
-
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  CircleAvatar(
-                                    radius: 16,
-                                    backgroundColor: const Color(0xFF00B894),
-                                    child: Text(
-                                      '${index + 1}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        if (name.isNotEmpty || email.isNotEmpty)
-                                          Text(
-                                            name.isNotEmpty ? name : email,
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 15,
-                                            ),
-                                          ),
-                                        if (submittedAt != null)
-                                          Text(
-                                            _formatDate(submittedAt.toDate()),
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.grey[600],
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const Divider(height: 24),
-                              ...orderedResponses.map((response) {
-                                final label =
-                                    response['label']?.toString() ?? 'Field';
-                                final value = response['value'];
-                                final displayValue = _formatResponseValue(
-                                  value,
-                                );
-
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 12),
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[50],
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Colors.grey.shade200,
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        label,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          color: Color(0xFF00695C),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        displayValue,
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          height: 1.4,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _formatDate(DateTime date) {
-    return '${date.month}/${date.day}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}';
-  }
-}
-
 class _StatusChip extends StatelessWidget {
   final String label;
   final Color color;
@@ -2423,7 +1882,7 @@ class _StatusChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -2765,7 +2224,6 @@ class _PersonalNotesTab extends StatefulWidget {
 class _PersonalNotesTabState extends State<_PersonalNotesTab> {
   final _noteController = TextEditingController();
   final _titleController = TextEditingController();
-  bool _saving = false;
 
   @override
   void dispose() {
@@ -3030,8 +2488,6 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
   Future<void> _saveNote(String uid, String? noteId) async {
     if (_titleController.text.trim().isEmpty) return;
 
-    setState(() => _saving = true);
-
     try {
       final data = {
         'title': _titleController.text.trim(),
@@ -3066,8 +2522,6 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
           context,
         ).showTryprSnackBar(SnackBar(content: Text('Error: $e')));
       }
-    } finally {
-      setState(() => _saving = false);
     }
   }
 
@@ -3122,12 +2576,14 @@ class _PersonalNotesTabState extends State<_PersonalNotesTab> {
             .collection('notes')
             .doc(noteId)
             .delete();
+        if (!context.mounted) return;
         if (mounted) {
           ScaffoldMessenger.of(
             context,
           ).showTryprSnackBar(const SnackBar(content: Text('Note deleted')));
         }
       } catch (e) {
+        if (!context.mounted) return;
         if (mounted) {
           ScaffoldMessenger.of(
             context,

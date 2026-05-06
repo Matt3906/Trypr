@@ -238,6 +238,44 @@ service cloud.firestore {
     }
 
     // --------------------
+    // RefAssigner – Hockey Referee Portal
+    // --------------------
+    match /refAssigner_associations/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_users/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_games/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_assignments/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_availability/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_pickupRequests/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if signedIn();
+    }
+
+    match /refAssigner_mail/{docId} {
+      allow create: if signedIn();
+      allow read, update, delete: if false;
+    }
+
+    // --------------------
     // Unlisted Pages (admin-created, public-readable pages with forms)
     // --------------------
     match /unlistedPages/{pageSlug} {

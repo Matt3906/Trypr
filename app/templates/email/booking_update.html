@@ -1,0 +1,22 @@
+{% extends "email/base.html" %}
+
+{% block content %}
+<p class="greeting">Hello {{ recipient_name }},</p>
+<p class="lead">
+  There has been an update to your booking for game <strong>{{ game_id }}</strong>.
+</p>
+
+<div class="panel">
+  <p class="panel-title">Updated Booking Snapshot</p>
+  <p class="kv-row"><span class="kv-label">Assignment ID:</span> <span class="kv-value">{{ assignment_id }}</span></p>
+  <p class="kv-row"><span class="kv-label">New Status:</span> <span class="kv-value">{{ status_label }}</span></p>
+  {% if game_date %}<p class="kv-row"><span class="kv-label">Game Time:</span> <span class="kv-value">{{ game_date }}</span></p>{% endif %}
+  {% if venue %}<p class="kv-row"><span class="kv-label">Venue:</span> <span class="kv-value">{{ venue }}</span></p>{% endif %}
+</div>
+
+{% if note %}
+<div class="note"><strong>Notes:</strong> {{ note }}</div>
+{% endif %}
+
+<p class="fineprint">Please review Refey for any follow-up actions.</p>
+{% endblock %}
