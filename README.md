@@ -10,7 +10,7 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 
 | Layer | Technologies |
 |---|---|
-| Frontend | Flutter (Web), Dart |
+| Frontend | React 19, TypeScript, Vite (in `frontend/`) |
 | Backend | Python (FastAPI), Docker, Cloud Run |
 | Database | Firebase Firestore, Firebase Storage |
 | Auth | Firebase Auth, Google Sign-In |
@@ -66,7 +66,7 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 ## Architecture
 
 ```
-tryprtravel.com  (Flutter Web — Hostinger VPS via Google Cloud Console)
+tryprtravel.com  (React web app — Hostinger VPS via Google Cloud Console)
     │
     ├── Firebase Auth          — user identity & Google Sign-In
     ├── Cloud Firestore        — trips, users, friends, packing lists, expenses
@@ -77,20 +77,25 @@ tryprtravel.com  (Flutter Web — Hostinger VPS via Google Cloud Console)
                                  background jobs (Python 3.13, Docker)
 ```
 
-Firestore security rules enforce per-user data isolation and role-based access for admin features. The Flutter app uses platform-conditional imports (`_stub` / `_web` file pairs) to keep web-only APIs out of native build targets.
+Firestore security rules enforce per-user data isolation and role-based access for admin features. The React app is a single-page app (react-router) that talks to Firebase directly from the browser; the FastAPI container serves the built `frontend/dist` with a client-side-routing fallback.
 
 ---
 
 ## Local Development
 
-**Prerequisites:** Flutter SDK ≥ 3.7, Firebase CLI, a Firebase project with Auth / Firestore / Storage enabled.
+**Prerequisites:** Node.js ≥ 20, Firebase CLI, a Firebase project with Auth / Firestore / Storage enabled.
 
 ```bash
-# Install dependencies
-flutter pub get
+# Install dependencies and configure browser keys
+cd frontend
+npm install
+cp .env.example .env.local   # then fill in VITE_GOOGLE_MAPS_API_KEY etc.
 
-# Run on Chrome (web target)
-flutter run -d chrome --dart-define=GOOGLE_MAPS_API_KEY=<your_key>
+# Run the dev server (proxies /api to the FastAPI backend on :8080)
+npm run dev
+
+# Production build (outputs frontend/dist) — or `bash tool/build_web.sh` from the repo root
+npm run build
 
 # Run the FastAPI backend locally
 cd app

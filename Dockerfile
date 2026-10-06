@@ -26,6 +26,7 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
+COPY frontend/dist ./frontend/dist
 COPY requirements-backend.txt ./requirements-backend.txt
 
 EXPOSE 8080

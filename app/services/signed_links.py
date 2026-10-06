@@ -95,3 +95,44 @@ def verify_assignment_action_token(token: str) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assignment action")
 
     return payload
+
+
+def generate_calendar_subscription_token(*, user_id: str) -> str:
+    secret = settings.ref_portal_action_secret
+    if not secret:
+        raise ValueError("REF_PORTAL_ACTION_SECRET is required for calendar subscription links")
+
+    payload: dict[str, Any] = {"uid": user_id, "kind": "cal"}
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    payload_b64 = _b64url_encode(payload_json.encode("utf-8"))
+    signature = _sign(payload_b64, secret)
+    return f"{payload_b64}.{signature}"
+
+
+def verify_calendar_subscription_token(token: str) -> str:
+    secret = settings.ref_portal_action_secret
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Signed link secret is not configured",
+        )
+
+    try:
+        payload_b64, signature = token.split(".", maxsplit=1)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token format") from exc
+
+    expected_signature = _sign(payload_b64, secret)
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token signature")
+
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token payload") from exc
+
+    uid = payload.get("uid")
+    if payload.get("kind") != "cal" or not isinstance(uid, str) or not uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid calendar token")
+
+    return uid

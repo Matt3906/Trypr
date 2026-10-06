@@ -2,12 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Flutter: Build Web",
+      "label": "Web: Build",
       "type": "shell",
-      "command": "bash tool/flutter_build_web.sh",
-      "windows": {
-        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1"
-      },
+      "command": "bash tool/build_web.sh",
       "group": {
         "kind": "build"
       },
@@ -18,26 +15,17 @@
       "problemMatcher": []
     },
     {
-      "label": "Flutter: Run Chrome (with Maps key)",
+      "label": "Web: Dev Server",
       "type": "shell",
-      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_run_chrome.ps1",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Trypr: Run Web Server",
-      "type": "shell",
-      "command": "bash tool/flutter_run_web_server.sh",
-      "windows": {
-        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_run_chrome.ps1"
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
       },
       "group": {
         "kind": "build",
         "isDefault": true
       },
+      "isBackground": true,
       "presentation": {
         "reveal": "always",
         "panel": "shared"
@@ -45,47 +33,33 @@
       "problemMatcher": []
     },
     {
-      "label": "Serve: npx live-server (build/web)",
+      "label": "Web: Preview Production Build",
       "type": "shell",
-      "command": "npx live-server build/web --port=5500 --open=./index.html",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Watch: Rebuild Web on Change",
-      "type": "shell",
-      "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"bash tool/flutter_build_web.sh\"",
-      "windows": {
-        "command": "npx chokidar \"lib/**\" \"images/**\" \"pubspec.yaml\" -c \"powershell -NoProfile -ExecutionPolicy Bypass -File tool\\flutter_build_web.ps1\""
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
+      "command": "npm run preview",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
       },
       "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
       "problemMatcher": []
     },
     {
-      "label": "Build & Live-Serve",
-      "dependsOn": [
-        "Flutter: Build Web",
-        "Serve: npx live-server (build/web)"
-      ],
-      "dependsOrder": "sequence",
-      "problemMatcher": []
-    },
-    {
-      "label": "Dev: Live Preview (Build + Serve + Watch)",
-      "dependsOn": [
-        "Flutter: Build Web",
-        "Serve: npx live-server (build/web)",
-        "Watch: Rebuild Web on Change"
-      ],
-      "dependsOrder": "sequence",
-      "problemMatcher": []
+      "label": "Web: Type-check",
+      "type": "shell",
+      "command": "npx tsc -p tsconfig.app.json --noEmit",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        "$tsc"
+      ]
     }
   ]
 }

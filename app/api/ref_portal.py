@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import logging
+import secrets
+import string
 from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse, Response
+from firebase_admin import auth as firebase_auth
 from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db_session
 from app.core.dependencies import get_current_principal
-from app.core.security import AuthenticatedPrincipal
+from app.core.security import AuthenticatedPrincipal, ensure_firebase_admin
+
+logger = logging.getLogger(__name__)
 from app.models.db_models import (
     RefPortalAssociation,
     RefPortalAssignment,
@@ -28,6 +35,7 @@ from app.models.schemas import (
     AssociationCreateRequest,
     AssociationUpdateRequest,
     AssignmentCreateRequest,
+    IncidentReportCreateRequest,
     AssignmentResponseRequest,
     AssignmentTriggerRequest,
     AssignmentUpdateRequest,
@@ -45,11 +53,15 @@ from app.models.schemas import (
     RefPickupRequestSchema,
     RefUserSchema,
     RefUserCreateRequest,
+    RefUserSelfUpdateRequest,
     RefUserUpdateRequest,
+    SupervisionReportCreateRequest,
 )
 from app.services.notifications import RefNotificationTemplate, send_portal_email, send_ref_notification
 from app.services.signed_links import (
+    generate_calendar_subscription_token,
     verify_assignment_action_token,
+    verify_calendar_subscription_token,
 )
 
 
@@ -60,7 +72,7 @@ settings = get_settings()
 def _can_assign(principal: AuthenticatedPrincipal) -> bool:
     if principal.is_admin:
         return True
-    return principal.ref_portal_role in {"admin", "assigner"}
+    return principal.ref_portal_role in {"admin", "assigner", "supervisor"}
 
 
 def _scope_association_id(
@@ -77,6 +89,343 @@ def _scope_association_id(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Association scope required",
     )
+
+
+_TEMP_PASSWORD_ALPHABET = string.ascii_letters + string.digits
+
+_INVITE_RATE_WINDOW_SECONDS = 60
+_INVITE_RATE_MAX = 10
+_invite_rate_buckets: dict[str, list[float]] = {}
+
+
+def _check_invite_rate_limit(actor_uid: str | None) -> None:
+    """Sliding-window rate limit: max N invite-style actions per actor per window."""
+    if not actor_uid:
+        return
+    import time
+
+    now = time.monotonic()
+    bucket = _invite_rate_buckets.setdefault(actor_uid, [])
+    cutoff = now - _INVITE_RATE_WINDOW_SECONDS
+    while bucket and bucket[0] < cutoff:
+        bucket.pop(0)
+    if len(bucket) >= _INVITE_RATE_MAX:
+        retry_after = max(1, int(bucket[0] + _INVITE_RATE_WINDOW_SECONDS - now))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many invites. Try again in {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    bucket.append(now)
+
+
+def _generate_temp_password(length: int = 12) -> str:
+    return "".join(secrets.choice(_TEMP_PASSWORD_ALPHABET) for _ in range(length))
+
+
+def _provision_firebase_user(
+    *,
+    email: str,
+    display_name: str | None,
+) -> tuple[str, str | None]:
+    """Return (firebase_uid, temp_password_or_None).
+
+    Creates a new Firebase auth user with a generated temp password when no
+    user with this email exists yet. Returns the existing Firebase UID and
+    None for the password when the user already has a Firebase account.
+    """
+    ensure_firebase_admin()
+    try:
+        existing = firebase_auth.get_user_by_email(email)
+        return existing.uid, None
+    except firebase_auth.UserNotFoundError:
+        pass
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to look up Firebase user by email: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Auth provider unavailable",
+        ) from exc
+
+    temp_password = _generate_temp_password()
+    try:
+        created = firebase_auth.create_user(
+            email=email,
+            password=temp_password,
+            display_name=display_name or None,
+            email_verified=False,
+        )
+    except firebase_auth.EmailAlreadyExistsError:
+        # Race: another path created the user between our lookup and create.
+        fetched = firebase_auth.get_user_by_email(email)
+        return fetched.uid, None
+    except Exception as exc:
+        logger.exception("Failed to create Firebase user: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not create authentication account",
+        ) from exc
+    return created.uid, temp_password
+
+
+def _wrap_branded_email_html(
+    *,
+    association_name: str,
+    subject: str,
+    inner_html: str,
+    logo_url: str | None,
+) -> str:
+    """Wrap an inner HTML body in the shared Refey branded email shell."""
+    safe_association_name = escape(association_name or "Refey")
+    safe_subject = escape(subject or "Notification")
+    safe_logo_url = escape(logo_url or "")
+    logo_tag = (
+        f"<img src=\"{safe_logo_url}\" alt=\"Refey\" width=\"64\" height=\"64\" style=\"width:64px;height:64px;"
+        "border-radius:15px;object-fit:contain;background:#fff4ec;border:1px solid #fed7aa;"
+        "padding:4px;display:block;\" />"
+        if safe_logo_url
+        else ""
+    )
+    return (
+        "<div style=\"margin:0;padding:24px 12px 36px;background:#f1f5f9;"
+        "font-family:'SF Pro Text','Inter','Segoe UI','Helvetica Neue',Arial,sans-serif;color:#0f172a;\">"
+        "<div style=\"max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;"
+        "border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,0.08),"
+        "0 16px 36px rgba(15,23,42,0.08);\">"
+        "<div style=\"height:8px;background:#f47c20;\"></div>"
+        "<div style=\"padding:22px 24px 18px;border-bottom:1px solid #f1f5f9;\">"
+        "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse;margin:0 0 22px;\">"
+        "<tr><td style=\"vertical-align:middle;padding:0 30px 0 0;\">"
+        f"{logo_tag}"
+        "</td><td style=\"vertical-align:middle;padding:0;\">"
+        f"<p style=\"margin:0;color:#0f172a;font-size:17px;font-weight:800;line-height:1.2;\">{safe_association_name}</p>"
+        "<p style=\"margin:3px 0 0;color:#64748b;font-size:12px;font-weight:700;letter-spacing:0.04em;"
+        "text-transform:uppercase;\">Refey Portal</p>"
+        "</td></tr></table>"
+        "<p style=\"margin:0 0 8px;color:#f47c20;font-size:12px;font-weight:800;letter-spacing:0.04em;"
+        "text-transform:uppercase;\">Association Invite</p>"
+        f"<h1 style=\"margin:0;color:#0f172a;font-size:28px;line-height:1.18;font-weight:800;"
+        f"letter-spacing:-0.01em;\">{safe_subject}</h1>"
+        "</div>"
+        f"<div style=\"padding:24px;font-size:16px;line-height:1.65;color:#334155;\">{inner_html}</div>"
+        "<div style=\"padding:16px 24px 20px;background:#f8fafc;border-top:1px solid #e2e8f0;\">"
+        f"<p style=\"margin:0;color:#475569;font-size:12px;font-weight:800;text-transform:uppercase;"
+        f"letter-spacing:0.05em;\">{safe_association_name}</p>"
+        "<p style=\"margin:5px 0 0;color:#94a3b8;font-size:12px;line-height:1.5;\">"
+        "This email was sent through Refey.</p>"
+        "</div>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _build_invite_email(
+    *,
+    display_name: str,
+    association_name: str,
+    email: str,
+    temp_password: str | None,
+    login_url: str,
+) -> tuple[str, str]:
+    """Return (subject, inner_html) for the association invite email."""
+    greeting = escape(display_name or "there")
+    safe_association_name = escape(association_name or "your association")
+    safe_email = escape(email)
+    safe_login_url = escape(login_url)
+    if temp_password:
+        subject = f"You're invited to {association_name}"
+        safe_temp_password = escape(temp_password)
+        credentials_block = (
+            "<p style=\"margin:0 0 16px;\">Sign in with the credentials below. The first time you log in, "
+            "you'll choose a new password and finish your profile.</p>"
+            "<div style=\"background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:16px;margin:16px 0;\">"
+            "<p style=\"margin:0 0 10px;color:#64748b;font-size:12px;font-weight:800;letter-spacing:0.04em;"
+            "text-transform:uppercase;\">Your Login Details</p>"
+            "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse;width:100%;\">"
+            "<tr><td style=\"padding:6px 16px 6px 0;color:#64748b;font-weight:700;width:150px;\">Email</td>"
+            f"<td style=\"padding:6px 0;color:#0f172a;font-weight:700;\">{safe_email}</td></tr>"
+            "<tr><td style=\"padding:6px 16px 6px 0;color:#64748b;font-weight:700;width:150px;\">Temporary password</td>"
+            f"<td style=\"padding:6px 0;\"><code style=\"background:#fff4ec;border:1px solid #fed7aa;color:#9a3412;"
+            f"padding:5px 10px;border-radius:8px;font-size:15px;font-weight:800;\">{safe_temp_password}</code></td></tr>"
+            "</table></div>"
+            "<p style=\"margin:0;color:#64748b;font-size:14px;\">This temporary password is for first sign-in only.</p>"
+        )
+        action_label = "Finish Account Setup"
+    else:
+        subject = f"You've been added to {association_name}"
+        credentials_block = (
+            f"<p style=\"margin:0 0 16px;\">Sign in with your existing Refey account "
+            f"(<strong>{safe_email}</strong>) to access your games and schedule for this association.</p>"
+        )
+        action_label = "Sign In to Refey"
+
+    inner_html = (
+        f"<p style=\"margin:0 0 10px;font-weight:700;color:#0f172a;\">Hi {greeting},</p>"
+        f"<p style=\"margin:0 0 16px;\">You have been invited to join <strong>{safe_association_name}</strong> on Refey.</p>"
+        f"{credentials_block}"
+        "<p style=\"margin:22px 0 0;\">"
+        f"<a href=\"{safe_login_url}\" style=\"display:inline-block;background:#f47c20;color:#ffffff;"
+        "text-decoration:none;padding:12px 18px;border-radius:11px;font-weight:800;line-height:1.1;\">"
+        f"{action_label}</a>"
+        "</p>"
+    )
+    return subject, inner_html
+
+
+def _format_report_value(value: Any) -> str:
+    return escape(str(value or "").strip())
+
+
+def _incident_report_html(*, report: dict[str, Any], assignment: RefPortalAssignment, game: RefPortalGame | None) -> str:
+    raw = assignment.raw_data or {}
+    game_raw = game.raw_data if game else {}
+    game_label = raw.get("gameLabel") or (
+        f"{game_raw.get('homeTeam') or game_raw.get('home_team') or 'TBD'} vs "
+        f"{game_raw.get('awayTeam') or game_raw.get('away_team') or 'TBD'}"
+    )
+    rows = [
+        ("Game", game_label),
+        ("Date/time", " ".join([str(raw.get("gameDate") or ""), str(raw.get("gameTime") or "")]).strip()),
+        ("Arena", raw.get("arena") or (game.location if game else "")),
+        ("Division", raw.get("division") or (game.division if game else "")),
+        ("Official", report.get("officialName")),
+        ("Role", raw.get("position") or raw.get("notes") or "Official"),
+        ("Report type", report.get("reportType")),
+        ("Penalty assessed to", report.get("penaltyAssessedTo")),
+        ("Player #", report.get("playerNumber")),
+        ("Player team", report.get("playerTeam")),
+        ("Penalty code", report.get("penaltyCode")),
+        ("Infraction", report.get("infraction")),
+        ("Period/time", " ".join([str(report.get("period") or ""), str(report.get("time") or "")]).strip()),
+        ("Score at time", report.get("scoreAtTime")),
+        ("Final score", report.get("finalScore")),
+        ("Verbal report made to", report.get("verbalReportTo")),
+    ]
+    row_html = "".join(
+        "<tr>"
+        f"<td style=\"padding:6px 14px 6px 0;color:#64748b;font-weight:700;vertical-align:top;\">{escape(label)}</td>"
+        f"<td style=\"padding:6px 0;color:#0f172a;vertical-align:top;\">{_format_report_value(value) or '-'}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        "<p style=\"margin:0 0 14px;\">An official submitted a game incident report.</p>"
+        "<div style=\"background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;margin:14px 0;\">"
+        f"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse;width:100%;font-size:14px;\">{row_html}</table>"
+        "</div>"
+        "<p style=\"margin:16px 0 6px;font-weight:800;color:#0f172a;\">Detailed outline</p>"
+        f"<div style=\"white-space:pre-wrap;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155;\">{_format_report_value(report.get('details'))}</div>"
+        "<p style=\"margin:16px 0 6px;font-weight:800;color:#0f172a;\">Injuries</p>"
+        f"<div style=\"white-space:pre-wrap;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155;\">{_format_report_value(report.get('injuries')) or '-'}</div>"
+        "<p style=\"margin:16px 0 6px;font-weight:800;color:#0f172a;\">Further problems</p>"
+        f"<div style=\"white-space:pre-wrap;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155;\">{_format_report_value(report.get('furtherProblems')) or '-'}</div>"
+    )
+
+
+async def _notify_incident_report(
+    *,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+    association: RefPortalAssociation | None,
+    assignment: RefPortalAssignment,
+    game: RefPortalGame | None,
+    report: dict[str, Any],
+    actor_uid: str | None,
+) -> None:
+    association_id = association.association_id if association else ((game.association_id if game else None) or "")
+    association_name = (association.name if association and association.name else "Refey")
+    recipients = await db.scalars(
+        select(RefPortalUser).where(
+            RefPortalUser.association_id == association_id,
+            RefPortalUser.role == "assigner",
+            RefPortalUser.email.is_not(None),
+        )
+    )
+    recipient_rows = list(recipients.all())
+    recipient_emails = {
+        str(row.email).strip()
+        for row in recipient_rows
+        if row.email and str(row.email).strip()
+    }
+    if not recipient_emails:
+        logger.warning("No assigner recipients for incident report assignment_id=%s", assignment.assignment_id)
+        return
+
+    raw = assignment.raw_data or {}
+    subject = f"Incident report submitted: {raw.get('gameLabel') or 'Game'}"
+    logo_url = f"{settings.frontend_base_url.rstrip('/')}/RefeyLogo.jpeg"
+    body_html = _wrap_branded_email_html(
+        association_name=association_name,
+        subject=subject,
+        inner_html=_incident_report_html(report=report, assignment=assignment, game=game),
+        logo_url=logo_url,
+    )
+    for recipient_email in sorted(recipient_emails):
+        await send_portal_email(
+            background_tasks=background_tasks,
+            recipient_email=recipient_email,
+            subject=subject,
+            body_html=body_html,
+            template="ref_portal.incident_report",
+            recipient_uid=None,
+            association_id=association_id,
+            game_id=assignment.game_id,
+            assignment_id=assignment.assignment_id,
+            actor_uid=actor_uid,
+            sender_name=f"{association_name} Reports",
+            context={
+                "association_name": association_name,
+                "source": "ref_portal.incident_report",
+                "report_id": report.get("id"),
+            },
+        )
+
+
+async def _send_invite_email(
+    *,
+    background_tasks: BackgroundTasks,
+    association_name: str,
+    association_id: str,
+    actor_uid: str | None,
+    recipient_email: str,
+    recipient_uid: str,
+    display_name: str,
+    temp_password: str | None,
+) -> None:
+    login_url = f"{settings.frontend_base_url.rstrip('/')}/login"
+    logo_url = f"{settings.frontend_base_url.rstrip('/')}/RefeyLogo.jpeg"
+    subject, inner_html = _build_invite_email(
+        display_name=display_name,
+        association_name=association_name,
+        email=recipient_email,
+        temp_password=temp_password,
+        login_url=login_url,
+    )
+    wrapped = _wrap_branded_email_html(
+        association_name=association_name,
+        subject=subject,
+        inner_html=inner_html,
+        logo_url=logo_url,
+    )
+    try:
+        await send_portal_email(
+            background_tasks=background_tasks,
+            recipient_email=recipient_email,
+            subject=subject,
+            body_html=wrapped,
+            template="ref_portal.association_invite",
+            recipient_uid=recipient_uid,
+            association_id=association_id,
+            actor_uid=actor_uid,
+            sender_name=f"{association_name} Assigner",
+            context={
+                "association_name": association_name,
+                "logo_url": logo_url,
+                "is_new_account": temp_password is not None,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - email failures shouldn't roll back invite
+        logger.exception("Failed to queue association invite email: %s", exc)
 
 
 def _format_utc_label(value: datetime | None) -> str | None:
@@ -359,7 +708,7 @@ async def put_admin_settings(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Association not found")
 
     normalized = _normalize_admin_settings(payload)
-    raw = association.raw_data or {}
+    raw = dict(association.raw_data or {})
     raw["admin_settings"] = normalized
     raw["admin_settings_updated_at"] = datetime.now(timezone.utc).isoformat()
     association.raw_data = raw
@@ -368,6 +717,156 @@ async def put_admin_settings(
     await db.commit()
     await db.refresh(association)
     return normalized
+
+
+@router.put("/users/me", response_model=RefUserSchema)
+async def update_my_profile(
+    payload: RefUserSelfUpdateRequest,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: AsyncSession = Depends(get_db_session),
+) -> RefPortalUser:
+    user = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == principal.uid))
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    raw_data = dict(user.raw_data or {})
+
+    profile_field_map = {
+        "first_name": "firstName",
+        "last_name": "lastName",
+        "phone": "phone",
+        "date_of_birth": "dateOfBirth",
+        "address_street": "addressStreet",
+        "address_city": "addressCity",
+        "address_state": "addressState",
+        "address_postal_code": "addressPostalCode",
+        "address_country": "addressCountry",
+        "emergency_contact_name": "emergencyContactName",
+        "emergency_contact_phone": "emergencyContactPhone",
+    }
+
+    for payload_key, raw_key in profile_field_map.items():
+        value = getattr(payload, payload_key)
+        if value is None:
+            continue
+        cleaned = _clean_text(value)
+        if cleaned is None:
+            raw_data.pop(raw_key, None)
+        else:
+            raw_data[raw_key] = cleaned
+
+    user.raw_data = raw_data
+
+    if payload.first_name is not None or payload.last_name is not None:
+        user.display_name = _compose_display_name(
+            raw_data.get("firstName"),
+            raw_data.get("lastName"),
+            user.email,
+        )
+
+    user.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.get("/users/me/calendar-url")
+async def get_my_calendar_url(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+) -> dict[str, str]:
+    try:
+        token = generate_calendar_subscription_token(user_id=principal.uid)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    base = str(request.base_url).rstrip("/")
+    ics_url = f"{base}/api/ref-portal/users/me/calendar.ics?token={token}"
+    webcal_url = ics_url.replace("https://", "webcal://").replace("http://", "webcal://")
+    google_url = f"https://calendar.google.com/calendar/r?cid={quote(ics_url, safe='')}"
+    return {"ics_url": ics_url, "webcal_url": webcal_url, "google_calendar_url": google_url}
+
+
+def _ics_escape(text_value: str) -> str:
+    return (
+        text_value.replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+    )
+
+
+def _ics_format_dt(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+@router.get("/users/me/calendar.ics")
+async def get_my_calendar_feed(
+    token: str = Query(...),
+    db: AsyncSession = Depends(get_db_session),
+) -> Response:
+    user_id = verify_calendar_subscription_token(token)
+
+    statement = (
+        select(RefPortalAssignment, RefPortalGame)
+        .join(RefPortalGame, RefPortalAssignment.game_id == RefPortalGame.game_id)
+        .where(RefPortalAssignment.referee_uid == user_id)
+        .where(RefPortalAssignment.status.in_(["accepted", "pending"]))
+        .order_by(RefPortalGame.game_date.asc())
+    )
+    rows = (await db.execute(statement)).all()
+
+    now_stamp = _ics_format_dt(datetime.now(timezone.utc))
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Refey//Ref Portal//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:Refey Assignments",
+        "X-WR-TIMEZONE:UTC",
+    ]
+
+    for assignment, game in rows:
+        if not game.game_date:
+            continue
+        start = game.game_date if game.game_date.tzinfo else game.game_date.replace(tzinfo=timezone.utc)
+        end = start + timedelta(hours=2)
+        raw = game.raw_data or {}
+        home = raw.get("homeTeam") or ""
+        away = raw.get("awayTeam") or ""
+        position = (assignment.raw_data or {}).get("position") or ""
+        title_parts = [p for p in [f"{home} vs {away}".strip(" vs"), position] if p]
+        summary = " — ".join(title_parts) or f"Game {game.game_id}"
+        location = game.location or raw.get("arena") or ""
+        description_parts = [
+            f"Position: {position}" if position else None,
+            f"Status: {assignment.status}",
+            f"Division: {game.division or raw.get('division') or ''}".rstrip(": "),
+        ]
+        description = " | ".join([p for p in description_parts if p])
+
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:assignment-{assignment.assignment_id}@refey",
+            f"DTSTAMP:{now_stamp}",
+            f"DTSTART:{_ics_format_dt(start)}",
+            f"DTEND:{_ics_format_dt(end)}",
+            f"SUMMARY:{_ics_escape(summary)}",
+            f"DESCRIPTION:{_ics_escape(description)}",
+            f"LOCATION:{_ics_escape(location)}",
+            f"STATUS:{'CONFIRMED' if assignment.status == 'accepted' else 'TENTATIVE'}",
+            "END:VEVENT",
+        ])
+
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(lines) + "\r\n"
+    return Response(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="refey-assignments.ics"'},
+    )
 
 
 @router.get("/users", response_model=list[RefUserSchema])
@@ -426,11 +925,14 @@ async def get_user_invite_status(
 @router.post("/users", response_model=RefUserSchema, status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: RefUserCreateRequest,
+    background_tasks: BackgroundTasks,
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db_session),
 ) -> RefPortalUser:
     if not _can_assign(principal):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Assigner/admin role required")
+
+    _check_invite_rate_limit(principal.uid)
 
     email = _clean_text(payload.email)
     if not email:
@@ -452,11 +954,6 @@ async def create_user(
     display_name = _clean_text(payload.display_name) or _compose_display_name(first_name, last_name, email)
     role = _clean_text(payload.role) or "official"
 
-    user_id = _clean_text(payload.user_id) or str(uuid4())
-    existing = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == user_id))
-    if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
-
     existing_email = await db.scalar(
         select(RefPortalUser).where(
             RefPortalUser.association_id == scoped_association_id,
@@ -465,6 +962,20 @@ async def create_user(
     )
     if existing_email:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User email already exists in association")
+
+    firebase_uid, temp_password = _provision_firebase_user(email=email, display_name=display_name)
+
+    requested_user_id = _clean_text(payload.user_id)
+    if requested_user_id and requested_user_id != firebase_uid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_id must match the Firebase UID for this email",
+        )
+
+    user_id = firebase_uid
+    existing = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == user_id))
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
     now = datetime.now(timezone.utc)
     raw_data = dict(payload.raw_data or {})
@@ -475,6 +986,8 @@ async def create_user(
     phone = _clean_text(payload.phone)
     if phone is not None:
         raw_data["phone"] = phone
+    if temp_password is not None:
+        raw_data["needsOnboarding"] = True
 
     user = RefPortalUser(
         user_id=user_id,
@@ -489,13 +1002,105 @@ async def create_user(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    await _send_invite_email(
+        background_tasks=background_tasks,
+        association_name=association.name or "your association",
+        association_id=scoped_association_id,
+        actor_uid=principal.uid,
+        recipient_email=email,
+        recipient_uid=firebase_uid,
+        display_name=first_name or display_name or email,
+        temp_password=temp_password,
+    )
+
     return user
+
+
+@router.post("/users/{user_id}/resend-invite", response_model=APIMessage)
+async def resend_user_invite(
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: AsyncSession = Depends(get_db_session),
+) -> APIMessage:
+    if not _can_assign(principal):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Assigner/admin role required")
+
+    user = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == user_id))
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not principal.is_admin and principal.ref_portal_association_id != user.association_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden association scope")
+
+    _check_invite_rate_limit(principal.uid)
+
+    if not user.email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User has no email on file")
+
+    association = await db.scalar(
+        select(RefPortalAssociation).where(RefPortalAssociation.association_id == user.association_id)
+    )
+
+    ensure_firebase_admin()
+    temp_password: str | None = None
+    try:
+        firebase_user = firebase_auth.get_user_by_email(user.email)
+        firebase_uid = firebase_user.uid
+        # Only reset the password for users we know haven't completed onboarding.
+        # Otherwise an assigner could grief an active official by overwriting
+        # their working password.
+        if (user.raw_data or {}).get("needsOnboarding"):
+            temp_password = _generate_temp_password()
+            firebase_auth.update_user(firebase_uid, password=temp_password)
+    except firebase_auth.UserNotFoundError:
+        # No Firebase account yet — create one with a fresh temp password.
+        firebase_uid, temp_password = _provision_firebase_user(email=user.email, display_name=user.display_name)
+        if firebase_uid != user.user_id:
+            raw_data = dict(user.raw_data or {})
+            raw_data["needsOnboarding"] = True
+            user.raw_data = raw_data
+            user.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            await db.refresh(user)
+    except Exception as exc:
+        logger.exception("Failed to refresh Firebase account for resend invite: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Auth provider unavailable",
+        ) from exc
+
+    raw_data = dict(user.raw_data or {})
+    if temp_password is not None and not raw_data.get("needsOnboarding"):
+        raw_data["needsOnboarding"] = True
+        user.raw_data = raw_data
+        user.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(user)
+
+    first_name = (raw_data.get("firstName") or "").strip()
+    display_name = first_name or user.display_name or user.email
+
+    await _send_invite_email(
+        background_tasks=background_tasks,
+        association_name=(association.name if association and association.name else "your association"),
+        association_id=user.association_id,
+        actor_uid=principal.uid,
+        recipient_email=user.email,
+        recipient_uid=firebase_uid,
+        display_name=display_name,
+        temp_password=temp_password,
+    )
+
+    return APIMessage(message="Invite resent")
 
 
 @router.put("/users/{user_id}", response_model=RefUserSchema)
 async def update_user(
     user_id: str,
     payload: RefUserUpdateRequest,
+    background_tasks: BackgroundTasks,
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db_session),
 ) -> RefPortalUser:
@@ -507,6 +1112,7 @@ async def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     current_assoc = user.association_id
+    invite_association: RefPortalAssociation | None = None
     if not principal.is_admin and principal.ref_portal_association_id != current_assoc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden association scope")
 
@@ -524,6 +1130,8 @@ async def update_user(
         if not association:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Association not found")
         user.association_id = requested_association_id
+        if requested_association_id != current_assoc:
+            invite_association = association
     elif payload.association_id is not None:
         if not principal.is_admin:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required to remove association")
@@ -597,6 +1205,47 @@ async def update_user(
     user.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(user)
+
+    if invite_association and user.email:
+        firebase_uid: str | None = None
+        temp_password: str | None = None
+        raw_after_save = dict(user.raw_data or {})
+
+        try:
+            ensure_firebase_admin()
+            try:
+                firebase_user = firebase_auth.get_user_by_email(user.email)
+                firebase_uid = firebase_user.uid
+                if raw_after_save.get("needsOnboarding"):
+                    temp_password = _generate_temp_password()
+                    firebase_auth.update_user(firebase_uid, password=temp_password)
+            except firebase_auth.UserNotFoundError:
+                firebase_uid, temp_password = _provision_firebase_user(
+                    email=user.email,
+                    display_name=user.display_name,
+                )
+                if temp_password is not None and not raw_after_save.get("needsOnboarding"):
+                    raw_after_save["needsOnboarding"] = True
+                    user.raw_data = raw_after_save
+                    user.updated_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    await db.refresh(user)
+            first_name = (raw_after_save.get("firstName") or "").strip()
+            await _send_invite_email(
+                background_tasks=background_tasks,
+                association_name=invite_association.name or "your association",
+                association_id=invite_association.association_id,
+                actor_uid=principal.uid,
+                recipient_email=user.email,
+                recipient_uid=firebase_uid or user.user_id,
+                display_name=first_name or user.display_name or user.email,
+                temp_password=temp_password,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - invite failures should not roll back profile edits
+            logger.exception("Failed to queue invite after association update: %s", exc)
+
     return user
 
 
@@ -890,26 +1539,11 @@ async def queue_custom_notification(
     association_name = (association.name if association and association.name else "Refey")
     logo_url = f"{settings.frontend_base_url.rstrip('/')}/RefeyLogo.jpeg"
 
-    wrapped_html = (
-        "<div style=\"font-family:'SF Pro Text','Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif;"
-        "background:#f3f6f9;padding:18px 10px;color:#1c2735;\">"
-        "<div style=\"max-width:660px;margin:0 auto;border:1px solid #e4e8ec;border-radius:16px;overflow:hidden;"
-        "background:linear-gradient(160deg,#ffffff 0%,#fcfdff 65%,#f8fbfe 100%);box-shadow:0 10px 26px rgba(16,24,40,0.08);\">"
-        "<div style=\"padding:18px 24px 22px;background:linear-gradient(140deg,#0f5d7a 0%,#2f6ea3 100%);color:#ffffff;\">"
-        "<div style=\"display:flex;align-items:center;gap:11px;margin-bottom:12px;\">"
-        f"{f'<img src=\"{logo_url}\" alt=\"logo\" style=\"width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid rgba(255,255,255,0.45);background:rgba(255,255,255,0.15);\" />' if logo_url else ''}"
-        f'<p style="margin:0;font-size:20px;line-height:1.2;font-weight:650;">{association_name}</p>'
-        "</div>"
-        '<p style="margin:0;font-size:11px;font-weight:620;letter-spacing:0.06em;text-transform:uppercase;opacity:0.88;">Refey Officiating</p>'
-        f'<h1 style="margin:7px 0 0;font-size:35px;line-height:1.2;font-weight:700;letter-spacing:-0.02em;">{subject}</h1>'
-        "</div>"
-        f'<div style="padding:24px 24px 18px;font-size:18px;line-height:1.6;color:#1c2735;">{html}</div>'
-        "<div style=\"padding:14px 24px 20px;background:#f9fbfd;border-top:1px solid #e4e8ec;\">"
-        f'<p style="margin:0;color:#445263;font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:0.05em;">{association_name}</p>'
-        '<p style="margin:5px 0 0;color:#6f7b89;font-size:12px;">This is an automated notification from your association scheduling system.</p>'
-        "</div>"
-        "</div>"
-        "</div>"
+    wrapped_html = _wrap_branded_email_html(
+        association_name=association_name,
+        subject=subject,
+        inner_html=html,
+        logo_url=logo_url,
     )
 
     queued = 0
@@ -1279,6 +1913,186 @@ async def delete_game(
     await db.delete(game)
     await db.commit()
     return APIMessage(message="Game deleted")
+
+
+@router.post("/assignments/{assignment_id}/incident-report", response_model=RefAssignmentSchema)
+async def submit_assignment_incident_report(
+    assignment_id: str,
+    payload: IncidentReportCreateRequest,
+    background_tasks: BackgroundTasks,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: AsyncSession = Depends(get_db_session),
+) -> RefPortalAssignment:
+    assignment = await db.scalar(
+        select(RefPortalAssignment).where(RefPortalAssignment.assignment_id == assignment_id)
+    )
+    if not assignment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+
+    game = None
+    if assignment.game_id:
+        game = await db.scalar(select(RefPortalGame).where(RefPortalGame.game_id == assignment.game_id))
+
+    association_id = (game.association_id if game else None) or (assignment.raw_data or {}).get("associationId")
+    if not association_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignment association is missing")
+
+    can_manage = principal.is_admin or (_can_assign(principal) and principal.ref_portal_association_id == association_id)
+    is_assigned_official = principal.uid == assignment.referee_uid
+    if not can_manage and not is_assigned_official:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot submit a report for this assignment")
+
+    association = await db.scalar(
+        select(RefPortalAssociation).where(RefPortalAssociation.association_id == association_id)
+    )
+    reporter = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == principal.uid))
+    reporter_name = (
+        _compose_display_name(
+            (reporter.raw_data or {}).get("firstName") if reporter else None,
+            (reporter.raw_data or {}).get("lastName") if reporter else None,
+            reporter.email if reporter else principal.email,
+        )
+        if reporter
+        else (principal.email or "Official")
+    )
+
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": str(uuid4()),
+        "submittedAt": submitted_at,
+        "submittedByUid": principal.uid,
+        "submittedByEmail": principal.email,
+        "officialName": reporter_name,
+        "reportType": _clean_text(payload.report_type) or "Special Incident",
+        "penaltyAssessedTo": _clean_text(payload.penalty_assessed_to),
+        "playerNumber": _clean_text(payload.player_number),
+        "playerTeam": _clean_text(payload.player_team),
+        "penaltyCode": _clean_text(payload.penalty_code),
+        "infraction": _clean_text(payload.infraction),
+        "period": _clean_text(payload.period),
+        "time": _clean_text(payload.time),
+        "scoreAtTime": _clean_text(payload.score_at_time),
+        "finalScore": _clean_text(payload.final_score),
+        "details": payload.details.strip(),
+        "injuries": _clean_text(payload.injuries),
+        "furtherProblems": _clean_text(payload.further_problems),
+        "verbalReportTo": _clean_text(payload.verbal_report_to),
+        "reportDate": _clean_text(payload.report_date) or submitted_at[:10],
+        "rawData": payload.raw_data or {},
+    }
+
+    raw = dict(assignment.raw_data or {})
+    reports = raw.get("incidentReports")
+    if not isinstance(reports, list):
+        reports = []
+    reports.append(report)
+    raw["incidentReports"] = reports
+    raw["incidentReportCount"] = len(reports)
+    raw["lastIncidentReportAt"] = submitted_at
+    raw["updated_by"] = principal.uid
+    assignment.raw_data = raw
+    assignment.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(assignment)
+
+    try:
+        await _notify_incident_report(
+            background_tasks=background_tasks,
+            db=db,
+            association=association,
+            assignment=assignment,
+            game=game,
+            report=report,
+            actor_uid=principal.uid,
+        )
+    except Exception as exc:  # pragma: no cover - notification failure should not lose the report
+        logger.exception("Failed to notify assigners about incident report: %s", exc)
+
+    return assignment
+
+
+@router.post("/assignments/{assignment_id}/supervision-report", response_model=RefAssignmentSchema)
+async def submit_assignment_supervision_report(
+    assignment_id: str,
+    payload: SupervisionReportCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: AsyncSession = Depends(get_db_session),
+) -> RefPortalAssignment:
+    if not _can_assign(principal):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Assigner/admin role required")
+
+    assignment = await db.scalar(
+        select(RefPortalAssignment).where(RefPortalAssignment.assignment_id == assignment_id)
+    )
+    if not assignment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+
+    game = None
+    if assignment.game_id:
+        game = await db.scalar(select(RefPortalGame).where(RefPortalGame.game_id == assignment.game_id))
+
+    association_id = (game.association_id if game else None) or (assignment.raw_data or {}).get("associationId")
+    if not association_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Assignment association is missing")
+
+    if not principal.is_admin and principal.ref_portal_association_id != association_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden association scope")
+
+    evaluated_user_id = _clean_text(payload.evaluated_user_id) or assignment.referee_uid
+    evaluated_user = (
+        await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == evaluated_user_id))
+        if evaluated_user_id
+        else None
+    )
+    supervisor = await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == principal.uid))
+
+    def display_for(user: RefPortalUser | None, fallback_email: str | None, fallback: str) -> str:
+        if not user:
+            return fallback_email or fallback
+        raw = user.raw_data or {}
+        return _compose_display_name(raw.get("firstName"), raw.get("lastName"), user.email or fallback_email or fallback)
+
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": str(uuid4()),
+        "submittedAt": submitted_at,
+        "submittedByUid": principal.uid,
+        "submittedByEmail": principal.email,
+        "supervisorName": display_for(supervisor, principal.email, "Supervisor"),
+        "evaluatedUserId": evaluated_user_id,
+        "officialName": display_for(
+            evaluated_user,
+            (assignment.raw_data or {}).get("officialName"),
+            "Official",
+        ),
+        "reviewedGameSheet": bool(payload.reviewed_game_sheet),
+        "code": _clean_text(payload.code),
+        "subcode": _clean_text(payload.subcode),
+        "strengths": _clean_text(payload.strengths),
+        "development": _clean_text(payload.development),
+        "comments": _clean_text(payload.comments),
+        "overallRating": _clean_text(payload.overall_rating),
+        "ratings": payload.ratings or {},
+        "reportDate": _clean_text(payload.report_date) or submitted_at[:10],
+        "rawData": payload.raw_data or {},
+    }
+
+    raw = dict(assignment.raw_data or {})
+    reports = raw.get("supervisionReports")
+    if not isinstance(reports, list):
+        reports = []
+    reports.append(report)
+    raw["supervisionReports"] = reports
+    raw["supervisionReportCount"] = len(reports)
+    raw["lastSupervisionReportAt"] = submitted_at
+    raw["updated_by"] = principal.uid
+    assignment.raw_data = raw
+    assignment.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(assignment)
+    return assignment
 
 
 @router.put("/assignments/{assignment_id}", response_model=RefAssignmentSchema)

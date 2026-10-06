@@ -4,7 +4,7 @@ import logging
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -24,6 +24,93 @@ def _get_admin_emails() -> set[str]:
         for email in settings.admin_emails.split(",")
         if email.strip()
     }
+
+
+async def _link_ref_portal_user_by_email(
+    db: AsyncSession,
+    *,
+    firebase_uid: str,
+    email: str | None,
+) -> RefPortalUser | None:
+    """Re-key one legacy ref portal profile to the Firebase UID.
+
+    Older invite flows could create ref_portal.users.user_id with a generated
+    UUID while Firebase Auth later issued a different UID. Authenticated portal
+    requests are scoped by Firebase UID, so those users looked unassigned after
+    login even though admins could see their email inside an association.
+    """
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    result = await db.scalars(
+        select(RefPortalUser)
+        .where(func.lower(RefPortalUser.email) == normalized_email)
+        .order_by(RefPortalUser.created_at.asc().nulls_last(), RefPortalUser.user_id.asc())
+        .limit(2)
+    )
+    matches = list(result.all())
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            "Ref portal email lookup is ambiguous; not auto-linking uid=%s email=%s",
+            firebase_uid,
+            normalized_email,
+        )
+        return None
+
+    legacy_user = matches[0]
+    if legacy_user.user_id == firebase_uid:
+        return legacy_user
+
+    old_uid = legacy_user.user_id
+    logger.info(
+        "Auto-linking legacy ref portal user row to Firebase UID (old_uid=%s firebase_uid=%s email=%s)",
+        old_uid,
+        firebase_uid,
+        normalized_email,
+    )
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO ref_portal.users (
+                user_id, association_id, email, display_name, role,
+                created_at, updated_at, raw_data
+            )
+            SELECT :new_uid, association_id, email, display_name, role,
+                   created_at, NOW(), raw_data || jsonb_build_object(
+                       'linkedFromUserId', user_id,
+                       'linkedBy', 'auth_email_match',
+                       'linkedAt', NOW()::text
+                   )
+            FROM ref_portal.users
+            WHERE user_id = :old_uid
+            ON CONFLICT (user_id) DO NOTHING
+            """
+        ),
+        {"new_uid": firebase_uid, "old_uid": old_uid},
+    )
+    await db.execute(
+        text("UPDATE ref_portal.assignments SET referee_uid = :new_uid WHERE referee_uid = :old_uid"),
+        {"new_uid": firebase_uid, "old_uid": old_uid},
+    )
+    await db.execute(
+        text("UPDATE ref_portal.availability SET referee_uid = :new_uid WHERE referee_uid = :old_uid"),
+        {"new_uid": firebase_uid, "old_uid": old_uid},
+    )
+    await db.execute(
+        text("UPDATE ref_portal.pickup_requests SET requester_uid = :new_uid WHERE requester_uid = :old_uid"),
+        {"new_uid": firebase_uid, "old_uid": old_uid},
+    )
+    await db.execute(
+        text("DELETE FROM ref_portal.users WHERE user_id = :old_uid"),
+        {"old_uid": old_uid},
+    )
+    await db.commit()
+
+    return await db.scalar(select(RefPortalUser).where(RefPortalUser.user_id == firebase_uid))
 
 
 async def get_current_principal(
@@ -51,6 +138,12 @@ async def get_current_principal(
         ref_portal_user = await db.scalar(
             select(RefPortalUser).where(RefPortalUser.user_id == uid)
         )
+        if not ref_portal_user:
+            ref_portal_user = await _link_ref_portal_user_by_email(
+                db,
+                firebase_uid=uid,
+                email=email,
+            )
         is_admin = await db.scalar(select(TryprAdmin.uid).where(TryprAdmin.uid == uid))
     except Exception:
         logger.exception("Failed SQL principal lookup (uid=%s, email=%s)", uid, email)

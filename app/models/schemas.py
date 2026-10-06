@@ -305,6 +305,39 @@ class AssignmentResponseRequest(BaseModel):
     status: Literal["accepted", "declined"]
 
 
+class IncidentReportCreateRequest(BaseModel):
+    report_type: str | None = Field(default="Special Incident", max_length=120)
+    penalty_assessed_to: str | None = Field(default=None, max_length=200)
+    player_number: str | None = Field(default=None, max_length=40)
+    player_team: str | None = Field(default=None, max_length=80)
+    penalty_code: str | None = Field(default=None, max_length=80)
+    infraction: str | None = Field(default=None, max_length=160)
+    period: str | None = Field(default=None, max_length=40)
+    time: str | None = Field(default=None, max_length=40)
+    score_at_time: str | None = Field(default=None, max_length=80)
+    final_score: str | None = Field(default=None, max_length=80)
+    details: str = Field(min_length=1, max_length=8000)
+    injuries: str | None = Field(default=None, max_length=4000)
+    further_problems: str | None = Field(default=None, max_length=4000)
+    verbal_report_to: str | None = Field(default=None, max_length=200)
+    report_date: str | None = Field(default=None, max_length=40)
+    raw_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class SupervisionReportCreateRequest(BaseModel):
+    evaluated_user_id: str | None = Field(default=None, max_length=160)
+    reviewed_game_sheet: bool = False
+    code: str | None = Field(default=None, max_length=120)
+    subcode: str | None = Field(default=None, max_length=160)
+    strengths: str | None = Field(default=None, max_length=6000)
+    development: str | None = Field(default=None, max_length=6000)
+    comments: str | None = Field(default=None, max_length=8000)
+    overall_rating: str | None = Field(default=None, max_length=40)
+    ratings: dict[str, Any] = Field(default_factory=dict)
+    report_date: str | None = Field(default=None, max_length=40)
+    raw_data: dict[str, Any] = Field(default_factory=dict)
+
+
 class GameBatchItem(BaseModel):
     date: str | None = None  # YYYY-MM-DD
     time: str | None = None  # HH:MM
@@ -423,6 +456,20 @@ class RefUserUpdateRequest(BaseModel):
     phone: str | None = Field(default=None, max_length=80)
     role: str | None = Field(default=None, max_length=64)
     raw_data: dict[str, Any] | None = None
+
+
+class RefUserSelfUpdateRequest(BaseModel):
+    first_name: str | None = Field(default=None, max_length=120)
+    last_name: str | None = Field(default=None, max_length=120)
+    phone: str | None = Field(default=None, max_length=80)
+    date_of_birth: str | None = Field(default=None, max_length=20)
+    address_street: str | None = Field(default=None, max_length=200)
+    address_city: str | None = Field(default=None, max_length=120)
+    address_state: str | None = Field(default=None, max_length=80)
+    address_postal_code: str | None = Field(default=None, max_length=30)
+    address_country: str | None = Field(default=None, max_length=80)
+    emergency_contact_name: str | None = Field(default=None, max_length=200)
+    emergency_contact_phone: str | None = Field(default=None, max_length=80)
 
 
 class BroadcastMessageRequest(BaseModel):
