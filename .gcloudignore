@@ -3,7 +3,6 @@
 .gcloudignore
 .vscode
 .idea
-.dart_tool
 .venv
 .env
 .env.*

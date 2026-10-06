@@ -2,7 +2,6 @@
 .gitignore
 .vscode
 .idea
-.dart_tool
 build
 frontend/node_modules
 node_modules

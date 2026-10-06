@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload the rebuilt Flutter web app to Hostinger via SFTP.
+# Upload the rebuilt React web app to Hostinger via SFTP.
 # The SSH key was already added to your Hostinger account.
 set -euo pipefail
 

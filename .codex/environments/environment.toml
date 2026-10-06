@@ -8,4 +8,4 @@ script = ""
 [[actions]]
 name = "Run"
 icon = "run"
-command = "bash tool/flutter_run_web_server.sh"
+command = "cd frontend && npm run dev"
