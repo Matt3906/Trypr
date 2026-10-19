@@ -1,6 +1,0 @@
-node_modules/
-.firebase/
-.runtimeconfig.json
-
-# Local env vars (do not commit secrets)
-.env
