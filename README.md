@@ -10,14 +10,15 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 
 | Layer | Technologies |
 |---|---|
-| Frontend | React 19, TypeScript, Vite (in `frontend/`) |
-| Backend | Python (FastAPI), Docker, Cloud Run |
-| Database | Firebase Firestore, Firebase Storage |
-| Auth | Firebase Auth, Google Sign-In |
+| Frontend | React 19, TypeScript, Vite (in `frontend/`), static files on Hostinger |
+| Backend | Python (FastAPI + asyncpg) in `backend/`, Docker, self-hosted on a VPS |
+| Database | PostgreSQL 16 (JSONB document store + auth tables) |
+| Auth | Email + password, bcrypt, HttpOnly session cookie |
+| Files | Local disk on the VPS (Docker volume) |
 | Payments | Stripe |
-| Maps & Routing | Google Maps Platform, OpenRouteService, GraphHopper |
-| AI | Firebase Cloud Functions + LLM-backed suggestions |
-| Deployment | Hostinger (VPS), Google Cloud Console, Google Cloud Run |
+| Maps & Routing | Google Maps Platform, OpenRouteService, GraphHopper (server-side proxy) |
+| AI | Claude API (premium trip suggestions) |
+| Deployment | `./deploy.sh` — Hostinger (site) + DigitalOcean droplet (API) |
 
 ---
 
@@ -42,7 +43,7 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 - Per-person cost breakdown
 
 ### AI Suggestions *(Premium)*
-- AI-powered accommodation and itinerary suggestions via Firebase Cloud Functions
+- AI-powered accommodation and itinerary suggestions via the backend (Claude API)
 - Suggestions are contextual to destination, travel dates, and user preferences
 
 ### Premium Tier
@@ -51,7 +52,7 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 
 ### Admin Panel
 - Internal dashboard for managing users, trips, and verified trip content
-- Role-gated access via Firestore security rules
+- Role-gated access enforced by the backend's authorization rules
 
 ### Verified Trips
 - Curated public trip routes with dedicated detail pages and map views
@@ -66,44 +67,56 @@ Trypr is a full-stack trip planning web application built because spreadsheets a
 ## Architecture
 
 ```
-tryprtravel.com  (React web app — Hostinger VPS via Google Cloud Console)
-    │
-    ├── Firebase Auth          — user identity & Google Sign-In
-    ├── Cloud Firestore        — trips, users, friends, packing lists, expenses
-    ├── Firebase Storage       — trip photos and user assets
-    ├── Cloud Functions        — AI suggestion endpoints (Node/Python)
-    │
-    └── Cloud Run (FastAPI)    — premium billing logic, Stripe webhooks,
-                                 background jobs (Python 3.13, Docker)
+Browser ─► tryprtravel.com      Hostinger: static React build (public_html)
+        └► api.tryprtravel.com  VPS: shared nginx (TLS) ─► trypr-backend (FastAPI) ─► trypr-db (Postgres 16)
+                                                           └► uploads volume (trip docs/photos)
 ```
 
-Firestore security rules enforce per-user data isolation and role-based access for admin features. The React app is a single-page app (react-router) that talks to Firebase directly from the browser; the FastAPI container serves the built `frontend/dist` with a client-side-routing fallback.
+The site talks to the API with a session cookie (`SameSite=Lax`, both hosts share the
+`tryprtravel.com` registrable domain). The React app uses a small Firestore-compatible client
+(`frontend/src/backend/`) so screens keep the `doc/getDoc/onSnapshot/...` call style, but every call
+goes to `/api/db/*`, where `backend/app/docstore/rules.py` enforces the access rules. Live listeners
+poll (and refresh immediately after local writes).
+
+The droplet is shared with the Refey portal: one nginx owns ports 80/443 and each app has its own
+containers and network. Details and the first-time setup are in [deploy/README.md](deploy/README.md).
 
 ---
 
 ## Local Development
 
-**Prerequisites:** Node.js ≥ 20, Firebase CLI, a Firebase project with Auth / Firestore / Storage enabled.
+**Prerequisites:** Node.js ≥ 20, Python ≥ 3.12, PostgreSQL 16.
 
 ```bash
-# Install dependencies and configure browser keys
+# 1. Backend (http://127.0.0.1:8080)
+createdb trypr
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+DB_NAME=trypr DB_USER=$USER DB_PASSWORD= uvicorn app.main:app --reload --port 8080   # tables are created on start
+
+# 2. Frontend (http://localhost:5173, proxies /api to the backend)
 cd frontend
 npm install
-cp .env.example .env.local   # then fill in VITE_GOOGLE_MAPS_API_KEY etc.
-
-# Run the dev server (proxies /api to the FastAPI backend on :8080)
+cp .env.example .env.local   # fill in VITE_GOOGLE_MAPS_API_KEY etc.
 npm run dev
 
-# Production build (outputs frontend/dist) — or `bash tool/build_web.sh` from the repo root
-npm run build
-
-# Run the FastAPI backend locally
-cd app
-uvicorn app.main:app --reload --port 8080
-
-# Or via Docker
-docker compose up
+# Backend tests (need a Postgres database to run against)
+cd backend && TEST_DATABASE_URL=postgresql://localhost/trypr_test pytest
 ```
+
+Set `ADMIN_EMAILS=you@example.com` for the backend to make that account an admin on sign-in.
+
+## Deploying
+
+```bash
+./deploy.sh              # backend (VPS) + frontend (Hostinger)
+./deploy.sh frontend     # just the site
+./deploy.sh backend      # just the API
+./deploy.sh --help
+```
+
+First time? See [deploy/README.md](deploy/README.md).
 
 ---
 

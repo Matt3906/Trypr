@@ -13,9 +13,9 @@ DIST_DIR="$FRONTEND_DIR/dist"
 EARTH_DIR="$ROOT_DIR/Earth"
 TOURNAMENT_BUILDER_DIR="${TOURNAMENT_BUILDER_DIR:-$(cd "$ROOT_DIR/.." && pwd)/Tournament Builder}"
 TOURNAMENT_DEPLOY_DIR="$DIST_DIR/tournamentPlanner"
-# The Firebase web config lives in the React app's config module (same `key: 'value'` shape as the
-# old firebase_options.dart, so the same extractor works).
-FIREBASE_OPTIONS_FILE="$FRONTEND_DIR/src/config.ts"
+# The Tournament Builder is a separate Flutter app that still uses Firebase directly. Its (public)
+# Firebase web config lives in tool/tournament-planner.env as TRYPR_FIREBASE_* variables.
+TOURNAMENT_ENV_FILE="$ROOT_DIR/tool/tournament-planner.env"
 ENV_FILES=(
   "$FRONTEND_DIR/.env.local"
   "$FRONTEND_DIR/.env"
@@ -60,21 +60,10 @@ resolve_var() {
   fi
 }
 
-extract_firebase_option_from_file() {
-  local option_name="$1" options_file="$2"
-  [[ -f "$options_file" ]] || return 0
-  sed -n -E "s/^[[:space:]]*${option_name}:[[:space:]]*'([^']+)'.*/\\1/p" "$options_file" | head -n 1
-}
-
 resolve_tournament_value() {
-  local env_key="$1" firebase_option="$2" default_value="${3:-}" value="${!env_key:-}"
-  if [[ -n "$value" ]]; then echo "$value|environment"; return 0; fi
-  if [[ -n "$firebase_option" ]]; then
-    value="$(extract_firebase_option_from_file "$firebase_option" "$FIREBASE_OPTIONS_FILE")"
-    if [[ -n "$value" ]]; then echo "$value|$FIREBASE_OPTIONS_FILE:$firebase_option"; return 0; fi
-  fi
-  if [[ -n "$default_value" ]]; then echo "$default_value|default"; return 0; fi
-  echo "|"
+  local env_key="$1" default_value="${2:-}" value="${!env_key:-}"
+  [[ -z "$value" ]] && value="$default_value"
+  echo "$value"
 }
 
 build_tournament_planner_web() {
@@ -87,19 +76,20 @@ build_tournament_planner_web() {
     return 0
   fi
 
-  local company_id api_key app_id sender_id project_id auth_domain storage_bucket measurement_id src
-  IFS='|' read -r company_id src < <(resolve_tournament_value "TRYPR_COMPANY_ID" "" "trypr")
-  IFS='|' read -r api_key src < <(resolve_tournament_value "TRYPR_FIREBASE_API_KEY" "apiKey")
-  IFS='|' read -r app_id src < <(resolve_tournament_value "TRYPR_FIREBASE_APP_ID" "appId")
-  IFS='|' read -r sender_id src < <(resolve_tournament_value "TRYPR_FIREBASE_MESSAGING_SENDER_ID" "messagingSenderId")
-  IFS='|' read -r project_id src < <(resolve_tournament_value "TRYPR_FIREBASE_PROJECT_ID" "projectId")
-  IFS='|' read -r auth_domain src < <(resolve_tournament_value "TRYPR_FIREBASE_AUTH_DOMAIN" "authDomain")
-  IFS='|' read -r storage_bucket src < <(resolve_tournament_value "TRYPR_FIREBASE_STORAGE_BUCKET" "storageBucket")
-  IFS='|' read -r measurement_id src < <(resolve_tournament_value "TRYPR_FIREBASE_MEASUREMENT_ID" "measurementId")
+  if [[ -f "$TOURNAMENT_ENV_FILE" ]]; then set -a; source "$TOURNAMENT_ENV_FILE"; set +a; fi
+  local company_id api_key app_id sender_id project_id auth_domain storage_bucket measurement_id
+  company_id="$(resolve_tournament_value TRYPR_COMPANY_ID trypr)"
+  api_key="$(resolve_tournament_value TRYPR_FIREBASE_API_KEY)"
+  app_id="$(resolve_tournament_value TRYPR_FIREBASE_APP_ID)"
+  sender_id="$(resolve_tournament_value TRYPR_FIREBASE_MESSAGING_SENDER_ID)"
+  project_id="$(resolve_tournament_value TRYPR_FIREBASE_PROJECT_ID)"
+  auth_domain="$(resolve_tournament_value TRYPR_FIREBASE_AUTH_DOMAIN)"
+  storage_bucket="$(resolve_tournament_value TRYPR_FIREBASE_STORAGE_BUCKET)"
+  measurement_id="$(resolve_tournament_value TRYPR_FIREBASE_MEASUREMENT_ID)"
 
   if [[ -z "$api_key" || -z "$app_id" || -z "$sender_id" || -z "$project_id" ]]; then
-    echo "ERROR: missing Firebase config for the Tournament Builder build (set TRYPR_FIREBASE_* or fix $FIREBASE_OPTIONS_FILE)." >&2
-    return 1
+    echo "WARNING: no Firebase config for the Tournament Builder ($TOURNAMENT_ENV_FILE); skipping it. The existing /tournamentPlanner on the server is left as-is." >&2
+    return 0
   fi
 
   echo "Building Tournament Builder web app (base href /tournamentPlanner/)..."
@@ -143,7 +133,6 @@ fi
 echo "Resolving build-time keys..."
 resolve_var VITE_GOOGLE_MAPS_API_KEY GOOGLE_MAPS_API_KEY
 resolve_var VITE_GOOGLE_MAPS_MAP_ID GOOGLE_MAPS_MAP_ID
-resolve_var VITE_RECAPTCHA_SITE_KEY RECAPTCHA_SITE_KEY
 resolve_var VITE_OPENROUTESERVICE_API_KEY OPENROUTESERVICE_API_KEY
 resolve_var VITE_GRAPHHOPPER_API_KEY GRAPHHOPPER_API_KEY
 resolve_var VITE_STRICT_ROUTING STRICT_ROUTING

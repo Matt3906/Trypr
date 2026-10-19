@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore'
+import { collection, limit, onSnapshot, orderBy, query } from '@/backend/firestore'
 import { MdAddCircleOutline, MdBookmarkBorder, MdPlace, MdVerified } from 'react-icons/md'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { Spinner, cx } from '@/components/ui'
 import {

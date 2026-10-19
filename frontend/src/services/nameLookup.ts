@@ -1,5 +1,5 @@
-import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/firebase'
+import { doc, getDoc } from '@/backend/firestore'
+import { db } from '@/backend'
 
 /** Fills `cache` (uid -> display name) for any uids not yet present. */
 export async function ensureNameCache(

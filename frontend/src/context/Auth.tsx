@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { onAuthStateChanged, type User } from 'firebase/auth'
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
-import { auth, db } from '@/firebase'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { onAuthStateChanged, type User } from '@/backend/auth'
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from '@/backend/firestore'
+import { auth, db } from '@/backend'
 import { isPremiumFromData } from '@/services/premiumAccess'
 
 interface AuthValue {
@@ -82,8 +82,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user])
 
+  // The profile screen stores the display name on users/{uid}; surface it on `user` like Firebase's profile did.
+  const named = useMemo(() => {
+    if (!user) return null
+    const profileName = typeof userData?.displayName === 'string' ? userData.displayName.trim() : ''
+    return profileName ? { ...user, displayName: profileName } : user
+  }, [user, userData])
+
   return (
-    <Ctx.Provider value={{ user, loading, signedIn: !!user, isAdmin, isPremium: isPremiumFromData(userData), userData }}>
+    <Ctx.Provider value={{ user: named, loading, signedIn: !!user, isAdmin, isPremium: isPremiumFromData(userData), userData }}>
       {children}
     </Ctx.Provider>
   )

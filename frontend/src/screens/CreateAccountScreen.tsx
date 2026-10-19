@@ -1,13 +1,12 @@
 import { useState } from 'react'
-import { createUserWithEmailAndPassword, GoogleAuthProvider, signInWithPopup, type User } from 'firebase/auth'
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { createUserWithEmailAndPassword, type User } from '@/backend/auth'
+import { doc, serverTimestamp, setDoc } from '@/backend/firestore'
 import { MdArrowForward, MdEmail, MdExplore, MdLock } from 'react-icons/md'
-import { FcGoogle } from 'react-icons/fc'
 import { useNavigate } from 'react-router-dom'
-import { auth, db } from '@/firebase'
+import { auth, db } from '@/backend'
 import { Button, Spinner, TextInput } from '@/components/ui'
 import { useFeedback } from '@/context/Feedback'
-import AuthLayout, { OrDivider } from './AuthLayout'
+import AuthLayout from './AuthLayout'
 
 /** Ensure a normalized users/{uid} doc exists so friend search works. */
 async function upsertUserDoc(user: User) {
@@ -32,7 +31,6 @@ export default function CreateAccountScreen() {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
-  const [googleLoading, setGoogleLoading] = useState(false)
 
   const create = async () => {
     if (password !== confirm) {
@@ -51,19 +49,6 @@ export default function CreateAccountScreen() {
     }
   }
 
-  const google = async () => {
-    setGoogleLoading(true)
-    try {
-      const cred = await signInWithPopup(auth, new GoogleAuthProvider())
-      await upsertUserDoc(cred.user)
-      navigate('/complete-profile', { replace: true })
-    } catch {
-      toast('Google sign up failed')
-    } finally {
-      setGoogleLoading(false)
-    }
-  }
-
   return (
     <AuthLayout bg="DSC_0042.jpg" icon={<MdExplore size={28} />} title="Start your journey" subtitle="Create an account to plan and save your adventures">
       <form className="col gap-lg" onSubmit={(e) => { e.preventDefault(); void create() }}>
@@ -72,8 +57,6 @@ export default function CreateAccountScreen() {
         <TextInput icon={<MdLock size={20} />} type="password" placeholder="Confirm your password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
         {loading ? <div className="center"><Spinner /></div> : <Button type="submit" block icon={<MdArrowForward size={18} />}>Create account</Button>}
       </form>
-      <OrDivider />
-      {googleLoading ? <div className="center"><Spinner /></div> : <Button variant="neutral" block icon={<FcGoogle size={20} />} onClick={google}>Google</Button>}
     </AuthLayout>
   )
 }

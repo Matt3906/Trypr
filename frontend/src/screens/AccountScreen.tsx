@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { arrayRemove, doc, setDoc, updateDoc, deleteField } from 'firebase/firestore'
-import { signOut } from 'firebase/auth'
+import { arrayRemove, doc, setDoc, updateDoc, deleteField } from '@/backend/firestore'
+import { signOut } from '@/backend/auth'
 import { useNavigate } from 'react-router-dom'
 import {
   MdBadge, MdBugReport, MdCake, MdEdit, MdFlag, MdLocationOn, MdLogin, MdLogout, MdOutlinePeopleAlt, MdPeopleOutline, MdPublic, MdOutlineRoute,
   MdSaveAlt, MdTravelExplore, MdUploadFile, MdWorkspacePremium, MdOutlineWorkspacePremium, MdPerson,
 } from 'react-icons/md'
-import { auth, db } from '@/firebase'
+import { auth, db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import { useDocument } from '@/hooks/useFirestore'

@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { auth } from '@/firebase'
+import { auth } from '@/backend'
 import { useFeedback } from '@/context/Feedback'
 
 /** Sends signed-in users to /premium; asks signed-out users to sign in first. */

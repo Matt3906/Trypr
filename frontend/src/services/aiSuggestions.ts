@@ -1,5 +1,5 @@
-import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase'
+import { httpsCallable } from '@/backend/functions'
+import { functions } from '@/backend'
 import { canAccessPremium } from './premiumAccess'
 
 export class PremiumRequiredError extends Error {}

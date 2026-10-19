@@ -1,4 +1,4 @@
-import { Timestamp } from 'firebase/firestore'
+import { Timestamp } from '@/backend/firestore'
 
 export function normalizeTripMode(raw?: string | null): string {
   let value = (raw ?? '').trim().toLowerCase()

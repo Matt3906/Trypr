@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore'
+import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, Timestamp } from '@/backend/firestore'
 import { format } from 'date-fns'
 import {
   MdAutoAwesome, MdCalendarToday, MdChevronLeft, MdChevronRight, MdClose, MdEditRoad, MdOutlineGroup, MdGroups, MdHotel,
   MdHourglassTop, MdOutlineMap, MdOutlineRoute, MdOutlineSchedule, MdShare,
 } from 'react-icons/md'
 import { useNavigate } from 'react-router-dom'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import TopTaskbar from '@/components/TopTaskbar'
 import { SectionHeader, SoftCard, Spinner } from '@/components/ui'
 import { useAuth } from '@/context/Auth'

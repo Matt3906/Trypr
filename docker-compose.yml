@@ -1,38 +1,66 @@
-version: "3.9"
+# Trypr — SHARED-SERVER layout (same droplet as Refey, see /apps/README.md on the droplet).
+# This project owns ONLY its backend + Postgres. The website is static files on Hostinger.
+# TLS and routing are done by the single shared nginx in /apps/shared-nginx, which reaches
+# `trypr-backend` over the external `trypr-net` network (api.tryprtravel.com -> trypr-backend:8080).
+#
+# Prereq (created once by /apps/setup.sh or deploy/scripts/setup-droplet.sh): docker network `trypr-net`.
+# Config comes from .env.production (copy .env.production.example). NEVER commit it.
+#
+# NO host ports are published — only the shared nginx binds 80/443.
+
+name: trypr
 
 services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: trypr-api
-    environment:
-      ENVIRONMENT: development
-      CORS_ORIGINS: "*"
-      FIREBASE_PROJECT_ID: trypr-5ee47
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_NAME: trypr_local
-      DB_HOST: postgres
-      DB_PORT: 5432
-      USE_CLOUD_SQL_PROXY: "false"
-    depends_on:
-      - postgres
-    ports:
-      - "8080:8080"
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: trypr-postgres
+  db:
+    image: postgres:16-alpine
+    container_name: trypr-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: trypr_local
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     volumes:
-      - trypr_postgres_data:/var/lib/postgresql/data
+      - trypr-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trypr-net
+
+  backend:
+    build:
+      context: ./backend
+    image: trypr-backend:latest
+    container_name: trypr-backend
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      # Always talk to this project's own Postgres, whatever the env file says.
+      DB_HOST: trypr-db
+      DB_PORT: "5432"
+      ENVIRONMENT: production
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - trypr-uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8080/healthz',timeout=5).status==200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - trypr-net
+
+networks:
+  trypr-net:
+    external: true
 
 volumes:
-  trypr_postgres_data:
+  trypr-pgdata:
+  trypr-uploads:

@@ -1,3 +1,4 @@
+import { apiUrl } from '@/backend/api'
 import { config } from '@/config'
 import { getDirections } from '@/services/directions'
 import { normalizeMapMode, standardRouteColor } from '@/components/map/mapStyles'
@@ -54,7 +55,7 @@ function routingQueryForPoint(point: PointMap): string {
 async function routeViaBackendProxy(segPoints: PointMap[], provider: string, profile: string, mode: string): Promise<RouteComputation | null> {
   if (segPoints.length < 2) return null
   const coordinates = segPoints.map((p) => [lonOf(p), latOf(p)])
-  const url = config.routingProxyUrl || '/api/route'
+  const url = config.routingProxyUrl || apiUrl('/api/route')
   const orsFallback = (reason: string) => (provider === 'ors' ? routeViaDirectOrs(coordinates, profile, mode, reason) : Promise.resolve(null))
 
   try {

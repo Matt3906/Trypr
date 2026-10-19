@@ -46,3 +46,23 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# --- Deploy / secrets (never commit) ---
+.env
+.env.*
+!.env.example
+!.env.production.example
+!.env.deploy.example
+.env.deploy.local
+.env.production
+hostinger_upload_key*
+deploy/backups/
+backups/
+
+# --- Python ---
+__pycache__/
+.pytest_cache/
+.venv/
+
+# --- Frontend build output ---
+frontend/dist/

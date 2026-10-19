@@ -5,6 +5,7 @@ import { CenteredSpinner } from '@/components/ui'
 const HomeScreen = lazy(() => import('@/screens/HomeScreen'))
 const SignInScreen = lazy(() => import('@/screens/SignInScreen'))
 const CreateAccountScreen = lazy(() => import('@/screens/CreateAccountScreen'))
+const ResetPasswordScreen = lazy(() => import('@/screens/ResetPasswordScreen'))
 const CompleteProfileScreen = lazy(() => import('@/screens/CompleteProfileScreen'))
 const FriendsScreen = lazy(() => import('@/screens/FriendsScreen'))
 const AboutScreen = lazy(() => import('@/screens/AboutScreen'))
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="/" element={<HomeScreen />} />
         <Route path="/sign-in" element={<SignInScreen />} />
         <Route path="/create-account" element={<CreateAccountScreen />} />
+        <Route path="/reset-password" element={<ResetPasswordScreen />} />
         <Route path="/complete-profile" element={<CompleteProfileScreen />} />
         <Route path="/friends" element={<FriendsScreen />} />
         <Route path="/about" element={<AboutScreen />} />

@@ -1,8 +1,8 @@
 import {
   addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, setDoc, updateDoc,
   type DocumentData, type DocumentReference, type QueryDocumentSnapshot,
-} from 'firebase/firestore'
-import { auth, db } from '@/firebase'
+} from '@/backend/firestore'
+import { auth, db } from '@/backend'
 import { tripFromMap, tripToMap, type TripModel } from '@/models/tripModel'
 
 const userTripsRef = () => {

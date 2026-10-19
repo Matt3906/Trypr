@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { doc, getDoc } from 'firebase/firestore'
+import { doc, getDoc } from '@/backend/firestore'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   MdArrowBack, MdAutoStories, MdCalendarToday, MdChevronRight, MdClose, MdFlag, MdMap, MdPhotoLibrary, MdPlace, MdSchedule, MdStraighten,
   MdTravelExplore, MdVerified,
 } from 'react-icons/md'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import MapEmbed from '@/components/map/MapEmbed'
 import { Spinner } from '@/components/ui'
 import { verifiedMapPoints } from './VerifiedTripsScreen'

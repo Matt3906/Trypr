@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { collection, deleteDoc, doc, orderBy, query } from 'firebase/firestore'
+import { collection, deleteDoc, doc, orderBy, query } from '@/backend/firestore'
 import { useNavigate } from 'react-router-dom'
 import { MdAdd, MdCalendarToday, MdDelete, MdEdit, MdInfo, MdOutlineVerified, MdPlace, MdShield, MdVerified } from 'react-icons/md'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import { useQuerySnapshot } from '@/hooks/useFirestore'
@@ -110,7 +110,7 @@ export default function VerifiedTripsScreen() {
           <div className="center col" style={{ textAlign: 'center', padding: 16, maxWidth: 640, margin: '0 auto' }}>
             <b>Failed to load verified trips</b>
             <p className="muted" style={{ fontSize: 13 }}>{String(error.message ?? error)}</p>
-            <p>If this mentions permissions, make sure your Firestore rules are deployed and that your admin document ID exactly matches your Firebase Auth UID.</p>
+            <p>If this mentions permissions, check that you're signed in with an admin account.</p>
           </div>
         ) : loading ? (
           <CenteredSpinner />

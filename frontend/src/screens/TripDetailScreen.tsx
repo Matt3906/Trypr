@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
+import { deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from '@/backend/firestore'
 import {
   MdAltRoute, MdArrowBack, MdCheck, MdChat, MdClear, MdClose, MdDelete, MdDirections, MdDragHandle, MdEdit, MdEditNote, MdHotel, MdList,
   MdListAlt, MdLocalActivity, MdLocationCity, MdLockOutline, MdLogin, MdOutlineMap, MdMoreHoriz, MdPieChart, MdPlace, MdPublic, MdSave,
   MdSearch, MdShare, MdTerrain, MdShowChart, MdAutoAwesome, MdArrowUpward, MdArrowDownward,
 } from 'react-icons/md'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { auth, db } from '@/firebase'
+import { auth, db } from '@/backend'
 import MapEmbed from '@/components/map/MapEmbed'
 import Globe3DEmbed from '@/components/Globe3DEmbed'
 import TransitLegTabsCard from '@/components/TransitLegTabsCard'

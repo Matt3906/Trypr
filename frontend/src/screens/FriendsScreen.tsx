@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, runTransaction, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore'
+import { collection, deleteDoc, doc, getDoc, orderBy, query, setDoc } from '@/backend/firestore'
+import { apiFetch } from '@/backend/api'
 import { MdCheck, MdClose, MdMoreVert, MdPerson, MdPersonAddAlt } from 'react-icons/md'
 import { useNavigate } from 'react-router-dom'
-import { auth, db } from '@/firebase'
+import { auth, db } from '@/backend'
 import PageShell from '@/components/PageShell'
 import { Dialog } from '@/components/Dialog'
 import { Button, CenteredSpinner, IconButton, Menu, MenuItem, SoftCard, Spinner } from '@/components/ui'
@@ -74,61 +75,19 @@ export default function FriendsScreen() {
     const email = target.trim()
     if (!email) return
     try {
-      const q = await getDocs(query(collection(db, 'users'), where('email', '==', email.toLowerCase()), limit(1)))
-      if (q.empty) {
-        toast('No user found')
-        return
-      }
-      await addDoc(collection(db, 'users', q.docs[0].id, 'friendRequests'), {
-        fromUid: me.uid,
-        fromEmail: me.email ?? '',
-        fromName: me.displayName ? me.displayName : me.email ?? me.uid,
-        createdAt: serverTimestamp(),
-        status: 'pending',
-      })
+      await apiFetch('/api/friends/request', { json: { email } })
       setAddOpen(false)
       setTarget('')
       toast('Friend request sent')
     } catch (err: any) {
-      toast(`Failed to send request: ${err?.message ?? err}`)
+      toast(err?.code === 'not-found' ? 'No user found' : `Failed to send request: ${err?.message ?? err}`)
     }
   }
 
-  const accept = async (reqId: string, d: Record<string, any>) => {
+  const accept = async (reqId: string) => {
     if (!me) return
-    const fromUid: string | undefined = d.fromUid
-    const fromEmail: string = d.fromEmail ?? ''
-    const fromName: string = d.fromName ?? ''
-    const meRef = doc(db, 'users', me.uid)
     try {
-      if (!fromUid) {
-        await updateDoc(meRef, { friends: arrayUnion({ uid: '', displayName: fromName, email: fromEmail }) })
-        await deleteDoc(doc(db, 'users', me.uid, 'friendRequests', reqId))
-        toast('Friend request accepted')
-        return
-      }
-      const otherRef = doc(db, 'users', fromUid)
-      await runTransaction(db, async (tx) => {
-        const meSnap = await tx.get(meRef)
-        const otherSnap = await tx.get(otherRef)
-        const meData = meSnap.data() ?? {}
-        const otherData = otherSnap.data() ?? {}
-        const canonicalFrom = fromName || fromEmail || fromUid
-        const canonicalMe = me.displayName ? me.displayName : me.email ?? me.uid
-
-        const meFriends: any[] = [...(meData.friends ?? [])]
-        if (!meFriends.some((e) => (e && typeof e === 'object' && e.uid === fromUid) || e === fromUid)) {
-          meFriends.push({ uid: fromUid, displayName: canonicalFrom, email: fromEmail })
-        }
-        tx.set(meRef, { friends: meFriends }, { merge: true })
-
-        const otherFriends: any[] = [...(otherData.friends ?? [])]
-        if (!otherFriends.some((e) => (e && typeof e === 'object' && e.uid === me.uid) || e === me.uid)) {
-          otherFriends.push({ uid: me.uid, displayName: canonicalMe, email: me.email ?? '' })
-        }
-        tx.set(otherRef, { friends: otherFriends }, { merge: true })
-        tx.delete(doc(db, 'users', me.uid, 'friendRequests', reqId))
-      })
+      await apiFetch('/api/friends/accept', { json: { requestId: reqId } })
       toast('Friend request accepted')
     } catch (err: any) {
       toast(`Failed to accept request: ${err?.message ?? err}`)
@@ -149,18 +108,8 @@ export default function FriendsScreen() {
     if (!me || !targetUid) return
     const ok = await confirm({ title: 'Remove friend', message: 'Are you sure you want to remove this friend?', confirmLabel: 'Remove' })
     if (!ok) return
-    const meRef = doc(db, 'users', me.uid)
-    const otherRef = doc(db, 'users', targetUid)
-    const uidOf = (e: any) => (e && typeof e === 'object' && e.uid != null ? String(e.uid) : String(e))
     try {
-      await runTransaction(db, async (tx) => {
-        const meSnap = await tx.get(meRef)
-        const otherSnap = await tx.get(otherRef)
-        tx.update(meRef, { friends: ((meSnap.data()?.friends as any[]) ?? []).filter((e) => uidOf(e) !== targetUid) })
-        if (otherSnap.exists()) {
-          tx.update(otherRef, { friends: ((otherSnap.data()?.friends as any[]) ?? []).filter((e) => uidOf(e) !== me.uid) })
-        }
-      })
+      await apiFetch('/api/friends/remove', { json: { uid: targetUid } })
       toast('Friend removed')
     } catch (err: any) {
       toast(`Failed to remove friend: ${err?.message ?? err}`)
@@ -221,7 +170,7 @@ export default function FriendsScreen() {
                     <div className="semibold">{x.fromName ?? x.fromEmail ?? 'Someone'}</div>
                     <div className="muted" style={{ fontSize: 13 }}>{x.fromEmail ?? ''}</div>
                   </div>
-                  <IconButton title="Accept" onClick={() => accept(d.id, x)}><MdCheck size={22} color="#16a34a" /></IconButton>
+                  <IconButton title="Accept" onClick={() => accept(d.id)}><MdCheck size={22} color="#16a34a" /></IconButton>
                   <IconButton title="Decline" onClick={() => decline(d.id)}><MdClose size={22} color="#dc2626" /></IconButton>
                 </div>
               )

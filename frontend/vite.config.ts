@@ -11,7 +11,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Local FastAPI backend (see app/main.py)
+      // Local FastAPI backend (see backend/app/main.py)
       '/api': { target: 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },

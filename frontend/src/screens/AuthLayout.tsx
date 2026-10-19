@@ -21,13 +21,3 @@ export default function AuthLayout({ bg, icon, title, subtitle, children }: { bg
     </PageShell>
   )
 }
-
-export function OrDivider() {
-  return (
-    <div className="row" style={{ margin: '20px 0' }}>
-      <hr className="divider grow" />
-      <span className="t-body-s" style={{ padding: '0 16px' }}>or continue with</span>
-      <hr className="divider grow" />
-    </div>
-  )
-}

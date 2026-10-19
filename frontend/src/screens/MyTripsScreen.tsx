@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { addDoc, collection, deleteDoc, doc, getDoc, orderBy, query, serverTimestamp, Timestamp } from 'firebase/firestore'
+import { addDoc, collection, deleteDoc, doc, getDoc, orderBy, query, serverTimestamp, Timestamp } from '@/backend/firestore'
 import {
   MdAdd, MdLogin, MdLuggage, MdMailOutline, MdMoreVert, MdMoveToInbox, MdOutlineMap, MdPeople, MdOutlinePeopleAlt, MdOutlinePlace, MdRoute, MdTune,
 } from 'react-icons/md'
 import { useNavigate } from 'react-router-dom'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import PageShell from '@/components/PageShell'
 import MapPreview from '@/components/MapPreview'
 import ShareTripDialog from '@/components/ShareTripDialog'

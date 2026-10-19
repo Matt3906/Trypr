@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   addDoc, collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc,
   type DocumentReference,
-} from 'firebase/firestore'
+} from '@/backend/firestore'
 import { format } from 'date-fns'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
@@ -10,7 +10,7 @@ import {
   MdChevronRight, MdDashboard, MdDelete, MdEdit, MdEditNote, MdInfoOutline, MdLink, MdLinkOff, MdListAlt, MdLocationOn, MdMap, MdMoreVert,
   MdNoteAdd, MdPeople, MdPeopleAlt, MdPersonAdd, MdPushPin, MdOutlinePushPin, MdSearch, MdSecurity, MdSettings, MdStickyNote2, MdTrendingUp, MdVerified,
 } from 'react-icons/md'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import { useDocument } from '@/hooks/useFirestore'

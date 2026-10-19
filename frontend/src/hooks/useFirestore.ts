@@ -5,7 +5,7 @@ import {
   type DocumentSnapshot,
   type Query,
   type QueryDocumentSnapshot,
-} from 'firebase/firestore'
+} from '@/backend/firestore'
 
 export interface StreamState<T> {
   data: T

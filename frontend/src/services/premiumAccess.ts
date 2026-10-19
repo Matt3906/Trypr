@@ -1,5 +1,5 @@
-import { doc, getDoc } from 'firebase/firestore'
-import { auth, db } from '@/firebase'
+import { doc, getDoc } from '@/backend/firestore'
+import { auth, db } from '@/backend'
 
 export function isPremiumFromData(data: Record<string, any> | undefined | null): boolean {
   const d = data ?? {}

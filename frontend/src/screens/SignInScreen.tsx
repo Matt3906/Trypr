@@ -1,14 +1,13 @@
 import { useState } from 'react'
-import { GoogleAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth'
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from '@/backend/auth'
 import { MdArrowForward, MdEmail, MdLock, MdWavingHand } from 'react-icons/md'
-import { FcGoogle } from 'react-icons/fc'
 import { Link, useNavigate } from 'react-router-dom'
-import { auth } from '@/firebase'
+import { auth } from '@/backend'
 import { Button, Spinner, TextInput } from '@/components/ui'
 import { Dialog } from '@/components/Dialog'
 import { useFeedback } from '@/context/Feedback'
 import { useBack } from '@/hooks/useBack'
-import AuthLayout, { OrDivider } from './AuthLayout'
+import AuthLayout from './AuthLayout'
 
 export default function SignInScreen() {
   const { toast } = useFeedback()
@@ -17,7 +16,6 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [googleLoading, setGoogleLoading] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [resetEmail, setResetEmail] = useState('')
 
@@ -33,23 +31,11 @@ export default function SignInScreen() {
     }
   }
 
-  const signInGoogle = async () => {
-    setGoogleLoading(true)
-    try {
-      await signInWithPopup(auth, new GoogleAuthProvider())
-      back()
-    } catch (e: any) {
-      toast(e?.code === 'auth/popup-closed-by-user' ? 'Google sign in cancelled' : e?.message ?? 'Google sign in failed')
-    } finally {
-      setGoogleLoading(false)
-    }
-  }
-
   const sendReset = async () => {
     setResetOpen(false)
     try {
       await sendPasswordResetEmail(auth, resetEmail.trim())
-      toast('Password reset email sent')
+      toast('If that email has an account, a reset link is on its way')
     } catch (e: any) {
       toast(e?.message ?? 'Failed to send reset email')
     }
@@ -75,13 +61,6 @@ export default function SignInScreen() {
           <Button type="submit" block icon={<MdArrowForward size={18} />}>Sign in</Button>
         )}
       </form>
-
-      <OrDivider />
-      {googleLoading ? (
-        <div className="center"><Spinner /></div>
-      ) : (
-        <Button variant="neutral" block icon={<FcGoogle size={20} />} onClick={signInGoogle}>Google</Button>
-      )}
 
       <div className="row center gap-xs" style={{ marginTop: 24 }}>
         <span className="muted">Don't have an account?</span>

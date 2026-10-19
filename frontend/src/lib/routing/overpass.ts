@@ -1,3 +1,4 @@
+import { apiUrl } from '@/backend/api'
 import { config } from '@/config'
 
 interface EndpointConfig {
@@ -16,7 +17,7 @@ function shouldUseRelativeProxy(endpoint: string): boolean {
 }
 
 export function overpassEndpointConfigs(): EndpointConfig[] {
-  const proxy = config.overpassProxyUrl || '/api/overpass'
+  const proxy = config.overpassProxyUrl || apiUrl('/api/overpass')
   return [
     ...(proxy.trim() && shouldUseRelativeProxy(proxy) ? [{ endpoint: proxy, isProxy: true }] : []),
     { endpoint: 'https://overpass-api.de/api/interpreter', isProxy: false },

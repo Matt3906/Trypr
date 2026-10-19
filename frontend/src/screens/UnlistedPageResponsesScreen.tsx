@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { collection, doc, getDoc, onSnapshot, orderBy, query } from 'firebase/firestore'
+import { collection, doc, getDoc, onSnapshot, orderBy, query } from '@/backend/firestore'
 import { format } from 'date-fns'
 import { jsPDF } from 'jspdf'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { MdArrowBack, MdChevronRight, MdEmail, MdInbox, MdPictureAsPdf } from 'react-icons/md'
-import { db } from '@/firebase'
+import { db } from '@/backend'
 import { useFeedback } from '@/context/Feedback'
 import { Button, CenteredSpinner, SoftCard } from '@/components/ui'
 

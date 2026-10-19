@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } from 'firebase/firestore'
+import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } from '@/backend/firestore'
 import { useNavigate } from 'react-router-dom'
 import {
   MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
   MdShare, MdTitle, MdTouchApp, MdTune,
 } from 'react-icons/md'
-import { auth, db } from '@/firebase'
+import { auth, db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import TopTaskbar from '@/components/TopTaskbar'
