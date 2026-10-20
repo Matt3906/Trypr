@@ -44,6 +44,18 @@ CREATE INDEX IF NOT EXISTS documents_join_tripref_idx
 CREATE INDEX IF NOT EXISTS documents_ent_stripe_idx
     ON documents ((data->>'stripeCustomerId')) WHERE parent = 'userEntitlements';
 
+-- Overpass (OpenStreetMap) responses for the portage/hiking map overlays, keyed by sha256 of the query.
+-- Lakes, portages and campsites rarely change, so responses are kept for weeks (see services/overpass_cache.py).
+CREATE TABLE IF NOT EXISTS overpass_cache (
+    query_hash   text PRIMARY KEY,
+    query        text NOT NULL,
+    body_gzip    bytea NOT NULL,
+    size_bytes   integer NOT NULL,
+    fetched_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS overpass_cache_last_used_idx ON overpass_cache (last_used_at);
+
 CREATE TABLE IF NOT EXISTS files (
     path            text PRIMARY KEY,
     storage_key     text NOT NULL,

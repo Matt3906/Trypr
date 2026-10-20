@@ -2,29 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
-from collections import OrderedDict
 from typing import Any
 
 import httpx
 
 from app.core.config import get_settings
+from app.services import overpass_cache
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 ORS_PROFILES = {"rail", "driving-car", "foot-walking", "cycling", "cycling-regular", "foot-hiking"}
 OVERPASS_ENDPOINTS = [
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     "https://overpass-api.de/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
 ]
-_CACHE_TTL = 20 * 60
-_CACHE_MAX = 48
-_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
+# overpass-api.de answers 406 to generic client user agents (python-httpx, curl), so identify the app.
+OVERPASS_HEADERS = {"User-Agent": "Trypr/1.0 (+https://tryprtravel.com)", "Accept": "application/json"}
+# Public mirrors are often slow or overloaded: rather than waiting for each one to time out in turn,
+# start the next mirror after a short stagger and take whichever answers first.
+_OVERPASS_STAGGER_S = 4.0
+_OVERPASS_REQUEST_TIMEOUT_S = 35.0
+_OVERPASS_DEADLINE_S = 40.0
+_overpass_in_flight: dict[str, "asyncio.Task[tuple[int, str | dict]]"] = {}
 
 
 def normalise_coordinates(raw: Any) -> list[list[float]]:
@@ -138,50 +145,83 @@ async def _graphhopper(profile: str, coordinates: list[list[float]]) -> tuple[in
                  "durationSeconds": float(first.get("time") or 0) / 1000, "instructions": []}
 
 
-def _cache_get(query: str, allow_stale: bool = False) -> str | None:
-    hit = _cache.get(query)
-    if not hit:
-        return None
-    if not allow_stale and time.time() - hit[0] > _CACHE_TTL:
-        _cache.pop(query, None)
-        return None
-    return hit[1]
+class _OverpassAttemptFailed(Exception):
+    def __init__(self, endpoint: str, status: int, body: str):
+        super().__init__(f"{endpoint} {status}")
+        self.detail = {"endpoint": endpoint, "status": status, "body": body[:400]}
 
 
-def _cache_put(query: str, text: str) -> None:
-    _cache[query] = (time.time(), text)
-    _cache.move_to_end(query)
-    while len(_cache) > _CACHE_MAX:
-        _cache.popitem(last=False)
+async def _overpass_attempt(client: httpx.AsyncClient, endpoint: str, query: str, delay: float) -> str:
+    if delay:
+        await asyncio.sleep(delay)
+    try:
+        resp = await client.post(endpoint, data={"data": query})
+    except httpx.HTTPError as e:
+        raise _OverpassAttemptFailed(endpoint, 502, f"{type(e).__name__}: {e}") from e
+    if resp.status_code >= 400:
+        raise _OverpassAttemptFailed(endpoint, resp.status_code, resp.text)
+    try:
+        payload = await asyncio.to_thread(json.loads, resp.text)
+    except ValueError as e:
+        raise _OverpassAttemptFailed(endpoint, 502, resp.text) from e
+    # A server-side timeout still comes back as 200 with a "runtime error" remark and no elements.
+    remark = str(payload.get("remark") or "") if isinstance(payload, dict) else ""
+    if "runtime error" in remark.lower() and not payload.get("elements"):
+        raise _OverpassAttemptFailed(endpoint, 504, remark)
+    return resp.text
+
+
+async def _overpass_fetch(query: str) -> tuple[int, str | dict]:
+    last: dict | None = None
+    started = time.monotonic()
+    async with httpx.AsyncClient(timeout=_OVERPASS_REQUEST_TIMEOUT_S, headers=OVERPASS_HEADERS) as client:
+        attempts = [
+            asyncio.create_task(_overpass_attempt(client, endpoint, query, i * _OVERPASS_STAGGER_S))
+            for i, endpoint in enumerate(OVERPASS_ENDPOINTS)
+        ]
+        pending = set(attempts)
+        try:
+            while pending:
+                remaining = _OVERPASS_DEADLINE_S - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                done, pending = await asyncio.wait(pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    break
+                for task in done:
+                    err = task.exception()
+                    if err is None:
+                        text = task.result()
+                        await overpass_cache.put(query, text)
+                        return 200, text
+                    last = err.detail if isinstance(err, _OverpassAttemptFailed) else {"status": 502, "body": str(err)}
+                    logger.info("overpass attempt failed: %s", last)
+        finally:
+            for task in attempts:
+                task.cancel()
+            await asyncio.gather(*attempts, return_exceptions=True)
+    return 502, {"error": "OVERPASS_UPSTREAM_FAILED", "lastError": last}
+
+
+def _overpass_fetch_shared(query: str) -> "asyncio.Task[tuple[int, str | dict]]":
+    # The map overlay and the router often ask for the same box at the same time; share one upstream fetch.
+    task = _overpass_in_flight.get(query)
+    if task is None:
+        task = asyncio.create_task(_overpass_fetch(query))
+        _overpass_in_flight[query] = task
+        task.add_done_callback(lambda _t: _overpass_in_flight.pop(query, None))
+    return task
 
 
 async def overpass(query: str) -> tuple[int, str | dict, str]:
     """Returns (status, body, cache_state). Body is raw JSON text on success."""
-    import json as _json
-
     query = query.strip()
-    fresh = _cache_get(query)
-    if fresh:
-        return 200, fresh, "HIT"
-    last: dict | None = None
-    async with httpx.AsyncClient(timeout=14) as client:
-        for endpoint in OVERPASS_ENDPOINTS:
-            try:
-                resp = await client.post(endpoint, data={"data": query})
-            except httpx.HTTPError as e:
-                last = {"endpoint": endpoint, "status": 502, "body": str(e)}
-                continue
-            if resp.status_code >= 400:
-                last = {"endpoint": endpoint, "status": resp.status_code, "body": resp.text[:400]}
-                continue
-            try:
-                _json.loads(resp.text)
-            except ValueError:
-                last = {"endpoint": endpoint, "status": 502, "body": resp.text[:400]}
-                continue
-            _cache_put(query, resp.text)
-            return 200, resp.text, "MISS"
-    stale = _cache_get(query, allow_stale=True)
-    if stale:
-        return 200, stale, "STALE"
-    return 502, {"error": "OVERPASS_UPSTREAM_FAILED", "lastError": last}, "MISS"
+    cached = await overpass_cache.get(query)
+    if cached:
+        if not cached.fresh:
+            # Serve the old copy now and refresh it for next time.
+            _overpass_fetch_shared(query)
+            return 200, cached.text, "STALE"
+        return 200, cached.text, "HIT"
+    status, payload = await asyncio.shield(_overpass_fetch_shared(query))
+    return status, payload, "MISS"

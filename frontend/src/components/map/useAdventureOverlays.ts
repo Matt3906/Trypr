@@ -17,7 +17,39 @@ import type { MarkerDef, OverlayManager, PolyDef } from './overlays'
 import type { MapEmbedProps } from './MapEmbed'
 import { normalizeMapMode } from './mapStyles'
 
-const MIN_ZOOM: Record<string, number> = { portaging: 10.8, hiking: 11.5 }
+/** Overlays are hidden when zoomed out further than this (fetching a wider view gets too heavy). */
+const MIN_ZOOM: Record<string, number> = { portaging: 10, hiking: 10.8 }
+
+/**
+ * How far campsites, portages and trails render. Fetch pads (degrees, ~111 km per degree of latitude) set how
+ * much map data is downloaded around the view/stops; the meter limits filter what of that is drawn.
+ */
+const RENDER = {
+  /** Viewport fetch pad around the map center: clamp(min, max, viewport span * 0.75). */
+  viewportPadMin: 0.1,
+  viewportPadMax: 0.24,
+  /** Fetch pad around the active stop, by experience level. */
+  stopPadByExperience: { beginner: 0.14, intermediate: 0.18, advanced: 0.24 },
+  /** Fetch pad for each sample along an already-routed path. */
+  routeSamplePadMin: 0.1,
+  routeSamplePadMax: 0.2,
+  /** Water and portage lines further than this from the route are not drawn (once a route exists). */
+  lineMetersFromRoute: 15000,
+  maxWaterLines: 600,
+  maxPortageLines: 200,
+  /** Straight-line distance from the focus point a campsite may be, by experience level. */
+  campCrowFlyMetersByExperience: { beginner: 20000, intermediate: 26000, advanced: 34000 },
+  /** Distance from the routed path a campsite may be, for the normal / widened / widest pass. */
+  campRouteMeters: [25000, 35000, 50000],
+  maxCampsites: 250,
+  /** After this many campsites, only closer ones (within farCampMeters) are added. */
+  campSoftCap: 150,
+  farCampMeters: 45000,
+  hikingFetchPad: 0.12,
+  maxTrailheads: 60,
+  trailheadSoftCap: 24,
+  trailheadFarKm: 6,
+}
 const nearestToLines = (point: LL, lines: LL[][]) => {
   let best = Infinity
   for (const l of lines) {
@@ -114,8 +146,8 @@ export function useAdventureOverlays(a: Args) {
   const buildHiking = useCallback(async (geo: Map<number, LL[]>, overlayAnchors?: LL[]) => {
     const routePath = overlayAnchors?.length ? overlayAnchors : hikingAnchorPath(geo)
     if (!routePath.length) return { polys: [] as PolyDef[], markers: [] as MarkerDef[] }
-    const entry = await getHikingOverlayEntry({ cacheKey: hikingCacheKey(routePath), routePath })
-    if (!entry) return { polys: [], markers: [] }
+    const entry = await getHikingOverlayEntry({ cacheKey: hikingCacheKey(routePath, RENDER.hikingFetchPad), routePath, padDegrees: RENDER.hikingFetchPad })
+    if (!entry) return { polys: [] as PolyDef[], markers: [] as MarkerDef[], failed: true }
 
     const polys: PolyDef[] = []
     entry.trailLines.forEach((line, i) => {
@@ -144,8 +176,8 @@ export function useAdventureOverlays(a: Args) {
       .sort((x, y) => x.km - y.km)
     let headCount = 0
     heads.forEach(({ head, point, km }, i) => {
-      if (headCount >= 40) return
-      if (headCount >= 16 && km > 2.5) return
+      if (headCount >= RENDER.maxTrailheads) return
+      if (headCount >= RENDER.trailheadSoftCap && km > RENDER.trailheadFarKm) return
       headCount++
       markers.push({ id: `trailhead_${i}`, position: point, icon: trailheadIcon(), infoHtml: infoHtml(String(head.name ?? 'Trailhead'), `${km.toFixed(1)} km from route`) })
     })
@@ -176,14 +208,14 @@ export function useAdventureOverlays(a: Args) {
     const routeCacheKey = routeFetchAnchors.length >= 2 ? portagingRouteCacheKey(routeFetchAnchors) : ''
     const routePad = 0.12
     const exp = p.portageExperienceLevel
-    const expPad = exp === 'intermediate' ? 0.135 : exp === 'advanced' ? 0.2 : 0.1
+    const expPad = exp === 'intermediate' || exp === 'advanced' ? RENDER.stopPadByExperience[exp] : RENDER.stopPadByExperience.beginner
     const focusPad = quantizedOverlayPadDegrees(opts.focusPadDegreesOverride ?? expPad)
 
     let entry: PortagingOverlayEntry | null = null
     const useSegmented = routePath.length >= 2 && (opts.preferFocusOnly || skipBroad)
     if (useSegmented) {
       if (hasAvailableOverpassEndpoint()) {
-        const segPad = quantizedOverlayPadDegrees(Math.min(0.14, Math.max(0.08, focusPad * (opts.preferFocusOnly ? 0.78 : 0.88))))
+        const segPad = quantizedOverlayPadDegrees(Math.min(RENDER.routeSamplePadMax, Math.max(RENDER.routeSamplePadMin, focusPad * (opts.preferFocusOnly ? 0.78 : 0.88))))
         entry = await loadSegmentedPortagingOverlayEntry({
           routePath, modeAnchors, focusPoint: focus, padDegrees: segPad, includeCampsites: true, maxFocusQueries: opts.preferFocusOnly ? 4 : 5, logPrefix: 'portagingOverlays',
         })
@@ -199,16 +231,16 @@ export function useAdventureOverlays(a: Args) {
       const fe = await getPortagingOverlayEntry({ cacheKey: portagingFocusCacheKey(focus, focusPad), anchors: [focus], focusPoint: focus, padDegrees: focusPad })
       if (fe && fe.campsites.length > entry.campsites.length) entry = fe
     }
-    if (!entry) return empty
+    if (!entry) return { ...empty, failed: true }
     primePortageCaches(entry, !!opts.preferFocusOnly)
 
-    const MAX_WATER = 400, MAX_PORTAGE = 60
+    const MAX_WATER = RENDER.maxWaterLines, MAX_PORTAGE = RENDER.maxPortageLines
     const polys: PolyDef[] = []
     const waterCands: { index: number; dist: number; rendered: LL[] }[] = []
     entry.waterLines.forEach((line, i) => {
       if (line.length < 2) return
       const near = routePath.length ? distanceLineToPathMeters(line, routePath, 20) : distanceMetersToPath(focus, line)
-      if (routePath.length && near > 7000) return
+      if (routePath.length && near > RENDER.lineMetersFromRoute) return
       if (!routePath.length && near > 35000) return
       const rendered = downsampleLine(line, 280)
       if (rendered.length >= 2) waterCands.push({ index: i, dist: near, rendered })
@@ -221,7 +253,7 @@ export function useAdventureOverlays(a: Args) {
     entry.portageLines.forEach((line, i) => {
       if (line.length < 2) return
       const near = routePath.length ? distanceLineToPathMeters(line, routePath, 20) : distanceMetersToPath(focus, line)
-      if (routePath.length && near > 7000) return
+      if (routePath.length && near > RENDER.lineMetersFromRoute) return
       if (!routePath.length && near > 35000) return
       const rendered = downsampleLine(line, 320)
       if (rendered.length >= 2) portageCands.push({ index: i, dist: near, rendered })
@@ -238,22 +270,23 @@ export function useAdventureOverlays(a: Args) {
       const networkMeters = Math.min(nearestToLines(point, nearbyWater), nearestToLines(point, nearbyPortage))
       return { camp, point, networkMeters, effectiveMeters: Math.min(networkMeters, distanceToKnownRoute), distanceToKnownRoute }
     })
-    const maxCrowFly = exp === 'intermediate' ? 14000 : exp === 'advanced' ? 20000 : 10000
+    const maxCrowFly = exp === 'intermediate' || exp === 'advanced' ? RENDER.campCrowFlyMetersByExperience[exp] : RENDER.campCrowFlyMetersByExperience.beginner
+    const [campRoute, campRouteWide, campRouteWidest] = RENDER.campRouteMeters
     const selectCamps = (maxEffective: number, maxRoute: number, crowMul = 1) =>
       campRows
         .filter((r) => r.effectiveMeters <= maxEffective && r.distanceToKnownRoute <= maxRoute && haversineMeters(r.point, focus) <= maxCrowFly * crowMul)
         .sort((x, y) => x.effectiveMeters - y.effectiveMeters)
     const hasRouted = routePath.length > 0
-    let sorted = selectCamps(hasRouted ? 45000 : 70000, hasRouted ? 14000 : 38000)
-    if (sorted.length < 12) sorted = selectCamps(hasRouted ? 60000 : 85000, hasRouted ? 24000 : 52000, 1.4)
-    if (sorted.length < 8) sorted = selectCamps(hasRouted ? 75000 : 100000, hasRouted ? 36000 : 65000, 2.0)
+    let sorted = selectCamps(hasRouted ? 45000 : 70000, hasRouted ? campRoute : 38000)
+    if (sorted.length < 12) sorted = selectCamps(hasRouted ? 60000 : 85000, hasRouted ? campRouteWide : 52000, 1.4)
+    if (sorted.length < 8) sorted = selectCamps(hasRouted ? 75000 : 100000, hasRouted ? campRouteWidest : 65000, 2.0)
     if (!sorted.length && campRows.length) sorted = [...campRows].sort((x, y) => x.effectiveMeters - y.effectiveMeters)
 
     const markers: MarkerDef[] = []
     let campCount = 0
     sorted.forEach((row, i) => {
-      if (campCount >= 120) return
-      if (campCount >= 60 && row.effectiveMeters > 28000) return
+      if (campCount >= RENDER.maxCampsites) return
+      if (campCount >= RENDER.campSoftCap && row.effectiveMeters > RENDER.farCampMeters) return
       campCount++
       const km = row.effectiveMeters / 1000
       markers.push({
@@ -401,7 +434,7 @@ export function useAdventureOverlays(a: Args) {
     const latSpan = Math.abs(ne.lat() - sw.lat())
     let lonSpan = Math.abs(ne.lng() - sw.lng())
     if (lonSpan > 180) lonSpan = 360 - lonSpan
-    const pad = quantizedOverlayPadDegrees(Math.min(0.18, Math.max(0.08, Math.max(latSpan, lonSpan) * 0.75)))
+    const pad = quantizedOverlayPadDegrees(Math.min(RENDER.viewportPadMax, Math.max(RENDER.viewportPadMin, Math.max(latSpan, lonSpan) * 0.75)))
     const hikingAnchors = [{ lat: sw.lat(), lng: sw.lng() }, center, { lat: ne.lat(), lng: ne.lng() }]
     return { center, hikingAnchors, portagingPadDegrees: pad, signature: `${hikingCacheKey(hikingAnchors)}|${portagingFocusCacheKey(center, pad)}` }
   }, [mapRef, overlays])
@@ -428,11 +461,13 @@ export function useAdventureOverlays(a: Args) {
     const seq = a.seqRef.current
     const ov = overlays.current
     if (!ov) return
+    let fetchFailed = false
 
     if (showHiking && viewport) {
       try {
         const h = await buildHiking(segGeometry.current, viewport.hikingAnchors)
         if (seq !== a.seqRef.current) return
+        if ('failed' in h && h.failed) fetchFailed = true
         if (h.polys.length || h.markers.length) {
           ov.syncPolylines('trail', h.polys)
           ov.syncMarkers('trail', h.markers)
@@ -444,6 +479,7 @@ export function useAdventureOverlays(a: Args) {
       try {
         const pr = await buildPortaging(segGeometry.current, { focusPointOverride: viewport.center, focusPadDegreesOverride: viewport.portagingPadDegrees, preferFocusOnly: true })
         if (seq !== a.seqRef.current) return
+        if ('failed' in pr && pr.failed) fetchFailed = true
         if (pr.polys.length || pr.markers.length) {
           ov.syncPolylines('portage', pr.polys)
           ov.syncMarkers('portage', pr.markers)
@@ -451,6 +487,11 @@ export function useAdventureOverlays(a: Args) {
       } catch (e) { console.debug('portagingOverlays camera_refresh_failed', e) }
     } else ov.clearLayer('portage')
 
+    if (fetchFailed) {
+      // Leave this viewport unmarked so the load button is offered again instead of the area staying blank.
+      refs.current.pendingSig = ''
+      return
+    }
     refs.current.pendingSig = nextSig
     refs.current.lastSig = nextSig
     setShowLoadButton(false)

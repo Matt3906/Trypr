@@ -263,7 +263,8 @@ async function calculateUncached(segPoints: PointMap[], mode: string, segType: s
     // 'trails' prefers the in-app Overpass trail graph so the route snaps to the trails drawn on the map;
     // if the graph can't connect the anchors, fall through to a real foot-routing engine.
     if (segType === 'trails') {
-      const trail = await routeViaTrailGraph(segPoints, mode)
+      // Bounded so a slow Overpass still leaves time for the routing engines below.
+      const trail = await withTimeout(routeViaTrailGraph(segPoints, mode), 50000, null)
       if (trail) return trail
       console.debug(`hikingRoute trail_graph_null falling_back_to_engine points=${segPoints.length}`)
     }
@@ -327,8 +328,9 @@ export async function calculateRouteForSegment(opts: { segmentIndex: number; seg
 
 export function segmentRouteTimeoutMs(mode: string): number {
   switch (normalizeMapMode(mode)) {
-    case 'portaging': return 24000
-    case 'hiking': return 22000
+    // Adventure modes wait on Overpass, whose public mirrors can take 30s+ to answer.
+    case 'portaging': return 75000
+    case 'hiking': return 75000
     case 'train': return 14000
     case 'walk':
     case 'bike': return 12000

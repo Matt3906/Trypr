@@ -158,6 +158,52 @@ async function searchPhotonFallback(query: string): Promise<PlaceResult[]> {
   }
 }
 
+export interface LakeResult extends PlaceResult {
+  /** The lake's extent, for zooming the map to it; null when the source has only a point. */
+  bounds: { south: number; west: number; north: number; east: number } | null
+}
+
+/**
+ * Lakes and other named water bodies (OSM natural=water via Photon). Google Places rarely returns
+ * backcountry lakes, so this is a separate search. `near` biases results toward the trip's area,
+ * which matters for common names like "Canoe Lake".
+ */
+export async function searchLakes(query: string, near?: { lat: number; lon: number } | null): Promise<LakeResult[]> {
+  const q = query.trim()
+  if (q.length < 3) return []
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 8000)
+  try {
+    const params = new URLSearchParams({ q, limit: '5', lang: 'en', osm_tag: 'natural:water' })
+    if (near && Number.isFinite(near.lat) && Number.isFinite(near.lon)) {
+      params.set('lat', near.lat.toFixed(4))
+      params.set('lon', near.lon.toFixed(4))
+    }
+    const resp = await fetch(`https://photon.komoot.io/api/?${params}`, { signal: ctrl.signal })
+    if (!resp.ok) return []
+    const data = await resp.json()
+    const out: LakeResult[] = []
+    for (const f of data?.features ?? []) {
+      const props = f.properties ?? {}
+      const coords = f.geometry?.coordinates
+      const name = String(props.name ?? '').trim()
+      if (!name || !Array.isArray(coords) || coords.length < 2) continue
+      // Photon extent is [minLon, maxLat, maxLon, minLat].
+      const ext = props.extent
+      const bounds = Array.isArray(ext) && ext.length === 4 && ext.every((v: unknown) => typeof v === 'number')
+        ? { west: ext[0], north: ext[1], east: ext[2], south: ext[3] }
+        : null
+      const region = [props.county, props.state, props.country].map((v) => String(v ?? '').trim()).filter(Boolean).join(', ')
+      out.push({ name, display_name: region ? `${name}, ${region}` : name, lat: coords[1], lon: coords[0], bounds })
+    }
+    return out
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** Location search. Google Places/Geocoder when a Maps key exists, else Nominatim/Photon. */
 export async function searchPlaces(query: string): Promise<PlaceResult[]> {
   const q = query.trim()

@@ -89,6 +89,16 @@ export function trailRoutePadDegreesForMode(mode: string, expanded = false): num
   return expanded ? 0.14 : 0.08
 }
 
+/**
+ * Overpass bbox snapped outward to a fixed grid, so nearby views and stops produce identical query
+ * text and share the backend's long-lived Overpass cache instead of each costing an upstream fetch.
+ */
+const QUERY_GRID_DEGREES = 0.02
+function snappedBbox(south: number, west: number, north: number, east: number): string {
+  const g = QUERY_GRID_DEGREES
+  return [floorToStep(south, g), floorToStep(west, g), ceilToStep(north, g), ceilToStep(east, g)].map((v) => v.toFixed(2)).join(',')
+}
+
 // ---------- geometry parsing helpers ----------
 const geometryToLine = (geom: any[]): LL[] => {
   const line: LL[] = []
@@ -135,8 +145,7 @@ async function fetchHikingOverlayData(routePath: LL[], padDegrees = 0.08): Promi
     minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
     minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
   }
-  const south = minLat - padDegrees, west = minLon - padDegrees, north = maxLat + padDegrees, east = maxLon + padDegrees
-  const bb = `${south},${west},${north},${east}`
+  const bb = snappedBbox(minLat - padDegrees, minLon - padDegrees, maxLat + padDegrees, maxLon + padDegrees)
   const query = `[out:json][timeout:25];
 (
   way["highway"="path"](${bb});
@@ -246,7 +255,7 @@ async function fetchPortagingOverlayData(opts: { anchors: LL[]; focusPoint?: LL 
     }
     south = minLat - padDegrees; west = minLon - padDegrees; north = maxLat + padDegrees; east = maxLon + padDegrees
   }
-  const bb = `${south},${west},${north},${east}`
+  const bb = snappedBbox(south, west, north, east)
   const campsiteQuery = includeCampsites ? `
   node["tourism"~"camp_site|camp_pitch"](${bb});
   way["tourism"~"camp_site|camp_pitch"](${bb});
@@ -283,7 +292,7 @@ out body geom;`
       console.debug('portagingOverpassLite skip_focus_retry all_endpoints_blocked')
     } else {
       const lp = Math.min(padDegrees, 0.12)
-      const lbb = `${focusPoint.lat - lp},${focusPoint.lng - lp},${focusPoint.lat + lp},${focusPoint.lng + lp}`
+      const lbb = snappedBbox(focusPoint.lat - lp, focusPoint.lng - lp, focusPoint.lat + lp, focusPoint.lng + lp)
       const liteCamp = includeCampsites ? `\n  node["tourism"~"camp_site|camp_pitch"](${lbb});` : ''
       const lite = `[out:json][timeout:18];
 (
@@ -483,6 +492,40 @@ export function mergePortagingOverlayEntries(entries: PortagingOverlayEntry[]): 
     for (const a of e.accessPoints) { const k = `${Number(a.lat).toFixed(5)},${Number(a.lon).toFixed(5)}`; if (!sa.has(k)) { sa.add(k); accessPoints.push({ ...a }) } }
   }
   return { fetchedAt: newest, waterLines, waterPolygons, portageLines, campsites, accessPoints }
+}
+
+/**
+ * Keeps only the features whose bounding box overlaps the anchors' box (+pad). The router's water checks
+ * scan every line and polygon in the entry, so this keeps routing cost independent of how large an area
+ * the map overlay fetched. Bbox overlap (not vertex inclusion) keeps a big lake that surrounds the anchors.
+ */
+export function cropPortagingEntry(entry: PortagingOverlayEntry, anchors: LL[], padDegrees: number): PortagingOverlayEntry {
+  if (!anchors.length) return entry
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
+  for (const p of anchors) {
+    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
+    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
+  }
+  minLat -= padDegrees; maxLat += padDegrees; minLon -= padDegrees; maxLon += padDegrees
+  const overlaps = (line: LL[]) => {
+    let s = Infinity, n = -Infinity, w = Infinity, e = -Infinity
+    for (const p of line) {
+      if (p.lat < s) s = p.lat
+      if (p.lat > n) n = p.lat
+      if (p.lng < w) w = p.lng
+      if (p.lng > e) e = p.lng
+    }
+    return n >= minLat && s <= maxLat && e >= minLon && w <= maxLon
+  }
+  const near = (p: AnyMap) => Number(p.lat) >= minLat && Number(p.lat) <= maxLat && Number(p.lon) >= minLon && Number(p.lon) <= maxLon
+  return {
+    fetchedAt: entry.fetchedAt,
+    waterLines: entry.waterLines.filter(overlaps),
+    waterPolygons: entry.waterPolygons.filter(overlaps),
+    portageLines: entry.portageLines.filter(overlaps),
+    campsites: entry.campsites.filter(near),
+    accessPoints: entry.accessPoints.filter(near),
+  }
 }
 
 export async function loadSegmentedPortagingOverlayEntry(opts: {

@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.db import close_pool, get_pool, init_pool
 from app.core.errors import CODE_BY_STATUS
 from app.core.sessions import purge_expired
+from app.services import overpass_cache
 
 settings = get_settings()
 logging.basicConfig(
@@ -30,6 +31,10 @@ async def _janitor() -> None:
             await purge_expired()
         except Exception:  # keep the loop alive
             logger.exception("Session cleanup failed")
+        try:
+            await overpass_cache.prune()
+        except Exception:
+            logger.exception("Overpass cache cleanup failed")
 
 
 @contextlib.asynccontextmanager

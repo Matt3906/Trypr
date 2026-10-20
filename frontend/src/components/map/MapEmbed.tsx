@@ -31,6 +31,8 @@ export interface MapEmbedProps {
   onRouteComputingChanged?: (computing: boolean) => void
   onRouteError?: (message: string) => void
   focusedRouteStep?: PointMap | null
+  /** Move the camera to these bounds (e.g. a searched lake). A new requestId re-triggers the same bounds. */
+  focusBounds?: MapFocusBounds | null
   initialRouteGeometry?: PointMap[]
   initialRouteInstructions?: string[]
   initialRouteSegmentDetails?: PointMap[]
@@ -53,6 +55,18 @@ export interface MapEmbedProps {
   routeComputingBannerTop?: number
   activeStopIndex?: number | null
   portageExperienceLevel?: string
+}
+
+export interface MapFocusBounds {
+  south: number
+  west: number
+  north: number
+  east: number
+  requestId: number
+  /** Screen padding so the target isn't hidden behind overlaid panels. */
+  padding?: number | google.maps.Padding
+  /** Don't zoom in further than this (small lakes would otherwise fill the screen). */
+  maxZoom?: number
 }
 
 const sigOf = (pts: PointMap[]) =>
@@ -864,6 +878,19 @@ export default function MapEmbed(props: MapEmbedProps) {
     const t = setTimeout(() => ov.clearLayer('focus'), 1500)
     return () => clearTimeout(t)
   }, [focusSig, mapObj, minZoom, maxZoom])
+
+  const focusBoundsId = props.focusBounds?.requestId ?? 0
+  useEffect(() => {
+    const map = mapObj
+    const target = propsRef.current.focusBounds
+    if (!map || !target) return
+    const cap = Math.min(maxZoom, target.maxZoom ?? maxZoom)
+    const listener = google.maps.event.addListenerOnce(map, 'idle', () => {
+      if ((map.getZoom() ?? 0) > cap) map.setZoom(cap)
+    })
+    map.fitBounds({ south: target.south, west: target.west, north: target.north, east: target.east }, target.padding ?? 48)
+    return () => listener.remove()
+  }, [focusBoundsId, mapObj, maxZoom])
 
   // Recompute the computing-overlay anchors while visible.
   useEffect(() => {

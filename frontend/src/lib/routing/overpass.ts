@@ -21,6 +21,7 @@ export function overpassEndpointConfigs(): EndpointConfig[] {
   return [
     ...(proxy.trim() && shouldUseRelativeProxy(proxy) ? [{ endpoint: proxy, isProxy: true }] : []),
     { endpoint: 'https://overpass-api.de/api/interpreter', isProxy: false },
+    { endpoint: 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', isProxy: false },
     { endpoint: 'https://lz4.overpass-api.de/api/interpreter', isProxy: false },
     { endpoint: 'https://overpass.private.coffee/api/interpreter', isProxy: false },
     { endpoint: 'https://overpass.kumi.systems/api/interpreter', isProxy: false },
@@ -76,6 +77,8 @@ function cooldownForStatus(endpoint: string, status: number, isProxy: boolean): 
 
 function cooldownForError(endpoint: string, err: unknown, isProxy: boolean): number {
   const text = String(err)
+  // The backend keeps fetching after we give up and caches the result, so a slow proxy is worth asking again.
+  if (isProxy && (text.includes('AbortError') || text.includes('Timeout'))) return 0
   if (text.includes('AbortError') || text.includes('Timeout')) return 2 * 60_000
   if (text.includes('Failed to fetch') || text.includes('NetworkError')) {
     if (isProxy) {
@@ -87,9 +90,16 @@ function cooldownForError(endpoint: string, err: unknown, isProxy: boolean): num
   return 60_000
 }
 
+/**
+ * The backend proxy races several public mirrors (which are often slow or overloaded), so it gets a
+ * generous budget of its own; the direct-mirror fallbacks share the shorter deadline after it.
+ */
+const PROXY_TIMEOUT_MS = 45_000
+
 export async function fetchOverpassData(opts: { query: string; logPrefix: string; requestTimeoutMs?: number; ignoreCooldown?: boolean }): Promise<any | null> {
   const requestTimeout = opts.requestTimeoutMs ?? 9000
-  const deadline = Date.now() + Math.max(requestTimeout + 4000, 14000)
+  const directBudget = Math.max(requestTimeout + 4000, 14000)
+  let deadline = 0
   let attemptedAny = false
 
   for (const c of overpassEndpointConfigs()) {
@@ -97,11 +107,12 @@ export async function fetchOverpassData(opts: { query: string; logPrefix: string
     if (!endpoint) continue
     if (unavailable.has(endpoint)) continue
     if (!opts.ignoreCooldown && blocked(endpoint)) continue
-    const remaining = deadline - Date.now()
+    if (!c.isProxy && !deadline) deadline = Date.now() + directBudget
+    const remaining = c.isProxy ? PROXY_TIMEOUT_MS : deadline - Date.now()
     if (remaining <= 250) break
 
     attemptedAny = true
-    const timeout = Math.min(remaining, requestTimeout)
+    const timeout = c.isProxy ? PROXY_TIMEOUT_MS : Math.min(remaining, requestTimeout)
     const started = Date.now()
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeout)

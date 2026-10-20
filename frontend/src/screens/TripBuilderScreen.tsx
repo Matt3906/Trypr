@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } from '@/backend/firestore'
 import { useNavigate } from 'react-router-dom'
 import {
-  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
-  MdShare, MdTitle, MdTouchApp, MdTune,
+  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
+  MdShare, MdTitle, MdTouchApp, MdTune, MdWaterDrop,
 } from 'react-icons/md'
 import { auth, db } from '@/backend'
 import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import TopTaskbar from '@/components/TopTaskbar'
-import MapEmbed from '@/components/map/MapEmbed'
+import MapEmbed, { type MapFocusBounds } from '@/components/map/MapEmbed'
 import Globe3DEmbed from '@/components/Globe3DEmbed'
 import TransitLegTabsCard from '@/components/TransitLegTabsCard'
 import ShareTripDialog from '@/components/ShareTripDialog'
@@ -21,7 +21,7 @@ import {
   inferTripDifficultyLabel, inferTripRequiredSkills, isAdventureTripType, normalizeTripExperienceLevel, normalizeTripType,
   tripExperienceDisplayLabel, tripTypeBadgeLabel, tripTypeDisplayLabel, tripTypeEmoji,
 } from '@/models/tripModel'
-import { reverseNominatim, searchNominatim } from '@/services/geocode'
+import { reverseNominatim, searchLakes, searchNominatim, type LakeResult } from '@/services/geocode'
 import {
   SAMPLE_LOOKUP, addDays, adventureDifficultyForDistance, adventureEstimatedTime, adventureWarning,
   availableTransportOptionsForTripType, coerceCoord, containsHikingKeyword, defaultRoutingTypeForMode, defaultTransportModeForTripType,
@@ -108,6 +108,8 @@ export default function TripBuilderScreen() {
 
   // ---- ui state -------------------------------------------------------------------------------
   const [query, setQuery] = useState('')
+  const [lakeResults, setLakeResults] = useState<LakeResult[]>([])
+  const [lakeFocus, setLakeFocus] = useState<MapFocusBounds | null>(null)
   const [results, setResults] = useState<SearchResult[]>([])
   const [adjustRoute, setAdjustRoute] = useState(false)
   const [mapMode, setMapMode] = useState<'2d' | '3d'>('2d')
@@ -519,6 +521,22 @@ export default function TripBuilderScreen() {
     if (!draft.isStop) toast('Added as a waypoint. Toggle it to Stop if it should use trip nights.')
   }
 
+  /** True when the last stop is (within ~30 m of) the first, i.e. the trip is already a loop. */
+  const isLoopClosed = (wps: Waypoint[]) =>
+    wps.length >= 2 && haversineKm(wps[0].lat, wps[0].lon, wps[wps.length - 1].lat, wps[wps.length - 1].lon) <= 0.03
+
+  /** Closes the trip into a loop: the start point is appended as a final transit-only stop (no extra night). */
+  const returnToStart = () => {
+    if (!range) return toast('Select a trip date range first')
+    const wps = planRef.current.waypoints
+    if (wps.length < 2 || isLoopClosed(wps)) return
+    const start = wps[0]
+    const insertIndex = wps.length
+    const mode = modeForInsert(insertIndex)
+    insertWaypointAt(insertIndex, { name: start.name, lat: start.lat, lon: start.lon, nights: 1, isStop: false }, mode, defaultRoutingTypeForMode(mode))
+    toast(`Route now returns to ${formatLocationDisplay({ raw: start.name }).title}`)
+  }
+
   const removeWaypoint = (index: number) => {
     setPlan((p) => normalizeStructure({ ...p, waypoints: p.waypoints.filter((_w, i) => i !== index), routeVia: [] }))
     resetComputed()
@@ -860,22 +878,47 @@ export default function TripBuilderScreen() {
   const searchForUiRef = useRef(searchForUi)
   searchForUiRef.current = searchForUi
 
+  // Lakes are searched alongside places on adventure trips, biased toward the trip's latest stop.
+  const lakeSearchNear = isAdventure && waypoints.length ? { lat: waypoints[waypoints.length - 1].lat, lon: waypoints[waypoints.length - 1].lon } : null
+  const lakeSearchRef = useRef({ enabled: isAdventure, near: lakeSearchNear })
+  lakeSearchRef.current = { enabled: isAdventure, near: lakeSearchNear }
+
   useEffect(() => {
     const q = query.trim()
     if (!q) {
       setResults([])
+      setLakeResults([])
       return
     }
     let cancelled = false
     const id = setTimeout(async () => {
-      const r = await searchForUiRef.current(q)
-      if (!cancelled) setResults(r)
+      const { enabled, near } = lakeSearchRef.current
+      const [r, lakes] = await Promise.all([searchForUiRef.current(q), enabled ? searchLakes(q, near) : Promise.resolve([])])
+      if (cancelled) return
+      setResults(r)
+      setLakeResults(lakes)
     }, 400)
     return () => {
       cancelled = true
       clearTimeout(id)
     }
   }, [query])
+
+  /** Lake results only move the map; stops are then picked from the campsite/access markers around it. */
+  const zoomToLake = (lake: LakeResult) => {
+    const pad = 0.01
+    const b = lake.bounds ?? { south: lake.lat - pad, west: lake.lon - pad, north: lake.lat + pad, east: lake.lon + pad }
+    const wide = window.innerWidth >= 980
+    setMapMode('2d')
+    setLakeFocus({
+      ...b, requestId: Date.now(), maxZoom: 15,
+      // Keep the lake clear of the left-hand panels and the search box on wide layouts.
+      padding: wide ? { left: 450, top: 210, right: 40, bottom: 40 } : 32,
+    })
+    setQuery('')
+    setResults([])
+    setLakeResults([])
+  }
 
   const handleSearchSelection = async (r: SearchResult, fallbackQuery: string) => {
     if (!range) return toast('Select a trip date range first')
@@ -1042,8 +1085,18 @@ export default function TripBuilderScreen() {
               : 'Backcountry results include campsites, trails, and portage lines. Need a custom stop? Click the map.'}
         </div>
       )}
-      {results.length > 0 && (
+      {(results.length > 0 || lakeResults.length > 0) && (
         <div className="tb-results">
+          {lakeResults.map((lake, i) => (
+            <div key={`lake_${i}`} className="tb-result" onClick={() => zoomToLake(lake)}>
+              <MdWaterDrop size={20} color="#1E88E5" style={{ flex: 'none', marginTop: 2 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 800 }}>{lake.name}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#1E88E5' }}>Lake · zoom to it</div>
+                <div className="muted" style={{ fontSize: 12 }}>{lake.display_name}</div>
+              </div>
+            </div>
+          ))}
           {results.map((r, i) => {
             const display = formatLocationDisplay({ placeName: String(r.name ?? '').trim(), raw: rawLocationFromResult(r, `Result ${i + 1}`) })
             const cat = searchResultCategory(r)
@@ -1307,6 +1360,20 @@ export default function TripBuilderScreen() {
       ) : (
         waypoints.map((_w, i) => stopItem(i))
       )}
+      {waypoints.length >= 2 && (
+        isLoopClosed(waypoints) ? (
+          <div className="muted row gap-sm" style={{ fontSize: 12, alignItems: 'center', margin: '4px 0 10px' }}>
+            <MdLoop size={16} /> Loop trip: ends back at the start.
+          </div>
+        ) : (
+          <div style={{ margin: '4px 0 10px' }}>
+            <Button variant="outlined" size="sm" icon={<MdLoop size={16} />} onClick={returnToStart}>Return to start</Button>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Adds {formatLocationDisplay({ raw: waypoints[0].name }).title} as the final stop so the route makes a loop.
+            </div>
+          </div>
+        )
+      )}
 
       <div style={{ marginTop: 8 }}>
         {(tripName.trim() || waypoints.length > 0) && nameMsg && <div style={{ color: '#c62828', fontWeight: 600, marginBottom: 8 }}>{nameMsg}</div>}
@@ -1348,6 +1415,7 @@ export default function TripBuilderScreen() {
         onTransitArrivalStop={(stop) => setTransitArrivalStop(Object.keys(stop ?? {}).length ? stop : null)}
         onRouteError={(message) => { setDistanceKm(null); setDurationMin(null); toast(message) }}
         focusedRouteStep={focusedStep}
+        focusBounds={lakeFocus}
         onRouteSummary={onRouteSummary}
         onHikingCampsiteTap={(c) => void onHikingCampsiteTap(c)}
         onPortageAccessTap={(a) => void onPortageAccessTap(a)}

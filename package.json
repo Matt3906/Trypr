@@ -1,0 +1,14 @@
+{
+  "name": "trypr",
+  "private": true,
+  "description": "Repo-root scripts. The app itself is in frontend/ (React) and backend/ (FastAPI).",
+  "scripts": {
+    "ship": "./deploy.sh all",
+    "ship:frontend": "./deploy.sh frontend",
+    "ship:backend": "./deploy.sh backend",
+    "ship:dry": "./deploy.sh all --dry-run",
+    "status": "./deploy.sh status",
+    "logs": "./deploy.sh logs",
+    "rollback": "./deploy.sh rollback"
+  }
+}

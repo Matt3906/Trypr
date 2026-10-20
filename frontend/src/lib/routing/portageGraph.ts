@@ -8,33 +8,97 @@ import {
 } from './graph'
 import { hasAvailableOverpassEndpoint } from './overpass'
 import {
-  adaptivePortageRoutePadDegrees, getPortagingOverlayEntry, portageState, portagingCacheRef, portagingFocusCacheKey, portagingOverlayFocusPoints,
+  adaptivePortageRoutePadDegrees, cropPortagingEntry, getPortagingOverlayEntry, portageState, portagingCacheRef, portagingFocusCacheKey, portagingOverlayFocusPoints,
   portagingRouteCacheKey, routeBoundsCenter, routeFocusPadDegrees, type PortagingOverlayEntry,
 } from './overlayData'
 import { latOf, lonOf, type PointMap, type RouteComputation, type StyledRouteSegment } from './types'
 
 // ---------------- water predicates ----------------
-function nearestDistanceToLinesMeters(point: LL, lines: LL[][]): number {
-  if (!lines.length) return Infinity
-  let best = Infinity
+// The router asks "is this point on/near water?" hundreds of thousands of times per leg. Scanning every vertex
+// of every lake for each question froze the tab for minutes on some legs, so each entry gets a lazily built
+// grid of its line segments plus polygon bounding boxes. Answers are the same as a full scan.
+const WATER_GRID_DEGREES = 0.01
+const METERS_PER_DEGREE_LAT = 111320
+
+interface SegmentGrid { segs: [LL, LL][]; cells: Map<number, number[]> }
+interface WaterIndex { water: SegmentGrid; portage: SegmentGrid; polys: { poly: LL[]; s: number; n: number; w: number; e: number }[] }
+
+const gridCellKey = (i: number, j: number) => i * 65536 + j
+
+function buildSegmentGrid(lines: LL[][]): SegmentGrid {
+  const segs: [LL, LL][] = []
+  const cells = new Map<number, number[]>()
   for (const line of lines) {
-    if (!line.length) continue
-    const m = distanceMetersToPath(point, line)
-    if (m < best) best = m
-    if (best <= 1) break
+    for (let k = 0; k + 1 < line.length; k++) {
+      const a = line[k], b = line[k + 1]
+      const idx = segs.push([a, b]) - 1
+      const i0 = Math.floor(Math.min(a.lat, b.lat) / WATER_GRID_DEGREES), i1 = Math.floor(Math.max(a.lat, b.lat) / WATER_GRID_DEGREES)
+      const j0 = Math.floor(Math.min(a.lng, b.lng) / WATER_GRID_DEGREES), j1 = Math.floor(Math.max(a.lng, b.lng) / WATER_GRID_DEGREES)
+      for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+        const key = gridCellKey(i, j)
+        const bucket = cells.get(key)
+        if (bucket) bucket.push(idx)
+        else cells.set(key, [idx])
+      }
+    }
   }
-  return best
+  return { segs, cells }
+}
+
+function anySegmentWithinMeters(grid: SegmentGrid, point: LL, meters: number): boolean {
+  if (!grid.segs.length) return false
+  const latSpanDeg = meters / METERS_PER_DEGREE_LAT
+  // Use the narrowest longitude cell within reach so the ring always covers the full search radius.
+  const cosLat = Math.max(0.01, Math.cos((Math.min(89, Math.abs(point.lat) + latSpanDeg) * Math.PI) / 180))
+  const ri = Math.ceil(latSpanDeg / WATER_GRID_DEGREES)
+  const rj = Math.ceil(latSpanDeg / cosLat / WATER_GRID_DEGREES)
+  const ci = Math.floor(point.lat / WATER_GRID_DEGREES), cj = Math.floor(point.lng / WATER_GRID_DEGREES)
+  for (let i = ci - ri; i <= ci + ri; i++) {
+    for (let j = cj - rj; j <= cj + rj; j++) {
+      const bucket = grid.cells.get(gridCellKey(i, j))
+      if (!bucket) continue
+      for (const idx of bucket) {
+        const [a, b] = grid.segs[idx]
+        if (haversineMeters(point, projectOnSegment(point, a, b)) <= meters) return true
+      }
+    }
+  }
+  return false
+}
+
+const waterIndexes = new WeakMap<PortagingOverlayEntry, WaterIndex>()
+function waterIndexFor(entry: PortagingOverlayEntry): WaterIndex {
+  let index = waterIndexes.get(entry)
+  if (!index) {
+    const polys = entry.waterPolygons.map((poly) => {
+      let s = Infinity, n = -Infinity, w = Infinity, e = -Infinity
+      for (const p of poly) { s = Math.min(s, p.lat); n = Math.max(n, p.lat); w = Math.min(w, p.lng); e = Math.max(e, p.lng) }
+      return { poly, s, n, w, e }
+    })
+    index = { water: buildSegmentGrid(entry.waterLines), portage: buildSegmentGrid(entry.portageLines), polys }
+    waterIndexes.set(entry, index)
+  }
+  return index
+}
+
+function insideWaterPolygon(point: LL, index: WaterIndex): boolean {
+  for (const p of index.polys) {
+    if (point.lat < p.s || point.lat > p.n || point.lng < p.w || point.lng > p.e) continue
+    if (pointInPolygon(point, p.poly)) return true
+  }
+  return false
 }
 
 export function isLikelyWaterPoint(point: LL, entry: PortagingOverlayEntry, lineThresholdMeters = 140): boolean {
-  for (const poly of entry.waterPolygons) if (pointInPolygon(point, poly)) return true
-  if (nearestDistanceToLinesMeters(point, entry.waterLines) <= lineThresholdMeters) return true
-  return nearestDistanceToLinesMeters(point, entry.portageLines) <= 40
+  const index = waterIndexFor(entry)
+  if (insideWaterPolygon(point, index)) return true
+  if (anySegmentWithinMeters(index.water, point, lineThresholdMeters)) return true
+  return anySegmentWithinMeters(index.portage, point, 40)
 }
 
 function isOpenWaterLandingPoint(point: LL, entry: PortagingOverlayEntry, lineThresholdMeters = 90): boolean {
-  for (const poly of entry.waterPolygons) if (pointInPolygon(point, poly)) return true
-  return nearestDistanceToLinesMeters(point, entry.waterLines) <= lineThresholdMeters
+  const index = waterIndexFor(entry)
+  return insideWaterPolygon(point, index) || anySegmentWithinMeters(index.water, point, lineThresholdMeters)
 }
 
 export function isWaterSafeDirectSegment(from: LL, to: LL, entry: PortagingOverlayEntry, maxSamples = 40): boolean {
@@ -61,10 +125,7 @@ function isValidPortageConnectorToGraphAnchor(opts: { anchor: LL; graphAnchor: L
   return meters <= 1200
 }
 
-const isLikelyWaterEndpointForPortage = (point: LL, entry: PortagingOverlayEntry) => {
-  for (const poly of entry.waterPolygons) if (pointInPolygon(point, poly)) return true
-  return nearestDistanceToLinesMeters(point, entry.waterLines) <= 240
-}
+const isLikelyWaterEndpointForPortage = (point: LL, entry: PortagingOverlayEntry) => isOpenWaterLandingPoint(point, entry, 240)
 
 function trimPortagingPathToWaterOffRamp(opts: { path: LL[]; destination: LL; entry: PortagingOverlayEntry }): { path: LL[]; distanceMeters: number } | null {
   const { path, destination, entry } = opts
@@ -704,6 +765,11 @@ function buildPortagingStyledSegments(opts: { path: LL[]; entry: PortagingOverla
 // ---------------- full route ----------------
 interface PortageLegSolution { start: LL; end: LL; startOption: PortageCandidate; endOption: PortageCandidate; pathPoints: LL[]; graphMeters: number }
 const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0))
+/** ~9 km beyond the stops' bounding box: room for detours around a lake without scanning a whole park. */
+const ROUTE_CROP_PAD_DEGREES = 0.08
+const WHOLE_NETWORK_MAX_NODES = 12000
+/** Vertex budget shared by all water lines when the whole-network graph has to be thinned. */
+const WHOLE_NETWORK_WATER_VERTEX_BUDGET = 9000
 
 export async function routeViaPortageGraph(segPoints: PointMap[], forceFocusLookup = false): Promise<RouteComputation | null> {
   if (segPoints.length < 2) return null
@@ -752,6 +818,8 @@ export async function routeViaPortageGraph(segPoints: PointMap[], forceFocusLook
     if (!(graphLines > 3200 || (graphLines > 1800 && direct > 2500))) entry = visible
   }
   if (!entry) return null
+  // The entry may be a large map-overlay fetch primed into this cache key; route only over the nearby part.
+  entry = cropPortagingEntry(entry, anchors, ROUTE_CROP_PAD_DEGREES)
 
   const routeWater = selectGraphLinesForAnchors(entry.waterLines, anchors, { maxLines: 260, bboxPadDegrees: 0.06, debugLabel: 'portageRouteWater' })
   const routePortage = selectGraphLinesForAnchors(entry.portageLines, anchors, { maxLines: 80, bboxPadDegrees: 0.04, debugLabel: 'portageRouteCarry', distanceSamples: 6 })
@@ -804,12 +872,17 @@ export async function routeViaPortageGraph(segPoints: PointMap[], forceFocusLook
     return finish(solvedPath, solvedMeters, 'Portage-water route')
   }
 
-  // Whole-network Dijkstra fallback.
-  const graph = graphForLines(networkLines, { cacheKey: `portage_route:${cacheKey}`, bridgeToleranceMeters: 320, allowLoopBridges: true, maxLoopBridgeMeters: 140 })
+  // Whole-network Dijkstra fallback. Detailed lake shorelines can push the graph past the node cap, so thin
+  // the water lines (endpoints kept, as in the water-first solve) instead of giving up; portages keep full detail.
+  const simplifyGraph = graphVertexCount(networkLines) > WHOLE_NETWORK_MAX_NODES
+  const graphLines = simplifyGraph
+    ? [...routeWater.map((l) => simplifyRoutingGraphLine(l, Math.max(24, Math.floor(WHOLE_NETWORK_WATER_VERTEX_BUDGET / Math.max(1, routeWater.length))), 40)), ...routePortage]
+    : networkLines
+  const graph = graphForLines(graphLines, { cacheKey: `portage_route:${cacheKey}${simplifyGraph ? ':simplified' : ''}`, bridgeToleranceMeters: 320, allowLoopBridges: true, maxLoopBridgeMeters: 140 })
   const { nodes, adjacency, spatialIndex } = graph
   if (nodes.length < 2) return retryWithFocusLookup('graph_nodes_lt_2')
   const nodeIndexByKey = new Map(nodes.map((n, i) => [trailNodeKey(n), i]))
-  if (nodes.length > 12000) {
+  if (nodes.length > WHOLE_NETWORK_MAX_NODES) {
     console.debug(`portageRoute skipped_too_large nodes=${nodes.length}`)
     return null
   }
@@ -828,7 +901,7 @@ export async function routeViaPortageGraph(segPoints: PointMap[], forceFocusLook
     const build = (anchor: LL, resolved: ResolvedAnchor) => {
       let c = portageGraphCandidatesForAnchor({ anchor, nodes, spatialIndex, accessPoints: accessCoords, entry: entry!, limit: 6, radiiMeters: portageRadii, maxGlobalFallbackMeters: 13000 })
       c = mergeCandidateGroups([c, snapPortageCandidatesToSegments({
-        anchor, lines: networkLines, nodeIndexByKey, entry: entry!, limit: 6, maxAnchorMeters: 14000, maxLineDistanceMeters: 16000, maxAlongSegmentMeters: 24000, resolvedAnchor: resolved,
+        anchor, lines: graphLines, nodeIndexByKey, entry: entry!, limit: 6, maxAnchorMeters: 14000, maxLineDistanceMeters: 16000, maxAlongSegmentMeters: 24000, resolvedAnchor: resolved,
       })], 12)
       return augmentPortageCandidatesViaOpenWater({ anchor, resolvedAnchor: resolved, baseCandidates: c, nodes, spatialIndex, entry: entry!, maxExtraCandidates: 6, maxReachMeters: 7000 })
     }
@@ -908,7 +981,7 @@ export async function routeViaPortageGraph(segPoints: PointMap[], forceFocusLook
           componentIds: comps.componentIds, componentSizes: comps.componentSizes, diversifyNearbyMeters: 3000,
         })
         const c1 = mergeCandidateGroups([c0, snapPortageCandidatesToSegments({
-          anchor, lines: networkLines, nodeIndexByKey, entry: entry!, limit: expandLimit, maxAnchorMeters: 22000, maxLineDistanceMeters: 24000, maxAlongSegmentMeters: 30000, resolvedAnchor: resolved,
+          anchor, lines: graphLines, nodeIndexByKey, entry: entry!, limit: expandLimit, maxAnchorMeters: 22000, maxLineDistanceMeters: 24000, maxAlongSegmentMeters: 30000, resolvedAnchor: resolved,
         })], Math.max(expandLimit + 6, 16))
         return augmentPortageCandidatesViaOpenWater({
           anchor, resolvedAnchor: resolved, baseCandidates: c1, nodes, spatialIndex, entry: entry!, maxExtraCandidates: augmentLimit, maxReachMeters: augmentReach,

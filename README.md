@@ -110,10 +110,11 @@ Set `ADMIN_EMAILS=you@example.com` for the backend to make that account an admin
 ## Deploying
 
 ```bash
-./deploy.sh              # backend (VPS) + frontend (Hostinger)
-./deploy.sh frontend     # just the site
-./deploy.sh backend      # just the API
-./deploy.sh --help
+npm run ship             # backend (VPS) + frontend (Hostinger) in one command
+npm run ship:frontend    # just the site
+npm run ship:backend     # just the API
+npm run ship:dry         # preview what would be uploaded
+./deploy.sh --help       # same thing without npm; also status / logs / rollback / setup
 ```
 
 First time? See [deploy/README.md](deploy/README.md).

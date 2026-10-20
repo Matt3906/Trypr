@@ -14,7 +14,7 @@ and one certificate for `api.tryprtravel.com` (`./deploy.sh setup`).
 
 | Command | What it does |
 |---|---|
-| `./deploy.sh` | backend first, then frontend |
+| `npm run ship` (= `./deploy.sh`) | backend first, then frontend |
 | `./deploy.sh frontend` | `tool/build_web.sh` with `VITE_API_BASE_URL=https://api.tryprtravel.com`, then rsync `frontend/dist` to Hostinger (removes files that no longer exist; keeps `.well-known`, `cgi-bin`, `tournamentPlanner`) |
 | `./deploy.sh backend` | rsync `backend/`, `deploy/`, `docker-compose.yml` to `/apps/trypr`, rebuild and restart on the VPS, wait for healthy, check `https://api.tryprtravel.com/healthz` |
 | `./deploy.sh --dry-run [frontend\|backend]` | show what would be uploaded |
