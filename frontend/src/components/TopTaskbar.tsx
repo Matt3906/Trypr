@@ -20,7 +20,7 @@ export default function TopTaskbar({ dockProgress = 1, overlay = false }: { dock
   const { signedIn, isAdmin, isPremium, userData } = useAuth()
   const { toast } = useFeedback()
 
-  const navColor = lerpColor([255, 255, 255], [30, 41, 59], dp)
+  const navColor = lerpColor([255, 255, 255], [47, 42, 38], dp)
   const adminColor = lerpColor([0, 184, 148], [0, 137, 111], dp)
   const avatarImg: string | undefined = userData?.profileImageDataUrl
 
@@ -47,12 +47,21 @@ export default function TopTaskbar({ dockProgress = 1, overlay = false }: { dock
   return (
     <header
       className={cx('taskbar', overlay && 'transparent')}
-      style={{ background: `rgba(255,255,255,${dp})`, boxShadow: dp > 0.9 ? '0 1px 0 rgba(0,0,0,0.04)' : undefined }}
+      style={{
+        background: `rgba(255,255,255,${0.62 * dp})`,
+        WebkitBackdropFilter: dp > 0.02 ? `blur(${22 * dp}px) saturate(180%)` : undefined,
+        backdropFilter: dp > 0.02 ? `blur(${22 * dp}px) saturate(180%)` : undefined,
+        borderBottom: `1px solid rgba(255,255,255,${0.8 * dp})`,
+        boxShadow: dp > 0.9 ? 'inset 0 -1px 0 rgba(42, 32, 26,0.04), 0 8px 28px rgba(74, 56, 40,0.08)' : undefined,
+      }}
     >
-      <div style={{ position: 'relative', height: 36, minWidth: 90, cursor: 'pointer' }} onClick={() => navigate('/')}>
-        <img src="/images/TryprLogo_White.png" alt="Trypr" className="logo" style={{ position: 'absolute', left: 0, opacity: 1 - dp }} />
-        <img src="/images/TryprLogo_Black.png" alt="Trypr" className="logo" style={{ position: 'absolute', left: 0, opacity: dp }} />
-      </div>
+      <img
+        src="/images/TryprLogo.png"
+        alt="Trypr"
+        className="logo"
+        style={{ height: 52, width: 'auto', cursor: 'pointer', filter: 'drop-shadow(0 3px 6px rgba(74,48,30,0.22))' }}
+        onClick={() => navigate('/')}
+      />
 
       <nav className="hide-mobile grow row" style={{ overflowX: 'auto' }}>
         {items.map((i) => (
@@ -91,7 +100,7 @@ export default function TopTaskbar({ dockProgress = 1, overlay = false }: { dock
 
       <Menu
         trigger={
-          <button className="avatar-btn" title="Account" style={{ background: dp < 0.5 ? 'rgba(255,255,255,0.24)' : '#e5e7eb', color: navColor }}>
+          <button className="avatar-btn" title="Account" style={{ background: dp < 0.5 ? 'rgba(255,255,255,0.24)' : 'var(--glass-bg)', color: navColor }}>
             {avatarImg ? <img src={avatarImg} alt="" /> : <MdPersonOutline size={22} />}
           </button>
         }

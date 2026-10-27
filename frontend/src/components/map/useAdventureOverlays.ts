@@ -4,13 +4,12 @@ import {
 } from '@/lib/routing/geo'
 import { hasAvailableOverpassEndpoint } from '@/lib/routing/overpass'
 import {
-  getHikingOverlayEntry, getPortagingOverlayEntry, hikingCacheKey, loadSegmentedPortagingOverlayEntry, nearestCachedPortagingFocusEntry, portageState,
-  portagingCacheRef, portagingFocusCacheKey, portagingRouteCacheKey, quantizedOverlayPadDegrees, roundToStepExport, type PortagingOverlayEntry,
+  getHikingOverlayEntry, getPortagingOverlayEntry, hikingCacheKey, loadSegmentedPortagingOverlayEntry, nearestCachedPortagingFocusEntry,
+  portagingFocusCacheKey, portagingRouteCacheKey, quantizedOverlayPadDegrees, type PortagingOverlayEntry,
 } from '@/lib/routing/overlayData'
 import { isFresh, OVERLAY_CACHE_TTL_MS } from '@/lib/routing/graph'
 import { latOf, lonOf, type PointMap, type RouteComputation } from '@/lib/routing/types'
 import { routeViaTrailGraph } from '@/lib/routing/trailGraph'
-import { routeViaPortageGraph } from '@/lib/routing/portageGraph'
 import { ensureGoogleMapsLoaded } from '@/services/googleMapsLoader'
 import { campsiteTriangleIcon, portageAccessIcon, trailheadIcon } from './markerIcons'
 import type { MarkerDef, OverlayManager, PolyDef } from './overlays'
@@ -80,8 +79,6 @@ interface Args {
   showNearbyContextOverlays: boolean
   points: PointMap[]
   overlays: MutableRefObject<OverlayManager | null>
-  rerouteGaps: () => void
-  lastBlockingGaps: MutableRefObject<boolean>
 }
 
 export interface GasResult { markers: MarkerDef[] }
@@ -232,7 +229,6 @@ export function useAdventureOverlays(a: Args) {
       if (fe && fe.campsites.length > entry.campsites.length) entry = fe
     }
     if (!entry) return { ...empty, failed: true }
-    primePortageCaches(entry, !!opts.preferFocusOnly)
 
     const MAX_WATER = RENDER.maxWaterLines, MAX_PORTAGE = RENDER.maxPortageLines
     const polys: PolyDef[] = []
@@ -323,30 +319,6 @@ export function useAdventureOverlays(a: Args) {
     })
     return { polys, markers }
   }, [anchorPathForMode, flattenRouteForMode, points, focusOn, propsRef])
-
-  function primePortageCaches(entry: PortagingOverlayEntry, preferFocusOnly: boolean) {
-    portageState.lastVisible = entry
-    if (preferFocusOnly) return
-    const primed = new Set<string>()
-    const prime = (key: string) => {
-      const t = key.trim()
-      if (!t || primed.has(t)) return
-      primed.add(t)
-      portagingCacheRef.set(t, entry)
-    }
-    const routeAnchors = anchorPathForMode('portaging')
-    if (routeAnchors.length >= 2) {
-      const base = portagingRouteCacheKey(routeAnchors)
-      prime(base); prime(`${base}:route-lite`)
-    }
-    for (let seg = 0; seg + 1 < points.length; seg++) {
-      if (segmentMode(seg) !== 'portaging') continue
-      const anchors = segmentPoints(seg).map(toLL)
-      if (anchors.length < 2) continue
-      const base = portagingRouteCacheKey(anchors)
-      prime(base); prime(`${base}:route-lite`)
-    }
-  }
 
   // ---- gas stops ----
   const ensurePlaces = useCallback(async () => {
@@ -510,7 +482,6 @@ export function useAdventureOverlays(a: Args) {
     if (showIndicator) setLoading(true)
     try {
       await refreshAdventureOverlays(true)
-      if (a.lastBlockingGaps.current && points.length > 1 && (modeMatchesAnySegment('hiking') || modeMatchesAnySegment('portaging'))) a.rerouteGaps()
     } finally {
       r.inFlight = false
       if (showIndicator) setLoading(false)
@@ -572,18 +543,6 @@ export function useAdventureOverlays(a: Args) {
     resetSignatures,
     buildGasStops,
     setGasLayer,
-    async prewarmPortage() {
-      const anchors = anchorPathForMode('portaging')
-      if (anchors.length < 2) return
-      try {
-        const key = `${portagingRouteCacheKey(anchors)}:prewarm`
-        const entry = await Promise.race([
-          getPortagingOverlayEntry({ cacheKey: key, anchors, padDegrees: quantizedOverlayPadDegrees(0.22), includeCampsites: false }),
-          new Promise<null>((r) => setTimeout(() => r(null), 8000)),
-        ])
-        if (entry) primePortageCaches(entry, false)
-      } catch (e) { console.debug('portagePrewarm failed', e) }
-    },
     async refreshAfterRoute(geo: Map<number, LL[]>) {
       const ov = overlays.current
       if (!ov) return
@@ -605,7 +564,6 @@ export function useAdventureOverlays(a: Args) {
       if (segType === 'direct') return Promise.resolve(null)
       const m = normalizeMapMode(mode)
       if (m === 'hiking') return routeViaTrailGraph(segPoints, m)
-      if (m === 'portaging') return routeViaPortageGraph(segPoints)
       return Promise.resolve(null)
     },
     existingNonAdventure,

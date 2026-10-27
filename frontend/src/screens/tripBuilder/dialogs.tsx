@@ -79,7 +79,7 @@ export function TripBasicsDialog({ initial, normalizeExperience, onResult }: { i
           <button key={o.id} className={cx('chip', tripType === o.id && 'selected')} onClick={() => setTripType(o.id as any)}>{o.emoji} {o.label}</button>
         ))}
       </div>
-      <div style={{ marginTop: 10, padding: 12, borderRadius: 14, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+      <div style={{ marginTop: 10, padding: 12, borderRadius: 20, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
         <div style={{ fontWeight: 800 }}>{tripTypeDisplayLabel(tripType)}</div>
         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{tripTypeSummary(tripType)}</div>
         {tripType === 'portage' && (
@@ -258,21 +258,28 @@ export function DestinationDialog(p: DestinationDialogProps) {
         )}
       </div>
 
-      <div style={{ fontWeight: 800, margin: '18px 0 8px' }}>Routing for this leg</div>
-      <label className="row gap-sm" style={{ alignItems: 'flex-start', marginBottom: 8 }}>
-        <input type="radio" name="routing" checked={routing === primaryRouting} onChange={() => setRouting(primaryRouting)} />
-        <span>
-          <div style={{ fontWeight: 600 }}>{primaryRoutingLabelForMode(mode)} routing (recommended)</div>
-          <div className="muted" style={{ fontSize: 12 }}>{routingDescription(primaryRouting, mode)}</div>
-        </span>
-      </label>
-      <label className="row gap-sm" style={{ alignItems: 'flex-start' }}>
-        <input type="radio" name="routing" checked={routing === 'direct'} onChange={() => setRouting('direct')} />
-        <span>
-          <div style={{ fontWeight: 600 }}>Direct line</div>
-          <div className="muted" style={{ fontSize: 12 }}>{routingDescription('direct', mode)}</div>
-        </span>
-      </label>
+      {mode === 'portaging' ? (
+        // Paddle legs are drawn by the user, so there is no routing engine to choose.
+        <div className="muted" style={{ fontSize: 12, marginTop: 14 }}>{routingDescription(primaryRouting, mode)}</div>
+      ) : (
+        <>
+          <div style={{ fontWeight: 800, margin: '18px 0 8px' }}>Routing for this leg</div>
+          <label className="row gap-sm" style={{ alignItems: 'flex-start', marginBottom: 8 }}>
+            <input type="radio" name="routing" checked={routing === primaryRouting} onChange={() => setRouting(primaryRouting)} />
+            <span>
+              <div style={{ fontWeight: 600 }}>{primaryRoutingLabelForMode(mode)} routing (recommended)</div>
+              <div className="muted" style={{ fontSize: 12 }}>{routingDescription(primaryRouting, mode)}</div>
+            </span>
+          </label>
+          <label className="row gap-sm" style={{ alignItems: 'flex-start' }}>
+            <input type="radio" name="routing" checked={routing === 'direct'} onChange={() => setRouting('direct')} />
+            <span>
+              <div style={{ fontWeight: 600 }}>Direct line</div>
+              <div className="muted" style={{ fontSize: 12 }}>{routingDescription('direct', mode)}</div>
+            </span>
+          </label>
+        </>
+      )}
 
       {routeWarning && (
         <div style={{ marginTop: 8, padding: 10, borderRadius: 12, background: '#FFF4E5', border: '1px solid #FFCC80', fontSize: 12, fontWeight: 600, color: '#8A5A00' }}>

@@ -417,7 +417,7 @@ export default function HomeScreen() {
           <div style={{ height: 24 }} />
           <SoftCard padding={20}>
             <div className="row gap-md">
-              <div className="center" style={{ padding: 8, borderRadius: 12, background: 'rgba(74,173,232,.1)', color: 'var(--primary)' }}><MdAutoAwesome size={20} /></div>
+              <div className="center" style={{ padding: 8, borderRadius: 12, background: 'rgba(44, 156, 192,.1)', color: 'var(--primary)' }}><MdAutoAwesome size={20} /></div>
               <h3 className="t-head-s grow">What You Can Do Today</h3>
             </div>
             <div className="col" style={{ marginTop: 16 }}>
@@ -437,7 +437,7 @@ export default function HomeScreen() {
             {VALUES.map(([icon, title, desc, tag]) => (
               <div key={title} className="soft-card" style={{ padding: 16 }}>
                 <div className="row gap-md">
-                  <div className="center" style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(74,173,232,.12)', color: 'var(--primary)' }}>{icon}</div>
+                  <div className="center" style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(44, 156, 192,.12)', color: 'var(--primary)' }}>{icon}</div>
                   <div className="grow t-title-l">{title}</div>
                 </div>
                 <p className="muted" style={{ marginTop: 12, lineHeight: 1.45 }}>{desc}</p>

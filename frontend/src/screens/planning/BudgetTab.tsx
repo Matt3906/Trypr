@@ -36,7 +36,7 @@ function SummaryCell({ label, value, color, symbol }: { label: string; value: nu
 
 function Pill({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ padding: '10px 12px', borderRadius: 12, background: '#fff', border: '1px solid rgba(0,0,0,0.07)' }}>
+    <div style={{ padding: '10px 14px', borderRadius: 18, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
       <div className="faint" style={{ fontSize: 11 }}>{label}</div>
       <div style={{ fontWeight: 700, marginTop: 3 }}>{value}</div>
     </div>
@@ -164,7 +164,7 @@ export default function BudgetTab({ budget, resolvedSplitCount, onChange, notify
               <div className="row" style={{ alignItems: 'center', gap: 6 }}>
                 <span style={{ fontWeight: 600 }}>Split total by</span>
                 <button className="icon-btn" disabled={resolvedSplitCount <= 1} onClick={() => onChange({ ...budget, finalSplitByCount: resolvedSplitCount - 1 })}><MdOutlineRemoveCircleOutline size={24} /></button>
-                <span style={{ minWidth: 44, textAlign: 'center', padding: '8px 10px', borderRadius: 999, background: '#fff', border: '1px solid rgba(0,0,0,0.08)', fontWeight: 700 }}>{resolvedSplitCount}</span>
+                <span style={{ minWidth: 44, textAlign: 'center', padding: '8px 10px', borderRadius: 999, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontWeight: 700 }}>{resolvedSplitCount}</span>
                 <button className="icon-btn" onClick={() => onChange({ ...budget, finalSplitByCount: resolvedSplitCount + 1 })}><MdAddCircleOutline size={24} /></button>
                 <span className="grow" />
                 <span className="faint" style={{ fontSize: 12 }}>{budget.people.length} people saved</span>

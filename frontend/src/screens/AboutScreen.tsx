@@ -9,7 +9,7 @@ export default function AboutScreen() {
     <PageShell>
       <div className="container col gap-md">
         <div className="center" style={{ paddingBottom: 12 }}>
-          <img src="/images/TryprLogo_Black.png" alt="Trypr" style={{ height: 96, objectFit: 'contain', maxWidth: '100%' }} />
+          <img src="/images/TryprLogo.png" alt="Trypr" style={{ height: 140, objectFit: 'contain', maxWidth: '100%' }} />
         </div>
         <h2 className="t-title-l" style={{ fontWeight: 700 }}>Plan deeper. Travel smarter.</h2>
 

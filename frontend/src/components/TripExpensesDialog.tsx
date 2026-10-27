@@ -71,12 +71,12 @@ function PieChart({ segments }: { segments: { label: string; value: number }[] }
 
 function FinalSplitCard({ count, total, each, onDec, onInc }: { count: number; total: number; each: number; onDec?: () => void; onInc: () => void }) {
   return (
-    <div style={{ padding: 12, background: '#f8fafc', borderRadius: 12, border: '1px solid rgba(0,0,0,.08)' }}>
+    <div style={{ padding: 12, background: 'var(--glass-bg)', borderRadius: 20, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
       <div className="semibold">Final split</div>
       <div className="row gap-sm" style={{ marginTop: 8 }}>
         <span>Split total by</span>
         <button className="icon-btn" disabled={!onDec} onClick={onDec} title="Decrease"><MdRemoveCircleOutline size={20} /></button>
-        <span style={{ minWidth: 42, textAlign: 'center', padding: '7px 10px', background: '#fff', borderRadius: 999, border: '1px solid rgba(0,0,0,.08)', fontWeight: 700 }}>{count}</span>
+        <span style={{ minWidth: 42, textAlign: 'center', padding: '7px 10px', background: 'var(--glass-bg-strong)', borderRadius: 999, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontWeight: 700 }}>{count}</span>
         <button className="icon-btn" onClick={onInc} title="Increase"><MdAddCircleOutline size={20} /></button>
       </div>
       <div className="muted" style={{ fontSize: 12, fontWeight: 600, marginTop: 6 }}>Total {total.toFixed(2)} • Each {each.toFixed(2)}</div>

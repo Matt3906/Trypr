@@ -126,7 +126,7 @@ export default function VerifiedTripsScreen() {
 
             <div className="stat-grid" style={{ gap: 12 }}>
               <StatTile icon={<MdOutlineVerified size={18} />} label="Itineraries" value={String(docs.length)} accent="#6366f1" />
-              <StatTile icon={<MdPlace size={18} />} label="Total Stops" value={String(totalStops)} accent="#4aade8" />
+              <StatTile icon={<MdPlace size={18} />} label="Total Stops" value={String(totalStops)} accent="#2c9cc0" />
               <StatTile icon={<MdCalendarToday size={18} />} label="Avg Recommended Days" value={String(avgDays)} accent="#fb923c" />
               <StatTile icon={<MdShield size={18} />} label="Curation Level" value="Verified" accent="#00b894" />
             </div>

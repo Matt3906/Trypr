@@ -77,7 +77,7 @@ export function normalizeBuilderMode(raw: string): string {
 export const defaultRoutingTypeForMode = (mode: string) => {
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'trails'
-    case 'portaging': return 'waterway'
+    case 'portaging': return 'drawn'
     default: return 'calculated'
   }
 }
@@ -90,7 +90,7 @@ export function normalizeBuilderRoutingType(raw: string, mode: string): string {
 export const primaryRoutingLabelForMode = (mode: string) => {
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'Trail'
-    case 'portaging': return 'Waterway'
+    case 'portaging': return 'Your line'
     default: return 'Calculated'
   }
 }
@@ -100,7 +100,7 @@ export function routingDescription(routingType: string, mode: string): string {
   if (type === 'direct') return 'Straight-line preview. Fast for rough planning, but it ignores mapped routes.'
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'Follows mapped trails and trail connectors for a more realistic hiking line.'
-    case 'portaging': return 'Follows mapped waterways and portage links instead of a crow-flies shortcut.'
+    case 'portaging': return 'You draw this leg: turn on Adjust route line, then click or drag the line along the lakes and portages you will take.'
     default: return 'Uses the normal routed path for this leg instead of a straight line.'
   }
 }
@@ -132,7 +132,7 @@ export const tripTypeSummary = (raw: string) =>
 
 export function modeSelectionHelperText(tripType: string): string {
   switch (normalizeTripType(tripType)) {
-    case 'portage': return 'Portage trips default to waterway routing. Change a leg to Hiking if it should follow a trail instead.'
+    case 'portage': return 'Paddle legs follow the line you draw. Change a leg to Hiking if it follows a trail instead.'
     case 'hiking': return 'Hiking trips default to trail routing. Change the selected leg only if one segment needs a different surface.'
     case 'mixed': return 'Top pills set the selected leg. Use Mixed Mode when one itinerary genuinely combines road, rail, and backcountry travel.'
     default: return 'Top pills only set the selected leg. Tap a destination card to change which leg is active.'
@@ -152,8 +152,8 @@ export function tripTypeGuide(tripType: string, hasWaypoints: boolean): { title:
   switch (normalizeTripType(tripType)) {
     case 'portage':
       return hasWaypoints
-        ? { title: 'Step 2: Add reachable campsites', body: 'Now add mapped campsites reachable from your access point, or use Suggested to get the next realistic stay stop. You can also click campsite and access-point markers on the map.' }
-        : { title: 'Step 1: Choose your access point', body: 'Portage trips usually begin at an access point or boat launch. Try Brent Access Point, Shall Lake, or Magnetawan Lake, or click a blue access marker on the map.' }
+        ? { title: 'Step 2: Add your campsites', body: 'Click a campsite marker or anywhere on the map for each night. Then turn on Adjust route line and drag each leg along the lakes and portages you will paddle; distances and difficulty update as you go.' }
+        : { title: 'Step 1: Choose your access point', body: 'Portage trips usually begin at an access point or boat launch. Search one by name, search a lake to jump to it, or click the map.' }
     case 'hiking':
       return { title: 'Trail-first trip planning', body: 'Start with a trailhead or campsite, then add only the overnight stops that should use your trip nights.' }
     case 'mixed':
@@ -169,9 +169,9 @@ export function guideSteps(tripType: string, waypointCount: number): GuideStep[]
   const defs: [string, string][] = (() => {
     switch (normalizeTripType(tripType)) {
       case 'portage': return [
-        ['Pick an access point', 'Start from a real launch, put-in, or blue access marker.'],
-        ['Add reachable campsites', 'Stay on mapped waterways and portage links when building the route.'],
-        ['Tune each leg', 'Only switch a leg away from water when it should truly become hiking.'],
+        ['Pick an access point', 'Search a launch or a lake, or click the map.'],
+        ['Add your campsites', 'Click campsite markers or the map for each night.'],
+        ['Draw your route', 'Turn on Adjust route line and drag each leg along your paddle route.'],
       ]
       case 'hiking': return [
         ['Start at a trailhead', 'Choose the first trail access or campsite anchor for the trip.'],
@@ -288,9 +288,12 @@ export function adventureDifficultyForDistance(km: number | null | undefined, mo
   return d >= 12 ? 'Intermediate' : 'Beginner-friendly'
 }
 
+/** Average loaded-canoe speed including short portages, used for paddle time estimates. */
+export const PADDLE_KMH = 3.2
+
 export function adventureEstimatedTime(km: number | null | undefined, mode: string): string {
   const d = km ?? 0
-  const speed = normalizeBuilderMode(mode) === 'portaging' ? 3.2 : 4.2
+  const speed = normalizeBuilderMode(mode) === 'portaging' ? PADDLE_KMH : 4.2
   if (d <= 0) return 'Route time updates after you add it'
   const hours = d / speed
   if (hours < 1) return `${Math.max(20, Math.round(hours * 60))} min`

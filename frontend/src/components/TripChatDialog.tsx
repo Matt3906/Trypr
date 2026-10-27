@@ -157,7 +157,7 @@ export default function TripChatDialog({ open, onClose, tripRefPath, title = 'Tr
           <button type="button" className="icon-btn" title="Send" onClick={send}><MdSend size={22} /></button>
         </div>
         {mentionSuggestions.length > 0 && (
-          <div style={{ marginTop: 6, maxHeight: 180, overflowY: 'auto', background: '#fff', border: '1px solid #d1d5db', borderRadius: 8, boxShadow: '0 0 8px rgba(0,0,0,.06)' }}>
+          <div style={{ marginTop: 6, maxHeight: 180, overflowY: 'auto', background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', borderRadius: 16, boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
             {mentionSuggestions.map((m, i) => (
               <button key={i} type="button" className="menu-item" onClick={() => insertMention(m.insert)}>{m.label}</button>
             ))}

@@ -25,10 +25,6 @@ const portagingCache = new Map<string, PortagingOverlayEntry>()
 const hikingInFlight = new Map<string, Promise<HikingOverlayEntry | null>>()
 const portagingInFlight = new Map<string, Promise<PortagingOverlayEntry | null>>()
 
-/** Last portage overlay shown on the map; reused by the router when a fresh fetch fails. */
-export const portageState: { lastVisible: PortagingOverlayEntry | null } = { lastVisible: null }
-export const portagingCacheRef = portagingCache
-
 // ---------- cache key helpers ----------
 export function hikingCacheKey(routePath: LL[], padDegrees = 0.08): string {
   let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
@@ -44,23 +40,11 @@ export function hikingCacheKey(routePath: LL[], padDegrees = 0.08): string {
   return `${south.toFixed(3)},${west.toFixed(3)},${north.toFixed(3)},${east.toFixed(3)}`
 }
 export const portagingRouteCacheKey = (anchors: LL[]) => `route:${hikingCacheKey(anchors)}:portaging`
-export { roundToStep as roundToStepExport }
 export const quantizedOverlayPadDegrees = (pad: number) => roundToStep(Math.min(0.24, Math.max(0.04, pad)), 0.02)
 export function portagingFocusCacheKey(focus: LL, padDegrees = 0.18): string {
   const q = quantizedOverlayPadDegrees(padDegrees)
   const bucket = Math.max(0.02, q / 4)
   return `focus:${roundToStep(focus.lat, bucket).toFixed(3)},${roundToStep(focus.lng, bucket).toFixed(3)}:${q.toFixed(2)}`
-}
-
-export function adaptivePortageRoutePadDegrees(anchors: LL[]): number {
-  if (!anchors.length) return 0.04
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
-  for (const p of anchors) {
-    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
-    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
-  }
-  const span = Math.max(maxLat - minLat, maxLon - minLon)
-  return Math.min(0.12, Math.max(0.05, 0.03 + span * 0.22))
 }
 
 export function routeBoundsCenter(anchors: LL[]): LL {
@@ -492,40 +476,6 @@ export function mergePortagingOverlayEntries(entries: PortagingOverlayEntry[]): 
     for (const a of e.accessPoints) { const k = `${Number(a.lat).toFixed(5)},${Number(a.lon).toFixed(5)}`; if (!sa.has(k)) { sa.add(k); accessPoints.push({ ...a }) } }
   }
   return { fetchedAt: newest, waterLines, waterPolygons, portageLines, campsites, accessPoints }
-}
-
-/**
- * Keeps only the features whose bounding box overlaps the anchors' box (+pad). The router's water checks
- * scan every line and polygon in the entry, so this keeps routing cost independent of how large an area
- * the map overlay fetched. Bbox overlap (not vertex inclusion) keeps a big lake that surrounds the anchors.
- */
-export function cropPortagingEntry(entry: PortagingOverlayEntry, anchors: LL[], padDegrees: number): PortagingOverlayEntry {
-  if (!anchors.length) return entry
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
-  for (const p of anchors) {
-    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
-    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
-  }
-  minLat -= padDegrees; maxLat += padDegrees; minLon -= padDegrees; maxLon += padDegrees
-  const overlaps = (line: LL[]) => {
-    let s = Infinity, n = -Infinity, w = Infinity, e = -Infinity
-    for (const p of line) {
-      if (p.lat < s) s = p.lat
-      if (p.lat > n) n = p.lat
-      if (p.lng < w) w = p.lng
-      if (p.lng > e) e = p.lng
-    }
-    return n >= minLat && s <= maxLat && e >= minLon && w <= maxLon
-  }
-  const near = (p: AnyMap) => Number(p.lat) >= minLat && Number(p.lat) <= maxLat && Number(p.lon) >= minLon && Number(p.lon) <= maxLon
-  return {
-    fetchedAt: entry.fetchedAt,
-    waterLines: entry.waterLines.filter(overlaps),
-    waterPolygons: entry.waterPolygons.filter(overlaps),
-    portageLines: entry.portageLines.filter(overlaps),
-    campsites: entry.campsites.filter(near),
-    accessPoints: entry.accessPoints.filter(near),
-  }
 }
 
 export async function loadSegmentedPortagingOverlayEntry(opts: {

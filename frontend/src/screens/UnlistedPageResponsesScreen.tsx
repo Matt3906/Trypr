@@ -114,7 +114,7 @@ function ResponseCard({ data, index, map }: { data: Row; index: number; map: Rec
         <div style={{ padding: '0 16px 16px' }}>
           <hr className="divider" style={{ margin: '0 0 16px' }} />
           {email && (
-            <div className="row" style={{ gap: 10, padding: 10, marginBottom: 14, borderRadius: 10, background: '#fafafa', border: '1px solid #eee', alignItems: 'flex-start' }}>
+            <div className="row" style={{ gap: 10, padding: 10, marginBottom: 14, borderRadius: 18, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', alignItems: 'flex-start' }}>
               <div style={{ width: 30, height: 30, borderRadius: 8, background: '#eee', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><MdEmail size={17} /></div>
               <div><div style={{ fontSize: 12, color: '#757575', fontWeight: 600 }}>Email</div><div style={{ fontSize: 14, userSelect: 'text' }}>{email}</div></div>
             </div>
@@ -218,7 +218,7 @@ export default function UnlistedPageResponsesScreen() {
   const doExport = () => (resp.docs.length ? exportPdf(pageTitle, resp.docs, map) : toast('No responses to export'))
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ minHeight: '100vh', background: 'transparent' }}>
       <div className="plan-topbar" style={{ position: 'sticky', top: 0, zIndex: 5 }}>
         <button className="icon-btn" title="Back" onClick={() => navigate(-1)}><MdArrowBack size={22} /></button>
         <span className="grow ellipsis" style={{ fontSize: 20, fontWeight: 500 }}>Responses: {pageTitle}</span>
@@ -229,7 +229,7 @@ export default function UnlistedPageResponsesScreen() {
         : resp.docs.length === 0 ? <div className="center col gap-sm" style={{ padding: 60, color: '#9e9e9e' }}><MdInbox size={64} /><div style={{ fontSize: 18 }}>No responses yet</div></div>
         : (
           <>
-            <div className="row" style={{ padding: 16, background: '#f5f5f5' }}>
+            <div className="row" style={{ padding: 16, background: 'var(--glass-bg-soft)' }}>
               <b style={{ fontSize: 16 }}>{resp.docs.length} response{resp.docs.length === 1 ? '' : 's'}</b>
               <span className="grow" />
               <Button variant="solid" size="sm" style={{ background: '#00B894' }} icon={<MdPictureAsPdf size={18} />} onClick={doExport}>Export All to PDF</Button>

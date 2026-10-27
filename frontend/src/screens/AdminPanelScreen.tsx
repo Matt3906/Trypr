@@ -95,7 +95,7 @@ const confirmDelete = (confirm: ReturnType<typeof useFeedback>['confirm'], title
 
 function StatCard({ title, value, icon, color }: { title: string; value: string; icon: ReactNode; color: string }) {
   return (
-    <div style={{ flex: '1 1 160px', minWidth: 160, padding: 20, borderRadius: 12, background: '#fff', border: `1px solid ${color}4d`, boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+    <div style={{ flex: '1 1 160px', minWidth: 160, padding: 20, borderRadius: 22, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', border: `1px solid ${color}4d`, boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
       <div style={{ color }}>{icon}</div>
       <div style={{ fontSize: 28, fontWeight: 700, color, marginTop: 12 }}>{value}</div>
       <div style={{ fontSize: 14, color: '#757575', marginTop: 4 }}>{title}</div>
@@ -127,7 +127,7 @@ function DashboardTab({ goTab }: { goTab: (i: number) => void }) {
 
   return (
     <div className="plan-scroll" style={{ padding: 16 }}>
-      <div style={{ padding: 24, borderRadius: 16, color: '#fff', background: 'linear-gradient(135deg, #667eea, #764ba2)', boxShadow: '0 4px 10px rgba(0,0,0,0.1)' }}>
+      <div style={{ padding: 24, borderRadius: 28, color: '#fff', background: 'linear-gradient(135deg, rgba(102,126,234,0.92), rgba(118,75,162,0.9))', border: '1px solid rgba(255,255,255,0.45)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.55), 0 16px 36px rgba(102,126,234,0.3)' }}>
         <div style={{ fontSize: 24, fontWeight: 700 }}>{greeting}, {user?.displayName ?? 'Admin'}! 👋</div>
         <div style={{ fontSize: 16, opacity: 0.7, marginTop: 8 }}>Welcome to your command center</div>
         <div style={{ opacity: 0.6, marginTop: 16 }}>{format(new Date(), 'EEEE, MMMM d, y')}</div>
@@ -264,7 +264,7 @@ function UsersTab() {
 
   return (
     <div className="col" style={{ height: '100%', minHeight: 0 }}>
-      <div style={{ padding: 16, background: '#f5f5f5' }}>
+      <div style={{ padding: 16, background: 'var(--glass-bg-soft)' }}>
         <div className="input-wrap"><span className="input-icon"><MdSearch size={20} /></span><input className="input" placeholder="Search users by name or email..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         <div className="row" style={{ gap: 12, marginTop: 12 }}>
           <span>Sort by:</span>
@@ -579,7 +579,7 @@ function NotesTab() {
 
   return (
     <div className="col" style={{ height: '100%', minHeight: 0 }}>
-      <div className="row" style={{ gap: 12, padding: 16, background: '#f3e5f5' }}>
+      <div className="row" style={{ gap: 12, padding: 16, background: 'rgba(167,139,250,0.16)' }}>
         <MdStickyNote2 size={24} color="#9c27b0" /><span className="grow" style={{ fontWeight: 500 }}>Your personal notes &amp; tasks - accessible only to you</span>
         <Button variant="solid" style={{ background: '#9c27b0' }} icon={<MdAdd size={18} />} onClick={() => setEditor({ id: null, title: '', content: '' })}>New Note</Button>
       </div>
@@ -665,7 +665,7 @@ const TABS: { label: string; icon: ReactNode }[] = [
 function AccessState({ message, error }: { message: string; error?: unknown }) {
   const navigate = useNavigate()
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ minHeight: '100vh', background: 'transparent' }}>
       <div className="plan-topbar"><button className="icon-btn" onClick={() => navigate(-1)}><MdArrowBack size={22} /></button><b style={{ fontSize: 18 }}>Admin Control Center</b></div>
       <div className="center" style={{ padding: 24 }}>
         <SoftCard padding={24} style={{ maxWidth: 440, textAlign: 'center' }} className="col gap-md">
@@ -696,7 +696,7 @@ export default function AdminPanelScreen() {
   ][tab]
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
+    <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'transparent' }}>
       <div style={{ background: '#1a1a2e', color: '#fff' }}>
         <div className="row" style={{ gap: 12, padding: '10px 12px' }}>
           <button className="icon-btn" style={{ color: '#fff' }} title="Back" onClick={() => navigate('/')}><MdArrowBack size={22} /></button>

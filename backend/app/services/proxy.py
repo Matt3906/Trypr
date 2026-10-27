@@ -33,6 +33,37 @@ _OVERPASS_REQUEST_TIMEOUT_S = 35.0
 _OVERPASS_DEADLINE_S = 40.0
 _overpass_in_flight: dict[str, "asyncio.Task[tuple[int, str | dict]]"] = {}
 
+# Mirror operators rate-limit per client IP (overpass-api.de allows ~2 concurrent queries) and ban IPs
+# that keep going after a 429. Hosts run by the same operator share a limit, so they are grouped; each
+# group gets one request at a time from us and a cooldown after it pushes back.
+_OVERPASS_MAX_PER_OPERATOR = 1
+_overpass_busy: dict[str, int] = {}
+_overpass_cooldown_until: dict[str, float] = {}
+
+
+def _overpass_operator(endpoint: str) -> str:
+    host = httpx.URL(endpoint).host
+    return "overpass-api.de" if host.endswith("overpass-api.de") else host
+
+
+def _overpass_cooldown_seconds(status: int, body: str) -> float:
+    if status == 429:
+        return 5 * 60
+    if status in (403, 406):
+        return 60 * 60
+    if status == 502 and body.startswith("ConnectError"):
+        return 30 * 60  # refused connections after 429s mean the IP has been banned
+    return 60.0
+
+
+def _overpass_cooling_down(operator: str) -> bool:
+    return time.monotonic() < _overpass_cooldown_until.get(operator, 0.0)
+
+
+def reset_overpass_limits() -> None:
+    _overpass_busy.clear()
+    _overpass_cooldown_until.clear()
+
 
 def normalise_coordinates(raw: Any) -> list[list[float]]:
     out: list[list[float]] = []
@@ -154,12 +185,24 @@ class _OverpassAttemptFailed(Exception):
 async def _overpass_attempt(client: httpx.AsyncClient, endpoint: str, query: str, delay: float) -> str:
     if delay:
         await asyncio.sleep(delay)
+    operator = _overpass_operator(endpoint)
+    while _overpass_busy.get(operator, 0) >= _OVERPASS_MAX_PER_OPERATOR:
+        await asyncio.sleep(0.25)
+    if _overpass_cooling_down(operator):
+        raise _OverpassAttemptFailed(endpoint, 503, "skipped: operator cooling down")
+    _overpass_busy[operator] = _overpass_busy.get(operator, 0) + 1
     try:
-        resp = await client.post(endpoint, data={"data": query})
-    except httpx.HTTPError as e:
-        raise _OverpassAttemptFailed(endpoint, 502, f"{type(e).__name__}: {e}") from e
-    if resp.status_code >= 400:
-        raise _OverpassAttemptFailed(endpoint, resp.status_code, resp.text)
+        try:
+            resp = await client.post(endpoint, data={"data": query})
+        except httpx.HTTPError as e:
+            body = f"{type(e).__name__}: {e}"
+            _overpass_cooldown_until[operator] = time.monotonic() + _overpass_cooldown_seconds(502, body)
+            raise _OverpassAttemptFailed(endpoint, 502, body) from e
+        if resp.status_code >= 400:
+            _overpass_cooldown_until[operator] = time.monotonic() + _overpass_cooldown_seconds(resp.status_code, resp.text)
+            raise _OverpassAttemptFailed(endpoint, resp.status_code, resp.text)
+    finally:
+        _overpass_busy[operator] -= 1
     try:
         payload = await asyncio.to_thread(json.loads, resp.text)
     except ValueError as e:
@@ -174,10 +217,21 @@ async def _overpass_attempt(client: httpx.AsyncClient, endpoint: str, query: str
 async def _overpass_fetch(query: str) -> tuple[int, str | dict]:
     last: dict | None = None
     started = time.monotonic()
+    # One endpoint per operator, skipping operators that recently pushed back.
+    endpoints: list[str] = []
+    seen_operators: set[str] = set()
+    for endpoint in OVERPASS_ENDPOINTS:
+        operator = _overpass_operator(endpoint)
+        if operator in seen_operators or _overpass_cooling_down(operator):
+            continue
+        seen_operators.add(operator)
+        endpoints.append(endpoint)
+    if not endpoints:
+        return 503, {"error": "OVERPASS_COOLING_DOWN", "message": "All Overpass mirrors are rate-limiting us; try again shortly."}
     async with httpx.AsyncClient(timeout=_OVERPASS_REQUEST_TIMEOUT_S, headers=OVERPASS_HEADERS) as client:
         attempts = [
             asyncio.create_task(_overpass_attempt(client, endpoint, query, i * _OVERPASS_STAGGER_S))
-            for i, endpoint in enumerate(OVERPASS_ENDPOINTS)
+            for i, endpoint in enumerate(endpoints)
         ]
         pending = set(attempts)
         try:

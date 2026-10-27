@@ -141,7 +141,7 @@ export default function VisitedMap({ visited, onAdd, height = 460 }: { visited: 
       const rings = idx?.get(keyForMatching(name))
       if (rings) {
         for (const ring of rings) {
-          overlays.current.push(new google.maps.Polygon({ map, paths: ring.pts, fillColor: '#4aade8', fillOpacity: 0.28, strokeColor: '#4aade8', strokeOpacity: 0.55, strokeWeight: 1, clickable: false }))
+          overlays.current.push(new google.maps.Polygon({ map, paths: ring.pts, fillColor: '#2c9cc0', fillOpacity: 0.28, strokeColor: '#2c9cc0', strokeOpacity: 0.55, strokeWeight: 1, clickable: false }))
         }
       } else {
         const c = CENTROIDS[name.trim()]
@@ -157,7 +157,7 @@ export default function VisitedMap({ visited, onAdd, height = 460 }: { visited: 
     <div style={{ position: 'relative', height }}>
       <div ref={el} style={{ position: 'absolute', inset: 0 }} />
       {(state === 'loading' || !indexReady) && (
-        <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 999, background: 'rgba(255,255,255,0.92)', fontSize: 12 }}>
+        <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 999, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(16px) saturate(170%)', backdropFilter: 'blur(16px) saturate(170%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontSize: 12 }}>
           <Spinner size="sm" /> {state === 'loading' ? 'Loading map…' : 'Loading countries…'}
         </div>
       )}

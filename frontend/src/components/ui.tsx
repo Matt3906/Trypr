@@ -114,7 +114,7 @@ export function AvatarWithRing({ imageUrl, initials, size = 44, ringColor = 'var
         cursor: onClick ? 'pointer' : undefined,
       }}
     >
-      <div style={{ background: '#fff', borderRadius: '50%', padding: 2, width: '100%', height: '100%' }}>
+      <div style={{ background: 'rgba(255,255,255,0.85)', borderRadius: '50%', padding: 2, width: '100%', height: '100%' }}>
         <div style={{ borderRadius: '50%', overflow: 'hidden', width: '100%', height: '100%', background: 'var(--surface-variant)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {imageUrl && !broken ? (
             <img src={imageUrl} alt="" onError={() => setBroken(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />

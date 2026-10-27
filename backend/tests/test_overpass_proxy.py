@@ -10,9 +10,11 @@ from app.services import overpass_cache, proxy
 @pytest.fixture(autouse=True)
 async def _fresh_cache():
     overpass_cache.clear_memory()
+    proxy.reset_overpass_limits()
     await get_pool().execute("TRUNCATE overpass_cache")
     yield
     overpass_cache.clear_memory()
+    proxy.reset_overpass_limits()
 
 
 def _mock_upstream(monkeypatch, handler):
@@ -87,6 +89,23 @@ async def test_overpass_reports_upstream_failure_without_caching(monkeypatch):
     status, body, _ = await proxy.overpass("[out:json];node(2);out;")
     assert status == 502 and body["error"] == "OVERPASS_UPSTREAM_FAILED"
     assert await get_pool().fetchval("SELECT count(*) FROM overpass_cache") == 0
+
+
+async def test_overpass_backs_off_after_rate_limit(monkeypatch):
+    calls = _mock_upstream(monkeypatch, lambda r: httpx.Response(429, text="Too Many Requests"))
+
+    status, _, _ = await proxy.overpass("[out:json];node(10);out;")
+    assert status == 502
+    hosts = [c.url.host for c in calls]
+    # overpass-api.de and lz4.overpass-api.de share a rate limit: only one of them is asked.
+    assert sum(h.endswith("overpass-api.de") for h in hosts) == 1
+    assert len(hosts) == len(set(hosts))
+
+    # Every operator answered 429, so the next request does not touch any of them.
+    calls.clear()
+    status, body, _ = await proxy.overpass("[out:json];node(11);out;")
+    assert status == 503 and body["error"] == "OVERPASS_COOLING_DOWN"
+    assert calls == []
 
 
 async def test_overpass_prune_drops_unused_rows(monkeypatch):

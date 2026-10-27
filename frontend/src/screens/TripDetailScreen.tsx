@@ -564,7 +564,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
       >
         <div style={{ width: 34, position: 'relative', flex: 'none' }}>
           {!isLast && <div style={{ position: 'absolute', left: 16, top: 26, bottom: -10, width: 2, background: 'rgba(0,0,0,.2)' }} />}
-          <div className="center" style={{ position: 'relative', width: 32, height: 32, borderRadius: 999, background: '#fff', border: '1px solid rgba(0,0,0,.13)', fontWeight: 700 }}>
+          <div className="center" style={{ position: 'relative', width: 32, height: 32, borderRadius: 999, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontWeight: 700 }}>
             {isWaypointOnly(i, waypoints) ? <MdAltRoute size={17} /> : i + 1}
           </div>
         </div>
@@ -625,9 +625,9 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
   )
 
   const insightCard = !insight ? (
-    <div style={{ padding: 10, background: 'rgba(255,255,255,.78)', borderRadius: 12, border: '1px solid rgba(0,0,0,.07)', fontSize: 12, color: 'rgba(0,0,0,.54)' }}>Tap any map pin to see a place summary.</div>
+    <div style={{ padding: 10, background: 'var(--glass-bg)', borderRadius: 18, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontSize: 12, color: 'rgba(0,0,0,.54)' }}>Tap any map pin to see a place summary.</div>
   ) : (
-    <div style={{ padding: 10, background: 'rgba(255,255,255,.82)', borderRadius: 12, border: '1px solid rgba(0,0,0,.09)' }}>
+    <div style={{ padding: 10, background: 'var(--glass-bg-strong)', borderRadius: 18, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
       <div className="row gap-sm">
         {insight.kind === 'activity' ? <MdLocalActivity size={16} /> : insight.kind === 'accommodation' ? <MdHotel size={16} /> : <MdPlace size={16} />}
         <span style={{ fontSize: 12, fontWeight: 700 }}>Place Insight</span>

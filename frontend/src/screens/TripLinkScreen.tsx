@@ -110,16 +110,16 @@ export default function TripLinkScreen() {
           <button className="icon-btn" title="Back" onClick={back}><MdArrowBack size={22} /></button>
           <h1 style={{ fontSize: 32, fontWeight: 800 }}>{title}</h1>
           <div className="muted" style={{ fontSize: 15 }}>{subtitle}</div>
-          <div className="row gap-md" style={{ padding: 16, background: '#f3f4f6', borderRadius: 16, alignItems: 'flex-start' }}>
+          <div className="row gap-md" style={{ padding: 16, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', borderRadius: 24, alignItems: 'flex-start' }}>
             <MdOutlineVisibility size={20} />
             <span style={{ lineHeight: 1.35 }}>You are viewing a public preview. Sign in to request access and collaborate on this trip.</span>
           </div>
           <h3 className="t-head-s bold" style={{ marginTop: 8 }}>Stops</h3>
           {wps.length === 0 ? (
-            <div style={{ padding: 16, background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 14 }}>No stops added yet.</div>
+            <div style={{ padding: 16, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: 20 }}>No stops added yet.</div>
           ) : (
             wps.map((wp, i) => (
-              <div key={i} className="row gap-md" style={{ padding: '12px 14px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+              <div key={i} className="row gap-md" style={{ padding: '12px 14px', background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', borderRadius: 20 }}>
                 <span className="center" style={{ width: 28, height: 28, borderRadius: '50%', background: '#111827', color: '#fff', fontSize: 12, fontWeight: 700 }}>{i + 1}</span>
                 <span style={{ fontWeight: 600 }}>{String(wp.name ?? '').trim() || `Stop ${i + 1}`}</span>
               </div>

@@ -81,9 +81,9 @@ export default function PremiumScreen() {
   const priceLabel = plan === 'yearly' ? '$36/year' : '$4/month'
 
   return (
-    <PageShell bodyStyle={{ background: 'linear-gradient(#eff7ff, var(--bg))' }}>
+    <PageShell bodyStyle={{ background: 'transparent' }}>
       <div className="container col gap-md" style={{ maxWidth: 980, paddingBottom: 36 }}>
-        <div style={{ borderRadius: 'var(--r-xl)', background: 'linear-gradient(135deg,#1c77c3,#30a8d8,#2cb59a)', boxShadow: 'var(--shadow-elevated)', padding: 20, color: '#fff' }}>
+        <div style={{ borderRadius: 28, background: 'linear-gradient(135deg,rgba(207,90,40,0.94),rgba(232,128,58,0.9),rgba(229,163,60,0.92))', border: '1px solid rgba(255,255,255,0.5)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 18px 40px rgba(207,90,40,0.34)', padding: 22, color: '#fff' }}>
           <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: -0.6 }}>Trypr Premium</div>
           <div style={{ fontWeight: 500, fontSize: 16, marginTop: 8 }}>AI planning that saves hours on every trip.</div>
         </div>

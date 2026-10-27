@@ -75,9 +75,9 @@ export function VerifiedTripDetail({ data }: { data: Row }) {
   const barOpacity = Math.max(0, Math.min(1, scroll / (heroHeight - 100)))
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'var(--bg, #fff)' }}>
-      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5, height: 56, display: 'flex', alignItems: 'center', gap: 12, padding: '0 8px', background: `rgba(255,255,255,${barOpacity})`, boxShadow: barOpacity > 0.5 ? '0 2px 4px rgba(0,0,0,0.12)' : 'none' }}>
-        <button className="icon-btn" title="Back" onClick={() => navigate(-1)} style={{ background: barOpacity < 0.5 ? 'rgba(0,0,0,0.3)' : 'transparent', color: barOpacity < 0.5 ? '#fff' : undefined, borderRadius: '50%' }}><MdArrowBack size={22} /></button>
+    <div style={{ position: 'fixed', inset: 0 }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 5, height: 56, display: 'flex', alignItems: 'center', gap: 12, padding: '0 8px', background: `rgba(255,255,255,${0.62 * barOpacity})`, WebkitBackdropFilter: barOpacity > 0.05 ? 'blur(22px) saturate(180%)' : undefined, backdropFilter: barOpacity > 0.05 ? 'blur(22px) saturate(180%)' : undefined, boxShadow: barOpacity > 0.5 ? '0 8px 28px rgba(74, 56, 40,0.1), inset 0 -1px 0 rgba(255,255,255,0.8)' : 'none' }}>
+        <button className="icon-btn" title="Back" onClick={() => navigate(-1)} style={{ background: barOpacity < 0.5 ? 'rgba(42, 32, 26,0.32)' : 'transparent', WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)', color: barOpacity < 0.5 ? '#fff' : undefined, borderRadius: '50%' }}><MdArrowBack size={22} /></button>
         <span style={{ fontSize: 20, fontWeight: 500, opacity: barOpacity }}>{title}</span>
       </div>
 
@@ -105,7 +105,7 @@ export function VerifiedTripDetail({ data }: { data: Row }) {
           </div>
 
           {description && (
-            <div style={{ marginTop: 24, padding: 24, borderRadius: 16, background: '#fafafa', border: '1px solid #eee' }}>
+            <div style={{ marginTop: 24, padding: 24, borderRadius: 26, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
               <div className="row" style={{ gap: 10, marginBottom: 16 }}><MdAutoStories size={22} color="#616161" /><b style={{ fontSize: 18, color: '#424242' }}>About This Trip</b></div>
               <div style={{ fontSize: 16, color: '#616161', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{description}</div>
             </div>
@@ -144,7 +144,7 @@ export function VerifiedTripDetail({ data }: { data: Row }) {
                       <div style={{ width: 32, height: 32, borderRadius: '50%', background: GREEN, color: '#fff', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 2px 8px ${GREEN}4d` }}>{i + 1}</div>
                       {!last && <div style={{ width: 2, flex: 1, margin: '4px 0', background: '#e0e0e0' }} />}
                     </div>
-                    <div className="grow row" style={{ marginBottom: 16, padding: 16, borderRadius: 12, background: '#fff', border: '1px solid #eee', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                    <div className="grow row" style={{ marginBottom: 16, padding: 16, borderRadius: 22, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
                       <div className="grow"><div style={{ fontSize: 16, fontWeight: 600 }}>{name}</div><div style={{ marginTop: 4, fontSize: 14, color: '#757575' }}>{String(d)} {d === 1 ? 'day' : 'days'}</div></div>
                       <MdChevronRight size={24} color="#bdbdbd" />
                     </div>
@@ -173,7 +173,7 @@ export function VerifiedTripDetail({ data }: { data: Row }) {
                 const notes = String(day.notes ?? '')
                 const acts = asRows(day.activities)
                 return (
-                  <div key={di} style={{ marginBottom: 20, borderRadius: 16, background: '#fff', border: '1px solid #eee', boxShadow: '0 4px 10px rgba(0,0,0,0.04)' }}>
+                  <div key={di} style={{ marginBottom: 20, borderRadius: 26, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
                     <div className="row" style={{ gap: 12, padding: 16, borderRadius: '16px 16px 0 0', background: `${GREEN}1a` }}>
                       <span style={{ padding: '6px 12px', borderRadius: 20, background: GREEN, color: '#fff', fontWeight: 600, fontSize: 13 }}>Day {di + 1}</span>
                       <span className="grow" style={{ fontSize: 16, fontWeight: 600 }}>{dayTitle !== `Day ${di + 1}` ? dayTitle : ''}</span>

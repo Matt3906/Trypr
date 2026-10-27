@@ -138,7 +138,6 @@ export default function TripBuilderScreen() {
   const isPortage = normalizedTripType === 'portage'
   const isMixed = normalizedTripType === 'mixed'
   const isAdventure = isAdventureTripType(normalizedTripType)
-  const allowsCustomDrops = !isPortage
   const isPortageAccessStage = isPortage && waypoints.length === 0
 
   const normalizeExperience = (raw?: string) => normalizeTripExperienceLevel(raw ?? experience) || 'beginner'
@@ -632,14 +631,6 @@ export default function TripBuilderScreen() {
 
   const addDroppedPinFromMapTap = async (lat: number, lon: number) => {
     if (isMapTapBlocked()) return
-    if (isPortage) {
-      toast(
-        isPortageAccessStage
-          ? 'Portage trips must start from a mapped access point. Click a blue access marker or search one by name.'
-          : 'Portage trips only allow mapped campsites and access points. Click a campsite or access marker instead.',
-      )
-      return
-    }
     if (!range) {
       toast('Select a trip date range first')
       return
@@ -1081,7 +1072,7 @@ export default function TripBuilderScreen() {
           {isPortageAccessStage
             ? 'Search results are filtered to access points first so your route starts from a real launch location.'
             : isPortage
-              ? 'Backcountry results include campsites and portage lines. On the map, add stops by clicking campsite or access-point markers.'
+              ? 'Search a lake to jump to it. Add campsites by clicking a campsite marker or anywhere on the map.'
               : 'Backcountry results include campsites, trails, and portage lines. Need a custom stop? Click the map.'}
         </div>
       )}
@@ -1174,15 +1165,14 @@ export default function TripBuilderScreen() {
         >
           {isAdventure ? 'Suggested next' : 'Suggested stop'}
         </Button>
-        {allowsCustomDrops && (
-          <Button
+        <Button
             variant="text" size="sm" className="tb-teal-btn" icon={<MdTouchApp size={16} />}
             onClick={() =>
               toast(
                 isPortageAccessStage
-                  ? 'Tip: start your portage trip by clicking a blue access-point marker or searching one by name.'
+                  ? 'Tip: start your portage trip at an access point: search one by name, or click the map where you will put in.'
                   : isPortage
-                    ? 'Tip: portage trips only allow mapped campsites and access points. Click those markers on the map or search for them by name.'
+                    ? 'Tip: click a campsite marker or anywhere on the map to add a campsite, then use Adjust route line to draw each paddle leg.'
                     : isAdventure
                       ? 'Tip: click the map to add a campsite, trail stop, or custom backcountry point.'
                       : 'Tip: click the map to drop a custom stop anywhere on your route.',
@@ -1191,16 +1181,48 @@ export default function TripBuilderScreen() {
           >
             Map tip
           </Button>
-        )}
       </div>
     </div>
   )
+
+  /** Length of leg `i` as drawn: start stop, the user's bend points in order, then the next stop. */
+  const drawnLegKm = (i: number) => {
+    const path = [
+      waypoints[i],
+      ...routeVia.filter((v) => Math.trunc(Number(v.afterIndex ?? -1)) === i).map((v) => ({ lat: Number(v.lat), lon: Number(v.lon) })),
+      waypoints[i + 1],
+    ].filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+    let km = 0
+    for (let k = 0; k + 1 < path.length; k++) km += haversineKm(path[k].lat, path[k].lon, path[k + 1].lat, path[k + 1].lon)
+    return km
+  }
+
+  const PADDLE_DIFFICULTY_COLOR: Record<string, string> = { 'Beginner-friendly': '#2E7D32', Intermediate: '#B26A00', Advanced: '#C62828' }
+  const paddleStats = (km: number) => {
+    const difficulty = adventureDifficultyForDistance(km, 'portaging')
+    const warning = adventureWarning(km, 'portaging')
+    return (
+      <div>
+        <div className="row wrap gap-sm" style={{ alignItems: 'center', fontSize: 12.5 }}>
+          <span style={{ fontWeight: 800 }}>Paddle {km.toFixed(1)} km</span>
+          <span className="muted">· {adventureEstimatedTime(km, 'portaging')}</span>
+          <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>· {difficulty}</span>
+        </div>
+        {warning && <div style={{ fontSize: 11.5, color: '#8A5A00', marginTop: 4 }}>{warning}</div>}
+      </div>
+    )
+  }
+
+  const paddleLegKms = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [drawnLegKm(i)] : []))
+  const paddleTotalKm = paddleLegKms.reduce((t, km) => t + km, 0)
+  const longestPaddleKm = paddleLegKms.length ? Math.max(...paddleLegKms) : 0
 
   const stopItem = (i: number) => {
     const isFirst = i === 0
     const isLast = i === waypoints.length - 1
     const w = waypoints[i]
     const segKm = !isLast ? haversineKm(w.lat, w.lon, waypoints[i + 1].lat, waypoints[i + 1].lon) : 0
+    const paddleKm = !isLast && segModeAt(i, plan) === 'portaging' ? drawnLegKm(i) : null
     const counts = countsTowardDays(i)
     const nights = effectiveNights(i)
     const display = formatLocationDisplay({ raw: w.name })
@@ -1259,7 +1281,7 @@ export default function TripBuilderScreen() {
 
             {isSegmentRow ? (
               <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>
+                {paddleKm != null ? paddleStats(paddleKm) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
                 <div className="row wrap gap-sm" style={{ alignItems: 'center', marginTop: 8 }}>
                   <span style={{ fontSize: 12, fontWeight: 700 }}>Mode:</span>
                   <select
@@ -1271,11 +1293,15 @@ export default function TripBuilderScreen() {
                       <option key={o.mode} value={o.mode} disabled={carBlocked && o.mode === 'car'}>{o.emoji} {o.label}</option>
                     ))}
                   </select>
-                  <span style={{ fontSize: 12, fontWeight: 700 }}>Routing:</span>
-                  <button className={cx('chip', segType.trim().toLowerCase() === primaryRouting && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, primaryRouting) }}>
-                    {primaryRoutingLabelForMode(segMode)}
-                  </button>
-                  <button className={cx('chip', segType.trim().toLowerCase() === 'direct' && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, 'direct') }}>Direct</button>
+                  {paddleKm == null && (
+                    <>
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>Routing:</span>
+                      <button className={cx('chip', segType.trim().toLowerCase() === primaryRouting && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, primaryRouting) }}>
+                        {primaryRoutingLabelForMode(segMode)}
+                      </button>
+                      <button className={cx('chip', segType.trim().toLowerCase() === 'direct' && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, 'direct') }}>Direct</button>
+                    </>
+                  )}
                   <Button variant="text" size="sm" className="tb-teal-btn" icon={<MdAutoAwesome size={14} />} onClick={() => { setActiveSegment(i); smartFindStopBetween(i) }}>
                     {isAdventureMode(segMode) ? 'Find Campsite' : 'Find Stay Stop'}
                   </Button>
@@ -1324,7 +1350,7 @@ export default function TripBuilderScreen() {
       </div>
       <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{modeSelectionHelperText(normalizedTripType)}</div>
 
-      {waypoints.length >= 2 && !isPortage && (
+      {waypoints.length >= 2 && (
         <div className="row gap-sm" style={{ alignItems: 'center', marginTop: 14 }}>
           <label className="row gap-sm" style={{ alignItems: 'center', fontWeight: 800 }}>
             <input type="checkbox" checked={adjustRoute} onChange={(e) => setAdjustRoute(e.target.checked)} /> Adjust route line
@@ -1348,6 +1374,21 @@ export default function TripBuilderScreen() {
         )}
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, marginTop: 10 }}>Total: {(distanceKm ?? totalKm).toFixed(2)} km</div>
+      {paddleLegKms.length > 0 && (() => {
+        const difficulty = adventureDifficultyForDistance(longestPaddleKm, 'portaging')
+        return (
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: '#F1F8FE', fontSize: 12.5 }}>
+            <div>
+              <span style={{ fontWeight: 800 }}>Paddling: {paddleTotalKm.toFixed(1)} km</span>
+              <span className="muted"> over {paddleLegKms.length} leg{paddleLegKms.length === 1 ? '' : 's'} · longest {longestPaddleKm.toFixed(1)} km</span>
+            </div>
+            <div style={{ marginTop: 2 }}>
+              Paddle difficulty: <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>{difficulty}</span>
+              <span className="muted"> (based on your longest leg)</span>
+            </div>
+          </div>
+        )
+      })()}
       {durationMin != null && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Estimated time: {durationMin.toFixed(0)} min</div>}
 
       <div style={{ fontWeight: 900, margin: '14px 0 10px' }}>Destinations</div>
@@ -1400,14 +1441,14 @@ export default function TripBuilderScreen() {
         routeGeometry={routeGeometry}
         transportMode={transportMode}
         onRouteSummary={onRouteSummary}
-        onMapTap={!adjustRoute && allowsCustomDrops ? (lat, lon) => void addDroppedPinFromMapTap(lat, lon) : undefined}
+        onMapTap={!adjustRoute ? (lat, lon) => void addDroppedPinFromMapTap(lat, lon) : undefined}
       />
     ) : (
       <MapEmbed
         points={mapPoints}
         transportMode={transportMode}
         segmentTransportModes={segModes}
-        routeVia={isPortage ? [] : routeVia}
+        routeVia={routeVia}
         segmentRoutingTypes={segRouting}
         onRouteInstructions={(lines) => { setRouteInstructions(lines); scheduleRouteCachePersist() }}
         onRouteSegmentDetails={(segs) => { setRouteSegmentDetails(readRouteSegmentDetails(segs)); scheduleRouteCachePersist() }}
@@ -1419,10 +1460,10 @@ export default function TripBuilderScreen() {
         onRouteSummary={onRouteSummary}
         onHikingCampsiteTap={(c) => void onHikingCampsiteTap(c)}
         onPortageAccessTap={(a) => void onPortageAccessTap(a)}
-        onMapTap={!adjustRoute && allowsCustomDrops ? (lat, lon) => void addDroppedPinFromMapTap(lat, lon) : undefined}
-        onRouteTapAddVia={adjustRoute && !isPortage ? (a, lat, lon) => { if (!isMapTapBlocked()) void onRouteTapped(a, lat, lon) } : undefined}
-        onViaDragEnd={adjustRoute && !isPortage ? (v, lat, lon) => { if (!isMapTapBlocked()) moveVia(v, lat, lon) } : undefined}
-        onViaTapDelete={adjustRoute && !isPortage ? (v) => { if (!isMapTapBlocked()) deleteVia(v) } : undefined}
+        onMapTap={!adjustRoute ? (lat, lon) => void addDroppedPinFromMapTap(lat, lon) : undefined}
+        onRouteTapAddVia={adjustRoute ? (a, lat, lon) => { if (!isMapTapBlocked()) void onRouteTapped(a, lat, lon) } : undefined}
+        onViaDragEnd={adjustRoute ? (v, lat, lon) => { if (!isMapTapBlocked()) moveVia(v, lat, lon) } : undefined}
+        onViaTapDelete={adjustRoute ? (v) => { if (!isMapTapBlocked()) deleteVia(v) } : undefined}
         routeComputingBannerTop={compact ? 148 : 108}
         activeStopIndex={(selectedSeg ?? 0) + 1}
         portageExperienceLevel={experience}

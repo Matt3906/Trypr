@@ -188,7 +188,7 @@ function RouteChoicesDialog({ segmentIndex, waypoints, mode, preferred, tapped, 
                 const pc = Number(o.portageCount) || 0
                 const dur = formatDurationShort(Number(o.durationSeconds) || 0)
                 return (
-                  <div key={i} style={{ marginBottom: 8, padding: 10, borderRadius: 10, background: selected ? 'rgba(74,173,232,0.08)' : '#fff', border: `1px solid ${selected ? 'var(--primary)' : '#d4d4d8'}` }}>
+                  <div key={i} style={{ marginBottom: 8, padding: 10, borderRadius: 10, background: selected ? 'rgba(44, 156, 192,0.08)' : '#fff', border: `1px solid ${selected ? 'var(--primary)' : '#d4d4d8'}` }}>
                     <div className="row" style={{ gap: 8 }}>
                       <b className="grow">{String(o.summary ?? 'Route option')}</b>
                       {o.portagePattern === 'single_long' && <span className="chip" style={{ background: 'rgba(0,137,123,0.12)', color: '#00695C', fontSize: 11, fontWeight: 700 }}>1 long portage</span>}
@@ -524,7 +524,7 @@ function Builder({ existingId, existing }: { existingId?: string; existing?: Row
   const mapHeight = Math.max(220, Math.min(340, window.innerWidth * 0.55))
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ minHeight: '100vh', background: 'transparent' }}>
       <div className="plan-topbar" style={{ position: 'sticky', top: 0, zIndex: 5 }}>
         <button className="icon-btn" title="Back" onClick={() => navigate(-1)}><MdArrowBack size={22} /></button>
         <span className="grow" style={{ fontSize: 20, fontWeight: 500 }}>{isEditing ? 'Edit verified trip' : 'New verified trip'}</span>
@@ -581,7 +581,7 @@ function Builder({ existingId, existing }: { existingId?: string; existing?: Row
             <Button variant="solid" disabled={saving} onClick={() => void submitSearch()}>Add</Button>
           </div>
           {results.length > 0 && (
-            <div style={{ height: 160, overflowY: 'auto', marginTop: 10, border: '1px solid #d4d4d8', borderRadius: 8, background: '#fff' }}>
+            <div style={{ height: 160, overflowY: 'auto', marginTop: 10, border: '1px solid var(--glass-border)', borderRadius: 16, background: 'var(--glass-bg-strong)', boxShadow: 'var(--glass-hi)' }}>
               {results.map((r, i) => (
                 <div key={i} className="row" style={{ padding: '8px 12px', gap: 8, borderBottom: '1px solid var(--border)' }}>
                   <div className="grow" style={{ minWidth: 0 }}><div className="ellipsis">{String(r.name ?? `Result ${i + 1}`)}</div><div className="muted" style={{ fontSize: 12 }}>{Number(r.lat).toFixed(4)}, {Number(r.lon).toFixed(4)}</div></div>
@@ -622,7 +622,7 @@ function Builder({ existingId, existing }: { existingId?: string; existing?: Row
                 const prefSummary = String(pref?.summary ?? '').trim()
                 const carBlocked = isSeg && isCarBlocked(i)
                 return (
-                  <div key={i} onClick={() => isSeg && setActiveSeg(i)} style={{ padding: '10px 12px', borderTop: i ? '1px solid var(--border)' : undefined, background: active ? 'rgba(74,173,232,0.08)' : undefined, cursor: isSeg ? 'pointer' : undefined }}>
+                  <div key={i} onClick={() => isSeg && setActiveSeg(i)} style={{ padding: '10px 12px', borderTop: i ? '1px solid var(--border)' : undefined, background: active ? 'rgba(44, 156, 192,0.08)' : undefined, cursor: isSeg ? 'pointer' : undefined }}>
                     <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
                       <div className="grow" style={{ minWidth: 0 }}><div className="ellipsis" style={{ fontWeight: 700 }}>{w.name}</div><div className="muted" style={{ fontSize: 12 }}>{w.lat.toFixed(4)}, {w.lon.toFixed(4)}</div></div>
                       <Button variant="outlined" size="sm" disabled={saving} style={{ width: 72 }}

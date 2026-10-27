@@ -224,7 +224,7 @@ export function StayDatesDialog({ tripStart, tripEnd, stays, onClose, onApply }:
 function InsightCard({ days, point }: { days: Row[]; point: Row | null }) {
   if (!point) {
     return (
-      <div style={{ padding: 10, borderRadius: 12, background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(0,0,0,0.08)', fontSize: 12 }} className="muted">
+      <div style={{ padding: 10, borderRadius: 18, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontSize: 12 }} className="muted">
         Tap a map pin to view a place summary and activity categories.
       </div>
     )
@@ -235,7 +235,7 @@ function InsightCard({ days, point }: { days: Row[]; point: Row | null }) {
   const summary = itineraryAiSummary(days, point, categories)
   const kind = itineraryMapPointKind(point)
   return (
-    <div style={{ padding: 10, borderRadius: 12, background: 'rgba(255,255,255,0.86)', border: '1px solid rgba(0,0,0,0.08)' }}>
+    <div style={{ padding: 10, borderRadius: 18, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
       <div className="row" style={{ alignItems: 'center', gap: 6 }}>
         {kind === 'activity' ? <MdLocalActivity size={16} /> : kind === 'waypoint' ? <MdLocationCity size={16} /> : <MdPlace size={16} />}
         <span style={{ fontSize: 12, fontWeight: 700 }}>Place Insight</span>
@@ -337,7 +337,7 @@ function DayCard({ day, dayIndex, updatingTravel, onPatch, onAdd, onEdit, onDele
   return (
     <SoftCard padding={16} radius={14}>
       <div className="row" style={{ alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 38, height: 38, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: isTravel ? 'rgba(249,115,22,0.15)' : 'rgba(74,173,232,0.1)' }}>
+        <div style={{ width: 38, height: 38, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: isTravel ? 'rgba(249,115,22,0.15)' : 'rgba(44, 156, 192,0.1)' }}>
           {isTravel ? <MdDirectionsCar size={20} color="#f97316" /> : <span style={{ fontWeight: 800, color: 'var(--primary)' }}>{String(day.dayNumber ?? dayIndex + 1)}</span>}
         </div>
         <div className="grow" style={{ minWidth: 0 }}>
@@ -381,10 +381,10 @@ function DayCard({ day, dayIndex, updatingTravel, onPatch, onAdd, onEdit, onDele
             const arr = String(opt.arrivalTimeText ?? '').trim()
             const transit = normalizePlanningMode(travelMode) === 'transit'
             return (
-              <div key={i} style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: recommended ? 'rgba(74,173,232,0.1)' : '#fff', border: `1px solid ${recommended ? 'rgba(74,173,232,0.45)' : 'rgba(0,0,0,0.12)'}` }}>
+              <div key={i} style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: recommended ? 'rgba(44, 156, 192,0.1)' : '#fff', border: `1px solid ${recommended ? 'rgba(44, 156, 192,0.45)' : 'rgba(0,0,0,0.12)'}` }}>
                 <div className="row" style={{ gap: 6 }}>
                   <div className="grow" style={{ fontSize: 12, fontWeight: 600 }}>{String(opt.summary ?? 'Route option')}</div>
-                  {recommended && <span style={{ padding: '2px 6px', borderRadius: 999, background: 'rgba(74,173,232,0.12)', color: 'var(--primary)', fontSize: 10, fontWeight: 700 }}>Best</span>}
+                  {recommended && <span style={{ padding: '2px 6px', borderRadius: 999, background: 'rgba(44, 156, 192,0.12)', color: 'var(--primary)', fontSize: 10, fontWeight: 700 }}>Best</span>}
                 </div>
                 <div className="row wrap muted" style={{ gap: 8, marginTop: 3, fontSize: 11 }}>
                   {duration && <span>{duration}</span>}

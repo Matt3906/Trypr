@@ -47,14 +47,14 @@ export default function TransitLegTabsCard({ originName, destinationName, steps,
   const caption = String(step.caption ?? '').trim()
 
   return (
-    <div style={{ margin: '8px 0', padding: 12, borderRadius: 16, background: 'linear-gradient(135deg,#f1f8f5,#f7fafe)', border: '1px solid rgba(0,137,123,.15)', boxShadow: '0 4px 10px rgba(0,0,0,.07)' }}>
+    <div style={{ margin: '8px 0', padding: 12, borderRadius: 24, background: 'linear-gradient(135deg,rgba(180,225,230,0.5),rgba(255,244,228,0.55))', WebkitBackdropFilter: 'blur(18px) saturate(170%)', backdropFilter: 'blur(18px) saturate(170%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
       <div className="row gap-md" style={{ alignItems: 'flex-start' }}>
         <div className="center" style={{ width: 36, height: 36, borderRadius: 12, background: 'rgba(0,137,123,.12)', color: '#00695c', flex: 'none' }}><MdDirectionsTransit size={22} /></div>
         <div className="grow">
           <div style={{ fontWeight: 800, color: '#111827' }}>{originName} to {destinationName}</div>
           <div style={{ fontSize: 12, color: '#4b5563', fontWeight: 600, marginTop: 2 }}>{arrival}</div>
         </div>
-        <span style={{ padding: '6px 10px', borderRadius: 999, background: 'rgba(255,255,255,.9)', border: '1px solid rgba(0,0,0,.1)', fontSize: 11, fontWeight: 800, color: '#0f766e', whiteSpace: 'nowrap' }}>{visible.length} tabs</span>
+        <span style={{ padding: '6px 10px', borderRadius: 999, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)', fontSize: 11, fontWeight: 800, color: '#0f766e', whiteSpace: 'nowrap' }}>{visible.length} tabs</span>
       </div>
       <div className="row wrap" style={{ gap: 8, marginTop: 12 }}>
         {visible.map((s, i) => (
@@ -74,7 +74,7 @@ export default function TransitLegTabsCard({ originName, destinationName, steps,
         <div className="grow" style={{ textAlign: 'left' }}>
           <div style={{ fontWeight: 800, color: '#111827' }}>{String(step.headline ?? '').trim() || 'Transit step'}</div>
           {detail && <div style={{ fontSize: 12, color: '#374151', fontWeight: 600, marginTop: 4 }}>{detail}</div>}
-          {caption && <span style={{ display: 'inline-block', marginTop: 6, padding: '4px 8px', borderRadius: 999, background: '#f3f4f6', fontSize: 11, fontWeight: 700, color: '#374151' }}>{caption}</span>}
+          {caption && <span style={{ display: 'inline-block', marginTop: 6, padding: '4px 8px', borderRadius: 999, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', fontSize: 11, fontWeight: 700, color: '#374151' }}>{caption}</span>}
         </div>
       </button>
     </div>

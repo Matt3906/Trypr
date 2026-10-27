@@ -4,7 +4,8 @@ import { getDirections } from '@/services/directions'
 import { normalizeMapMode, standardRouteColor } from '@/components/map/mapStyles'
 import { haversineMeters, pathDistanceMeters, type LL } from './geo'
 import { latOf, lonOf, type PointMap, type RouteComputation } from './types'
-import { routeViaPortageGraph, routeViaTrailGraph } from './adventureRouting'
+import { routeViaTrailGraph } from './adventureRouting'
+import { PADDLE_KMH } from '@/lib/tripBuilder'
 
 const proxyUnavailable = new Set<string>()
 
@@ -232,6 +233,13 @@ async function calculateUncached(segPoints: PointMap[], mode: string, segType: s
     const km = pathDistanceMeters(path) / 1000
     return straightRoute({ path, mode, color: standardRouteColor(mode), width: 4, dashed: { dash: 14, gap: 10 }, geodesic: true, instruction: `Flight distance: ${km.toFixed(1)} km` })
   }
+  if (mode === 'portaging') {
+    // Paddle legs are drawn by the user (stops plus any bend points); the line itself is the route.
+    const route = straightRoute({ path, mode, color: standardRouteColor(mode), width: 5, geodesic: false })
+    route.durationSeconds = (route.distanceMeters / 1000 / PADDLE_KMH) * 3600
+    route.instructions = [`Paddle route (${(route.distanceMeters / 1000).toFixed(1)} km)`]
+    return route
+  }
   if (segType === 'direct') {
     return straightRoute({ path, mode, color: standardRouteColor(mode), width: isAdventure(mode) ? 6 : 4, dashed: { dash: 18, gap: 10 }, geodesic: true })
   }
@@ -278,12 +286,6 @@ async function calculateUncached(segPoints: PointMap[], mode: string, segType: s
     }
     return routeViaTrailGraph(segPoints, mode)
   }
-  if (mode === 'portaging') {
-    const network = await routeViaPortageGraph(segPoints)
-    if (network) return network
-    console.debug(`portageRoute unavailable_after_network_only points=${segPoints.length}`)
-    return null
-  }
   return routeViaGoogleDirections(segPoints, { mode: 'car', googleMode: 'driving' })
 }
 
@@ -296,7 +298,6 @@ export function normalizeSegmentRoutingTypeFor(raw: string, mode: string): strin
   const m = normalizeMapMode(mode)
   if (raw.trim().toLowerCase() === 'direct') return 'direct'
   if (m === 'hiking') return 'trails'
-  if (m === 'portaging') return 'waterway'
   return 'calculated'
 }
 
@@ -328,8 +329,7 @@ export async function calculateRouteForSegment(opts: { segmentIndex: number; seg
 
 export function segmentRouteTimeoutMs(mode: string): number {
   switch (normalizeMapMode(mode)) {
-    // Adventure modes wait on Overpass, whose public mirrors can take 30s+ to answer.
-    case 'portaging': return 75000
+    // Hiking waits on Overpass, whose public mirrors can take 30s+ to answer.
     case 'hiking': return 75000
     case 'train': return 14000
     case 'walk':

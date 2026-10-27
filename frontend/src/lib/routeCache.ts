@@ -53,7 +53,7 @@ export function normalizeSegmentRoutingType(raw: string, mode: string): string {
     case 'hiking':
       return 'trails'
     case 'portaging':
-      return 'waterway'
+      return 'drawn'
     default:
       return 'calculated'
   }

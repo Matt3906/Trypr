@@ -43,7 +43,7 @@ function OptionsEditor({ options, onChange }: { options: string[]; onChange: (o:
 function FieldEditor({ field, onUpdate, onRemove }: { field: Row; onUpdate: (k: string, v: any) => void; onRemove: () => void }) {
   const type = String(field.type ?? 'text')
   return (
-    <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, background: '#fafafa', border: '1px solid #eee' }}>
+    <div style={{ marginBottom: 12, padding: 12, borderRadius: 18, background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
       <div className="row gap-md" style={{ alignItems: 'flex-end' }}>
         <div className="field" style={{ flex: 2 }}><label>Label</label><input className="input" value={String(field.label ?? '')} onChange={(e) => onUpdate('label', e.target.value)} /></div>
         <div className="field" style={{ flex: 1 }}><label>Type</label><select className="select" value={type} onChange={(e) => onUpdate('type', e.target.value)}>{FIELD_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
@@ -125,7 +125,7 @@ function Builder({ existingId, existing }: { existingId?: string; existing?: Row
   const updateField = (i: number, k: string, v: any) => setFields((l) => l.map((f, idx) => (idx === i ? { ...f, [k]: v } : f)))
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ minHeight: '100vh', background: 'transparent' }}>
       <div className="plan-topbar" style={{ position: 'sticky', top: 0, zIndex: 5 }}>
         <button className="icon-btn" title="Back" onClick={() => navigate(-1)}><MdArrowBack size={22} /></button>
         <span className="grow" style={{ fontSize: 20, fontWeight: 500 }}>{isEditing ? 'Edit Unlisted Page' : 'Create Unlisted Page'}</span>

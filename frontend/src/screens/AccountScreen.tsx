@@ -18,7 +18,7 @@ import { pickImageDataUrl } from '@/lib/image'
 
 type Row = Record<string, any>
 const TOTAL_SUPPORTED = 195
-const PALETTE = ['#4aade8', '#00897b', '#ff7f6b', '#4ecdc4', '#ffb17a', '#a78bfa', '#fb7185']
+const PALETTE = ['#2c9cc0', '#00897b', '#ff7f6b', '#4ecdc4', '#ffb17a', '#a78bfa', '#fb7185']
 
 const initialsFor = (v: string) => {
   const parts = v.trim().split(/\s+/).filter(Boolean)
@@ -68,7 +68,7 @@ function Metric({ icon, label, value, accent }: { icon: React.ReactNode; label: 
 
 function Section({ icon, accent, title, subtitle, trailing, children }: { icon: React.ReactNode; accent: string; title: string; subtitle?: string; trailing?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div style={{ background: '#fff', borderRadius: 20, border: '1px solid #E8EEF5', padding: 16, marginTop: 12 }}>
+    <div style={{ background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', borderRadius: 26, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)', padding: 16, marginTop: 12 }}>
       <div className="row" style={{ gap: 12, alignItems: 'center' }}>
         <div style={{ width: 36, height: 36, borderRadius: 10, background: `${accent}24`, color: accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</div>
         <div className="grow"><div style={{ fontWeight: 700, fontSize: 16 }}>{title}</div>{subtitle && <div className="muted" style={{ fontSize: 12 }}>{subtitle}</div>}</div>
@@ -161,10 +161,10 @@ export default function AccountScreen() {
       <PageShell>
         <div className="container" style={{ maxWidth: 920, padding: 24 }}>
           <SoftCard elevated padding={20}>
-            <div style={{ padding: 20, borderRadius: 20, color: '#fff', background: 'linear-gradient(135deg, #1F6FAE, #4aade8, #2BA9A0)' }}>
+            <div style={{ padding: 20, borderRadius: 20, color: '#fff', background: 'linear-gradient(135deg, rgba(29,127,159,0.94), rgba(44,156,192,0.88), rgba(99,189,196,0.9))' }}>
               <h2 style={{ margin: 0, fontWeight: 700 }}>Account</h2>
               <p style={{ marginTop: 8, fontSize: 14 }}>Sign in to view your profile, travel map, and social circle.</p>
-              <button className="btn" style={{ background: '#fff', color: 'var(--primary-dark)', marginTop: 16 }} onClick={() => navigate('/sign-in')}><MdLogin size={18} /> Sign in</button>
+              <button className="btn" style={{ background: 'rgba(255,255,255,0.85)', color: 'var(--primary-dark)', marginTop: 16 }} onClick={() => navigate('/sign-in')}><MdLogin size={18} /> Sign in</button>
             </div>
           </SoftCard>
         </div>
@@ -218,7 +218,7 @@ export default function AccountScreen() {
     <PageShell>
       <div className="container" style={{ maxWidth: 920, padding: 16 }}>
         <SoftCard elevated padding={20}>
-          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 20, padding: 16, color: '#fff', background: 'linear-gradient(135deg, #1F6FAE, #4aade8, #2BA9A0)', boxShadow: 'var(--shadow-soft)' }}>
+          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 28, padding: 18, color: '#fff', background: 'linear-gradient(135deg, rgba(29,127,159,0.94), rgba(44,156,192,0.88), rgba(99,189,196,0.9))', border: '1px solid rgba(255,255,255,0.5)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 18px 40px rgba(29,127,159,0.32)' }}>
             <div style={{ position: 'absolute', right: -28, top: -22, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,0.11)' }} />
             <div style={{ position: 'absolute', left: -24, bottom: -28, width: 110, height: 110, borderRadius: '50%', background: 'rgba(255,255,255,0.07)' }} />
             <div style={{ position: 'relative' }}>
@@ -248,7 +248,7 @@ export default function AccountScreen() {
           </div>
 
           <div className="stat-grid" style={{ marginTop: 16, gap: 8 }}>
-            <Metric icon={<MdPublic size={18} />} label="Countries visited" value={String(visitedCount)} accent="#4aade8" />
+            <Metric icon={<MdPublic size={18} />} label="Countries visited" value={String(visitedCount)} accent="#2c9cc0" />
             <Metric icon={<MdOutlineRoute size={18} />} label="World coverage" value={`${percent}%`} accent="#00897b" />
             <Metric icon={<MdOutlinePeopleAlt size={18} />} label="Friends" value={String(friends.length)} accent="#ffb17a" />
             <Metric icon={<MdOutlineWorkspacePremium size={18} />} label="Membership" value={subscription} accent="#4ecdc4" />
@@ -277,8 +277,8 @@ export default function AccountScreen() {
           </Section>
 
           <Section
-            icon={<MdTravelExplore size={20} />} accent="#4aade8" title="My Travel Map" subtitle="Tap countries to mark places you have visited"
-            trailing={<span style={{ padding: '6px 10px', borderRadius: 999, background: 'rgba(74,173,232,0.12)', fontWeight: 700, fontSize: 12, color: 'var(--primary-dark)' }}>{percent}% explored</span>}
+            icon={<MdTravelExplore size={20} />} accent="#2c9cc0" title="My Travel Map" subtitle="Tap countries to mark places you have visited"
+            trailing={<span style={{ padding: '6px 10px', borderRadius: 999, background: 'rgba(44, 156, 192,0.12)', fontWeight: 700, fontSize: 12, color: 'var(--primary-dark)' }}>{percent}% explored</span>}
           >
             <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border)', padding: 8 }}>
               <VisitedMap

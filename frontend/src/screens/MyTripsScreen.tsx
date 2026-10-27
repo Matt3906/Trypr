@@ -51,7 +51,7 @@ const Badge = ({ icon, text }: { icon: React.ReactNode; text: string }) => (
 
 function StatTile({ icon, label, value, accent }: { icon: React.ReactNode; label: string; value: string | number; accent: string }) {
   return (
-    <div className="row gap-md" style={{ padding: 12, background: '#fff', borderRadius: 'var(--r-lg)', border: `1px solid color-mix(in srgb, ${accent} 25%, transparent)`, boxShadow: 'var(--shadow-soft)' }}>
+    <div className="row gap-md" style={{ padding: 12, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', borderRadius: 22, border: `1px solid color-mix(in srgb, ${accent} 30%, rgba(255,255,255,0.7))`, boxShadow: 'var(--glass-hi), var(--glass-shadow)' }}>
       <div className="center" style={{ width: 34, height: 34, borderRadius: 10, background: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}>{icon}</div>
       <div>
         <div style={{ fontSize: 16, fontWeight: 700 }}>{value}</div>
@@ -161,7 +161,7 @@ export default function MyTripsScreen() {
           <div className="center" style={{ padding: 40 }}>
             <SoftCard elevated padding={20}>
               <div className="col center gap-md" style={{ textAlign: 'center' }}>
-                <div className="center" style={{ width: 56, height: 56, borderRadius: 'var(--r-lg)', background: 'rgba(74,173,232,.12)', color: 'var(--primary-dark)' }}><MdRoute size={28} /></div>
+                <div className="center" style={{ width: 56, height: 56, borderRadius: 'var(--r-lg)', background: 'rgba(44, 156, 192,.12)', color: 'var(--primary-dark)' }}><MdRoute size={28} /></div>
                 <h3 className="t-title-l bold">Sign in to view your saved trips</h3>
                 <p className="muted">Your past and upcoming adventures will appear here.</p>
                 <Button icon={<MdLogin size={18} />} onClick={() => navigate('/sign-in')}>Sign in</Button>
@@ -170,12 +170,12 @@ export default function MyTripsScreen() {
           </div>
         ) : (
           <>
-            <div style={{ padding: 20, borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-elevated)', background: 'linear-gradient(135deg,#1d74b7,var(--primary),#2bb7a2)', color: '#fff' }} className={compact ? 'col gap-md' : 'row gap-lg'}>
+            <div style={{ padding: 22, borderRadius: 30, border: '1px solid rgba(255,255,255,0.5)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 18px 40px rgba(29,127,159,0.32)', background: 'linear-gradient(135deg,rgba(29,127,159,0.94),rgba(44,156,192,0.88),rgba(99,189,196,0.9))', color: '#fff' }} className={compact ? 'col gap-md' : 'row gap-lg'}>
               <div className="grow">
                 <h1 style={{ fontSize: compact ? 20 : 24, fontWeight: 700 }}>Welcome back, {userName}</h1>
                 <p style={{ marginTop: 6, fontSize: 14 }}>Your adventures, shared plans, and route ideas all in one place.</p>
               </div>
-              <button className="btn btn-sm" style={{ background: '#fff', color: 'var(--primary-dark)', padding: '12px 20px', borderRadius: 12 }} onClick={() => navigate('/trip-builder')}><MdAdd size={18} />Create New Trip</button>
+              <button className="btn btn-sm" style={{ background: 'rgba(255,255,255,0.85)', color: 'var(--primary-dark)', padding: '12px 20px', borderRadius: 999 }} onClick={() => navigate('/trip-builder')}><MdAdd size={18} />Create New Trip</button>
             </div>
 
             <div className="stat-grid">

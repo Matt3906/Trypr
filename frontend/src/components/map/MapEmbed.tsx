@@ -112,7 +112,6 @@ export default function MapEmbed(props: MapEmbedProps) {
   const seqRef = useRef(0)
   const segGeometry = useRef<Map<number, LL[]>>(new Map())
   const lastRouteCalcSig = useRef('')
-  const lastBlockingGaps = useRef(false)
   const lastErrorSig = useRef('')
   const suppressTapUntil = useRef(0)
   const currentZoom = useRef(2)
@@ -241,8 +240,7 @@ export default function MapEmbed(props: MapEmbedProps) {
   // ---------- adventure overlays (hiking trails / portage network) ----------
   const adventure = useAdventureOverlays({
     mapRef, ready, propsRef, segGeometry, modeMatchesAnySegment, segmentMode, segmentPoints, currentZoom, seqRef, suppressTapUntil,
-    showNearbyContextOverlays, points, overlays: overlaysRef, rerouteGaps: () => { lastRouteCalcSig.current = ''; void updateRoutePolylineRef.current(seqRef.current) },
-    lastBlockingGaps,
+    showNearbyContextOverlays, points, overlays: overlaysRef,
   })
   const adventureRef = useRef(adventure)
   adventureRef.current = adventure
@@ -328,7 +326,6 @@ export default function MapEmbed(props: MapEmbedProps) {
       const total = pathDistanceMeters(path)
       if (total > 0) p.onRouteSummary?.(total, 0)
       lastRouteCalcSig.current = routeCalculationSignature()
-      lastBlockingGaps.current = false
       lastErrorSig.current = ''
       setRouteComputing(false, seq)
       return true
@@ -340,7 +337,7 @@ export default function MapEmbed(props: MapEmbedProps) {
     async (seq: number) => {
       const sig = routeCalculationSignature()
       const expected = points.length > 1 ? points.length - 1 : 0
-      if (lastRouteCalcSig.current === sig && (expected === 0 || routePolyCount.current >= expected || lastBlockingGaps.current)) return
+      if (lastRouteCalcSig.current === sig && (expected === 0 || routePolyCount.current >= expected)) return
       if (applyInitialRouteData(seq)) return
 
       setRouteComputing(true, seq)
@@ -357,14 +354,9 @@ export default function MapEmbed(props: MapEmbedProps) {
           p.onRouteSegmentDetails?.([])
           p.onRouteSummary?.(0, 0)
           lastRouteCalcSig.current = sig
-          lastBlockingGaps.current = false
           lastErrorSig.current = ''
           return
         }
-
-        // Warm adventure caches (portage network) before the per-segment loop.
-        if (showNearbyContextOverlays && modeMatchesAnySegment('portaging')) await adventureRef.current.prewarmPortage()
-        if (!alive()) return
 
         const routes = new Map<number, RouteComputation>()
         const geo = new Map<number, LL[]>()
@@ -375,7 +367,6 @@ export default function MapEmbed(props: MapEmbedProps) {
         let distSum = 0, durSum = 0
         let lastArrival: PointMap | null = null
         const fallbackSegs = new Map<number, { segPoints: PointMap[]; mode: string; segType: string }>()
-        const unresolvedPortage = new Map<number, PointMap[]>()
 
         for (let seg = 0; seg < points.length - 1; seg++) {
           if (!alive()) return
@@ -399,16 +390,10 @@ export default function MapEmbed(props: MapEmbedProps) {
           if (!route && config.strictRouting && segType !== 'direct' && mode !== 'plane') {
             throw new Error(`STRICT_ROUTING_HARD_ERROR segment_route_unavailable segment=${seg} mode=${mode} segType=${segType}`)
           }
-          const hidePortageFallback = !route && mode === 'portaging' && segType !== 'direct'
           const computed =
             route ??
             straightRoute({ path: fallbackPath, mode, color: standardRouteColor(mode), opacity: 0.72, width: 4, geodesic: mode === 'plane' })
-          if (!route && (mode === 'portaging' || mode === 'hiking') && segType !== 'direct') fallbackSegs.set(seg, { segPoints: segPts, mode, segType })
-          if (hidePortageFallback) {
-            unresolvedPortage.set(seg, [...segPts])
-            geo.set(seg, fallbackPath)
-            continue
-          }
+          if (!route && mode === 'hiking' && segType !== 'direct') fallbackSegs.set(seg, { segPoints: segPts, mode, segType })
 
           routes.set(seg, computed)
           geo.set(seg, computed.path)
@@ -429,7 +414,7 @@ export default function MapEmbed(props: MapEmbedProps) {
         segGeometry.current = geo
         emitGeometry(geo)
 
-        if (routes.size === 0 && points.length >= 2 && unresolvedPortage.size === 0) {
+        if (routes.size === 0 && points.length >= 2) {
           const fm = normalizeMapMode(transportMode)
           const fb = straightRoute({ path: points.map(toLL), mode: fm, color: standardRouteColor(fm), opacity: 0.82, width: fm === 'hiking' || fm === 'portaging' ? 6 : 4, geodesic: fm === 'plane' })
           routes.set(-1, fb)
@@ -438,8 +423,7 @@ export default function MapEmbed(props: MapEmbedProps) {
           durSum = fb.durationSeconds
         }
 
-        let blockingGap = unresolvedPortage.size > 0
-        const deferSummary = fallbackSegs.size > 0 || blockingGap
+        const deferSummary = fallbackSegs.size > 0
 
         const p = propsRef.current
         const last8 = instructions.slice(0, 8)
@@ -452,9 +436,11 @@ export default function MapEmbed(props: MapEmbedProps) {
         routePolyCount.current = routes.size
         if (!deferSummary && distSum > 0) p.onRouteSummary?.(distSum, durSum)
 
-        // Adventure overlays (trails / campsites / water network) for hiking & portaging.
-        if (showNearbyContextOverlays) {
-          await adventureRef.current.refreshAfterRoute(geo)
+        // Adventure overlays (trails / campsites / water network) for hiking & portaging. These come from Overpass and can
+        // take a while, so the route is reported done without them; only the hiking retry below waits for warm caches.
+        const overlaysLoaded = showNearbyContextOverlays ? adventureRef.current.refreshAfterRoute(geo).catch((e) => console.debug('adventureOverlays refresh failed', e)) : Promise.resolve()
+        if (fallbackSegs.size > 0) {
+          await overlaysLoaded
           if (!alive()) return
         }
 
@@ -472,10 +458,7 @@ export default function MapEmbed(props: MapEmbedProps) {
             } catch (e) {
               console.debug(`adventureRetry failed segment=${seg}`, e)
             }
-            if (!retried || !alive()) {
-              if (normalizeMapMode(info.mode) === 'portaging') unresolvedPortage.set(seg, [...info.segPoints])
-              continue
-            }
+            if (!retried || !alive()) continue
             distSum -= segDist.get(seg) ?? 0
             durSum -= segDur.get(seg) ?? 0
             geo.set(seg, retried.path)
@@ -484,7 +467,6 @@ export default function MapEmbed(props: MapEmbedProps) {
             distSum += retried.distanceMeters
             durSum += retried.durationSeconds
             routes.set(seg, retried)
-            unresolvedPortage.delete(seg)
             retriedAny = true
           }
           if (retriedAny && alive()) {
@@ -495,25 +477,8 @@ export default function MapEmbed(props: MapEmbedProps) {
           }
         }
 
-        blockingGap = unresolvedPortage.size > 0
-        if (blockingGap) {
-          const first = [...unresolvedPortage.keys()].sort((a, b) => a - b)[0]
-          const failed = unresolvedPortage.get(first)!
-          const label = (pt: PointMap | undefined, fb: string) => {
-            if (!pt) return fb
-            const name = String(pt.name ?? pt.title ?? '').trim()
-            if (name) return name
-            return latOf(pt) === 0 && lonOf(pt) === 0 ? fb : `${latOf(pt).toFixed(4)}, ${lonOf(pt).toFixed(4)}`
-          }
-          const esig = `${sig}:portage:${first}`
-          if (esig !== lastErrorSig.current) {
-            lastErrorSig.current = esig
-            p.onRouteError?.(`Site inaccessible: no mapped waterway or portage connection could be found from ${label(failed[0], 'start point')} to ${label(failed[failed.length - 1], 'destination')}.`)
-          }
-        } else {
-          lastErrorSig.current = ''
-        }
-        if (deferSummary && !blockingGap && alive() && distSum > 0) p.onRouteSummary?.(distSum, durSum)
+        lastErrorSig.current = ''
+        if (deferSummary && alive() && distSum > 0) p.onRouteSummary?.(distSum, durSum)
 
         if (showNearbyContextOverlays && modeMatchesAnySegment('gas_stops')) {
           try {
@@ -527,7 +492,6 @@ export default function MapEmbed(props: MapEmbedProps) {
 
         if (!alive()) return
         lastRouteCalcSig.current = sig
-        lastBlockingGaps.current = blockingGap
       } finally {
         setRouteComputing(false, seq)
       }
@@ -601,7 +565,7 @@ export default function MapEmbed(props: MapEmbedProps) {
     const ov = overlaysRef.current
     if (!ov) return
     const p = propsRef.current
-    const primary = '#4aade8'
+    const primary = '#2c9cc0'
     let next = 1
     const stopNumbers = points.map((pt) => (boolish(pt.isStop, true) ? next++ : null))
 
@@ -915,12 +879,12 @@ export default function MapEmbed(props: MapEmbedProps) {
   const hasPortage = adventure.canRenderPortage
   const hasHiking = adventure.canRenderHiking
   const headline =
-    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Tracing connected waterways'
+    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Drawing your paddle route'
     : modeMatchesAnySegment('hiking') ? 'Scanning trail network'
     : modeMatchesAnySegment('train') ? 'Linking transit segments'
     : 'Locking route geometry'
   const detail =
-    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Sweeping for viable carries, shoreline landings, and uninterrupted water access.'
+    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Measuring each leg along the line you drew.'
     : modeMatchesAnySegment('hiking') ? 'Matching your stops to mapped trails, campsites, and realistic backcountry connectors.'
     : modeMatchesAnySegment('train') ? 'Resolving the cleanest sequence of stations, transfers, and arrival timing.'
     : 'Committing each leg, mode, and stop order into one continuous route.'

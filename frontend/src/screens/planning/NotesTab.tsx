@@ -37,7 +37,7 @@ function NotesList({ p }: { p: NotesTabProps }) {
               <div
                 key={String(n.id ?? i)}
                 onClick={() => p.onSelect(i)}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, marginBottom: 6, borderRadius: 10, cursor: 'pointer', background: selected ? 'rgba(74,173,232,0.08)' : String(n.color ?? '#FFFFFF') }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, marginBottom: 6, borderRadius: 10, cursor: 'pointer', background: selected ? 'rgba(44, 156, 192,0.08)' : String(n.color ?? '#FFFFFF') }}
               >
                 <MdOutlineStickyNote2 size={18} className="muted" />
                 <span className="grow ellipsis" style={{ fontSize: 13, fontWeight: selected ? 600 : 500 }}>{String(n.title ?? '') || 'Untitled Note'}</span>
@@ -128,7 +128,7 @@ function NoteEditor({ p, showBack }: { p: NotesTabProps; showBack: boolean }) {
           />
         ))}
       </div>
-      <div className={cx('plan-quill')} style={{ flex: 1, minHeight: 0, margin: '0 16px', borderRadius: 12, background: 'rgba(255,255,255,0.82)', border: '1px solid rgba(0,0,0,0.08)', overflow: 'hidden', display: 'flex' }}>
+      <div className={cx('plan-quill')} style={{ flex: 1, minHeight: 0, margin: '0 16px', borderRadius: 24, background: 'var(--glass-bg-strong)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', backdropFilter: 'blur(22px) saturate(180%)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi), var(--glass-shadow)', overflow: 'hidden', display: 'flex' }}>
         <ReactQuill
           key={noteId}
           ref={quillRef}

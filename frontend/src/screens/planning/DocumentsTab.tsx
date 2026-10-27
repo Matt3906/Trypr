@@ -83,7 +83,7 @@ function DocumentDialog({ tripId, existing, onClose, onSave, notify }: { tripId:
           {attachments.length ? (
             <div className="col gap-xs" style={{ maxHeight: 160, overflowY: 'auto' }}>
               {attachments.map((a, i) => (
-                <div key={i} className="row" style={{ alignItems: 'center', gap: 6, padding: '8px 10px', borderRadius: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.1)' }}>
+                <div key={i} className="row" style={{ alignItems: 'center', gap: 6, padding: '8px 10px', borderRadius: 14, background: 'var(--glass-bg-strong)', border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-hi)' }}>
                   <MdAttachFile size={15} />
                   <div className="grow" style={{ minWidth: 0 }}>
                     <div className="ellipsis" style={{ fontSize: 12, fontWeight: 600 }}>{String(a.fileName ?? 'Attachment')}</div>
@@ -154,10 +154,10 @@ export default function DocumentsTab({ tripId, documents, onChange, notify }: Pr
                   <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: 'var(--surface-variant)', fontSize: 13, whiteSpace: 'pre-wrap', userSelect: 'text' }} className="muted">{String(doc.content)}</div>
                 )}
                 {attachments.length > 0 && (
-                  <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: 'rgba(74,173,232,0.08)', border: '1px solid rgba(74,173,232,0.2)' }}>
+                  <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: 'rgba(44, 156, 192,0.08)', border: '1px solid rgba(44, 156, 192,0.2)' }}>
                     <div className="row" style={{ alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700 }}><MdAttachFile size={16} /> {attachments.length === 1 ? '1 attachment' : `${attachments.length} attachments`}</div>
                     {attachments.map((a, i) => (
-                      <div key={i} style={{ marginTop: 8, paddingTop: i ? 8 : 0, borderTop: i ? '1px solid rgba(74,173,232,0.14)' : undefined }}>
+                      <div key={i} style={{ marginTop: 8, paddingTop: i ? 8 : 0, borderTop: i ? '1px solid rgba(44, 156, 192,0.14)' : undefined }}>
                         <div className="row" style={{ gap: 8 }}>
                           <span className="grow ellipsis" style={{ fontSize: 12, fontWeight: 600 }}>{String(a.fileName ?? 'Attachment')}</span>
                           <span className="faint" style={{ fontSize: 11 }}>{formatBytes(Number(a.sizeBytes) || 0)}</span>
