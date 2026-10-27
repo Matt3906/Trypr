@@ -18,6 +18,8 @@ export interface StepDetail {
   focusLon?: number
   focusZoom?: number
   path?: PathPoint[]
+  /** Length of this step, where known (paddle / portage runs). */
+  meters?: number
 }
 
 export interface DirectionsResult {

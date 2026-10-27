@@ -158,6 +158,8 @@ export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxSteps
           stepMap.lon = focusLon
           stepMap.lng = focusLon
         }
+        const meters = toNum(step.meters)
+        if (Number.isFinite(meters) && meters > 0) stepMap.meters = meters
         const focusZoom = toNum(step.focusZoom)
         if (Number.isFinite(focusZoom) && focusZoom > 0) stepMap.focusZoom = clamp(focusZoom, 3, 18)
         const path = readRouteGeometry(step.path)
@@ -174,6 +176,21 @@ export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxSteps
     if (durationSeconds > 0) detail.durationSeconds = durationSeconds
     const arrivalStop = sanitizeStop(item.arrivalStop)
     if (arrivalStop) detail.arrivalStop = arrivalStop
+    if (Array.isArray(item.options)) {
+      const options = item.options.slice(0, 4).flatMap((o: any) => {
+        if (!o || typeof o !== 'object' || !(toNum(o.distanceMeters) > 0)) return []
+        // The best option has no bend point; toNum would turn a missing one into (0, 0).
+        const hasVia = !!o.via && typeof o.via === 'object' && o.via.lat != null && (o.via.lon ?? o.via.lng) != null
+        const viaLat = hasVia ? toNum(o.via.lat) : NaN, viaLon = hasVia ? toNum(o.via.lon ?? o.via.lng) : NaN
+        return [{
+          distanceMeters: toNum(o.distanceMeters), durationSeconds: toNum(o.durationSeconds) || 0,
+          paddleMeters: toNum(o.paddleMeters) || 0, portages: Math.trunc(toNum(o.portages) || 0), portageMeters: toNum(o.portageMeters) || 0,
+          via: Number.isFinite(viaLat) && Number.isFinite(viaLon) ? { lat: viaLat, lon: viaLon } : null,
+          current: o.current === true,
+        }]
+      })
+      if (options.length > 1) detail.options = options
+    }
     out.push(detail)
   }
   return out

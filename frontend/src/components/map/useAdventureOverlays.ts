@@ -32,18 +32,19 @@ const RENDER = {
   /** Fetch pad for each sample along an already-routed path. */
   routeSamplePadMin: 0.1,
   routeSamplePadMax: 0.2,
-  /** Water and portage lines further than this from the route are not drawn (once a route exists). */
-  lineMetersFromRoute: 15000,
-  maxWaterLines: 600,
-  maxPortageLines: 200,
-  /** Straight-line distance from the focus point a campsite may be, by experience level. */
-  campCrowFlyMetersByExperience: { beginner: 20000, intermediate: 26000, advanced: 34000 },
+  /**
+   * How far from the put-in / active campsite (or the routed line) campsites, portages and water are drawn.
+   * Matches each level's fetch pad (~111 km per degree north-south), so the reach is what was downloaded anyway.
+   * The counts below are safety caps only: in dense parks like Algonquin the old 250-campsite cap ran out ~11 km out.
+   */
+  reachMetersByExperience: { beginner: 15000, intermediate: 20000, advanced: 27000 },
+  maxWaterLines: 3000,
+  /** Vertices kept per drawn water line; the basemap already shows the shape, this only highlights it. */
+  waterLinePoints: 120,
+  maxPortageLines: 800,
   /** Distance from the routed path a campsite may be, for the normal / widened / widest pass. */
   campRouteMeters: [25000, 35000, 50000],
-  maxCampsites: 250,
-  /** After this many campsites, only closer ones (within farCampMeters) are added. */
-  campSoftCap: 150,
-  farCampMeters: 45000,
+  maxCampsites: 1200,
   hikingFetchPad: 0.12,
   maxTrailheads: 60,
   trailheadSoftCap: 24,
@@ -204,8 +205,9 @@ export function useAdventureOverlays(a: Args) {
     const routeFetchAnchors = opts.preferFocusOnly ? [] : modeAnchors.length >= 2 ? modeAnchors : routePath.length >= 2 ? routePath : []
     const routeCacheKey = routeFetchAnchors.length >= 2 ? portagingRouteCacheKey(routeFetchAnchors) : ''
     const routePad = 0.12
-    const exp = p.portageExperienceLevel
-    const expPad = exp === 'intermediate' || exp === 'advanced' ? RENDER.stopPadByExperience[exp] : RENDER.stopPadByExperience.beginner
+    const exp = p.portageExperienceLevel === 'intermediate' || p.portageExperienceLevel === 'advanced' ? p.portageExperienceLevel : 'beginner'
+    const expPad = RENDER.stopPadByExperience[exp]
+    const reach = RENDER.reachMetersByExperience[exp]
     const focusPad = quantizedOverlayPadDegrees(opts.focusPadDegreesOverride ?? expPad)
 
     let entry: PortagingOverlayEntry | null = null
@@ -236,9 +238,8 @@ export function useAdventureOverlays(a: Args) {
     entry.waterLines.forEach((line, i) => {
       if (line.length < 2) return
       const near = routePath.length ? distanceLineToPathMeters(line, routePath, 20) : distanceMetersToPath(focus, line)
-      if (routePath.length && near > RENDER.lineMetersFromRoute) return
-      if (!routePath.length && near > 35000) return
-      const rendered = downsampleLine(line, 280)
+      if (near > reach) return
+      const rendered = downsampleLine(line, RENDER.waterLinePoints)
       if (rendered.length >= 2) waterCands.push({ index: i, dist: near, rendered })
     })
     waterCands.sort((x, y) => x.dist - y.dist)
@@ -249,8 +250,7 @@ export function useAdventureOverlays(a: Args) {
     entry.portageLines.forEach((line, i) => {
       if (line.length < 2) return
       const near = routePath.length ? distanceLineToPathMeters(line, routePath, 20) : distanceMetersToPath(focus, line)
-      if (routePath.length && near > RENDER.lineMetersFromRoute) return
-      if (!routePath.length && near > 35000) return
+      if (near > reach) return
       const rendered = downsampleLine(line, 320)
       if (rendered.length >= 2) portageCands.push({ index: i, dist: near, rendered })
     })
@@ -266,7 +266,7 @@ export function useAdventureOverlays(a: Args) {
       const networkMeters = Math.min(nearestToLines(point, nearbyWater), nearestToLines(point, nearbyPortage))
       return { camp, point, networkMeters, effectiveMeters: Math.min(networkMeters, distanceToKnownRoute), distanceToKnownRoute }
     })
-    const maxCrowFly = exp === 'intermediate' || exp === 'advanced' ? RENDER.campCrowFlyMetersByExperience[exp] : RENDER.campCrowFlyMetersByExperience.beginner
+    const maxCrowFly = reach
     const [campRoute, campRouteWide, campRouteWidest] = RENDER.campRouteMeters
     const selectCamps = (maxEffective: number, maxRoute: number, crowMul = 1) =>
       campRows
@@ -282,7 +282,6 @@ export function useAdventureOverlays(a: Args) {
     let campCount = 0
     sorted.forEach((row, i) => {
       if (campCount >= RENDER.maxCampsites) return
-      if (campCount >= RENDER.campSoftCap && row.effectiveMeters > RENDER.farCampMeters) return
       campCount++
       const km = row.effectiveMeters / 1000
       markers.push({

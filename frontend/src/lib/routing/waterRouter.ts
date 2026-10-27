@@ -24,12 +24,16 @@ const SHORE_METERS = 250
 export type RunKind = 'paddle' | 'portage' | 'carry'
 export interface WaterRun { kind: RunKind; path: LL[]; meters: number }
 export interface WaterRoute { path: LL[]; runs: WaterRun[]; meters: number }
+/** A way from the first to the last stop; `via` is the bend point that steers the route onto it (null = best). */
+export interface WaterOption extends WaterRoute { via: LL | null }
 
 interface Raster {
   w: number
   h: number
   cell: number
   kind: Uint8Array
+  /** Which lake (1-based index of its water area) each cell belongs to; 0 off-lake. */
+  lake: Int32Array
   toCell: (p: LL) => [number, number]
   toLL: (x: number, y: number) => LL
 }
@@ -55,6 +59,8 @@ function buildRaster(entries: PortagingOverlayEntry[], bounds: Bounds): Raster |
   const cell = Math.max(MIN_CELL_METERS, Math.sqrt((widthM * heightM) / MAX_CELLS))
   const w = Math.max(2, Math.ceil(widthM / cell)), h = Math.max(2, Math.ceil(heightM / cell))
   const kind = new Uint8Array(w * h)
+  const lake = new Int32Array(w * h)
+  let lakeId = 0
   const fx = (lng: number) => ((lng - bounds.west) * mPerLng) / cell
   const fy = (lat: number) => ((lat - bounds.south) * METERS_PER_DEG) / cell
   const clampX = (x: number) => Math.min(w - 1, Math.max(0, x))
@@ -68,6 +74,7 @@ function buildRaster(entries: PortagingOverlayEntry[], bounds: Bounds): Raster |
       if (seenAreas.has(area.key)) continue
       seenAreas.add(area.key)
       if (!area.rings.some((r) => overlaps(lineBounds(r), south, west, north, east))) continue
+      lakeId++
       const rows = new Map<number, number[]>()
       for (const ring of area.rings) {
         for (let k = 0; k + 1 < ring.length; k++) {
@@ -88,7 +95,10 @@ function buildRaster(entries: PortagingOverlayEntry[], bounds: Bounds): Raster |
         xs.sort((a, b) => a - b)
         for (let i = 0; i + 1 < xs.length; i += 2) {
           const x0 = Math.max(0, Math.ceil(xs[i] - 0.5)), x1 = Math.min(w - 1, Math.floor(xs[i + 1] - 0.5))
-          for (let x = x0; x <= x1; x++) kind[y * w + x] = LAKE
+          for (let x = x0; x <= x1; x++) {
+            kind[y * w + x] = LAKE
+            lake[y * w + x] = lakeId
+          }
         }
       }
     }
@@ -121,7 +131,7 @@ function buildRaster(entries: PortagingOverlayEntry[], bounds: Bounds): Raster |
   if (!water) return null
 
   return {
-    w, h, cell, kind,
+    w, h, cell, kind, lake,
     toCell: (p) => [clampX(Math.floor(fx(p.lng))), clampY(Math.floor(fy(p.lat)))],
     toLL: (x, y) => ({ lat: south + ((y + 0.5) * cell) / METERS_PER_DEG, lng: west + ((x + 0.5) * cell) / mPerLng }),
   }
@@ -131,8 +141,8 @@ const DX = [1, -1, 0, 0, 1, 1, -1, -1]
 const DY = [0, 0, 1, -1, 1, -1, 1, -1]
 const STEP = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2]
 
-/** A* over the raster; returns the cell indices from start to goal. */
-function searchCells(r: Raster, start: number, goal: number): number[] | null {
+/** A* over the raster; returns the cell indices from start to goal. Cells flagged in `penalty` cost ALT_PENALTY times more. */
+function searchCells(r: Raster, start: number, goal: number, penalty?: Uint8Array): number[] | null {
   const { w, h, kind, cell } = r
   const n = w * h
   const g = new Float64Array(n).fill(Infinity)
@@ -190,7 +200,9 @@ function searchCells(r: Raster, start: number, goal: number): number[] | null {
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
       const j = ny * w + nx
       if (closed[j]) continue
-      const ng = g[i] + STEP[d] * cell * (ci + COST[kind[j]]) * 0.5
+      let step = STEP[d] * cell * (ci + COST[kind[j]]) * 0.5
+      if (penalty && (penalty[i] || penalty[j])) step *= ALT_PENALTY
+      const ng = g[i] + step
       if (ng >= g[j]) continue
       g[j] = ng
       prev[j] = i
@@ -306,44 +318,158 @@ export function waterRouteBounds(points: LL[]): Bounds {
   return { south: south - pad, west: west - pad * 1.4, north: north + pad, east: east + pad * 1.4 }
 }
 
-/**
- * Routes through `points` in order (stops plus any bend points the user placed) over the water data in
- * `entries`. Returns null when the area has no water data, so the caller can fall back to a straight line.
- */
-export function routeOverWater(points: LL[], entries: PortagingOverlayEntry[]): WaterRoute | null {
-  if (points.length < 2 || !entries.length) return null
-  const raster = buildRaster(entries, waterRouteBounds(points))
-  if (!raster) return null
+/** Paddle / portage / carry runs for one leg's cell path, pinned to the exact stops at both ends. */
+function legRuns(r: Raster, cells: number[], from: LL, to: LL): WaterRun[] {
+  const runs = cellRuns(r, cells)
+  return runs.map((run, i) => {
+    // Runs share their boundary cell so the drawn line has no gaps.
+    const withJoin = i + 1 < runs.length ? [...run.cells, runs[i + 1].cells[0]] : run.cells
+    const kept = run.kind === 'paddle' ? straightenOverWater(r, withJoin) : simplifyCells(r, withJoin)
+    const path = kept.map((c) => r.toLL(c % r.w, (c / r.w) | 0))
+    if (path.length < 2) path.push(path[0]) // both stops in one cell
+    if (i === 0) path[0] = from
+    if (i === runs.length - 1) path[path.length - 1] = to
+    return { kind: run.kind, path, meters: pathDistanceMeters(path) }
+  })
+}
 
+function assemble(legs: WaterRun[][]): WaterRoute {
   const runs: WaterRun[] = []
-  for (let leg = 0; leg + 1 < points.length; leg++) {
-    const [sx, sy] = raster.toCell(points[leg]), [tx, ty] = raster.toCell(points[leg + 1])
-    const cells = searchCells(raster, sy * raster.w + sx, ty * raster.w + tx)
-    if (!cells) return null
-    const legRuns = cellRuns(raster, cells)
-    legRuns.forEach((run, i) => {
-      // Runs share their boundary cell so the drawn line has no gaps.
-      const withJoin = i + 1 < legRuns.length ? [...run.cells, legRuns[i + 1].cells[0]] : run.cells
-      const kept = run.kind === 'paddle' ? straightenOverWater(raster, withJoin) : simplifyCells(raster, withJoin)
-      const path = kept.map((c) => raster.toLL(c % raster.w, (c / raster.w) | 0))
-      if (path.length < 2) path.push(path[0]) // both stops in one cell
-      if (i === 0) path[0] = points[leg]
-      if (i === legRuns.length - 1) path[path.length - 1] = points[leg + 1]
-      const last = runs[runs.length - 1]
-      if (last && last.kind === run.kind) {
-        last.path.push(...path.slice(1))
-        last.meters = pathDistanceMeters(last.path)
-      } else {
-        if (last) path[0] = last.path[last.path.length - 1]
-        runs.push({ kind: run.kind, path, meters: pathDistanceMeters(path) })
-      }
-    })
+  for (const leg of legs) for (const run of leg) {
+    const last = runs[runs.length - 1]
+    if (last && last.kind === run.kind) {
+      last.path.push(...run.path.slice(1))
+      last.meters = pathDistanceMeters(last.path)
+    } else runs.push({ ...run, path: [...run.path] })
   }
-
   const path: LL[] = []
   for (const run of runs) for (const p of run.path) {
     const last = path[path.length - 1]
     if (!last || haversineMeters(last, p) > 0.5) path.push(p)
   }
   return { path, runs, meters: pathDistanceMeters(path) }
+}
+
+// ---- alternatives: penalize the corridor around each route found so far and search again ----
+/** Gentle enough that water every route must use (a lake's only outlet) stays shared rather than detoured around. */
+const ALT_PENALTY = 2
+const ALT_CORRIDOR_METERS = 300
+/** Near the stops every route has to share the same water, so the corridor leaves them free. */
+const ALT_ENDPOINT_FREE_METERS = 700
+/** An alternative may cost at most this much more than the best route... */
+const ALT_MAX_STRETCH = 1.6
+/** ...and must cross a different set of lakes (counting lakes it paddles at least this far in) or portage differently. */
+const ALT_LAKE_MIN_METERS = 250
+const ALT_PORTAGE_DIFF_METERS = 200
+const ALT_SEARCHES = 4
+
+function pathCost(r: Raster, cells: number[]): number {
+  let total = 0
+  for (let k = 0; k + 1 < cells.length; k++) {
+    const a = cells[k], b = cells[k + 1]
+    const diagonal = a % r.w !== b % r.w && ((a / r.w) | 0) !== ((b / r.w) | 0)
+    total += (diagonal ? Math.SQRT2 : 1) * r.cell * (COST[r.kind[a]] + COST[r.kind[b]]) * 0.5
+  }
+  return total
+}
+
+function markCorridor(r: Raster, penalty: Uint8Array, cells: number[], start: number, goal: number) {
+  const radius = Math.ceil(ALT_CORRIDOR_METERS / r.cell)
+  const free = ALT_ENDPOINT_FREE_METERS / r.cell
+  const sx = start % r.w, sy = (start / r.w) | 0, gx = goal % r.w, gy = (goal / r.w) | 0
+  for (let k = 0; k < cells.length; k += 2) {
+    const cx = cells[k] % r.w, cy = (cells[k] / r.w) | 0
+    if (Math.hypot(cx - sx, cy - sy) < free || Math.hypot(cx - gx, cy - gy) < free) continue
+    for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+      const x = cx + dx, y = cy + dy
+      if (x >= 0 && y >= 0 && x < r.w && y < r.h && dx * dx + dy * dy <= radius * radius) penalty[y * r.w + x] = 1
+    }
+  }
+}
+
+function lakesOf(r: Raster, cells: number[]): Set<number> {
+  const meters = new Map<number, number>()
+  for (const c of cells) if (r.lake[c]) meters.set(r.lake[c], (meters.get(r.lake[c]) ?? 0) + r.cell)
+  return new Set([...meters].filter(([, m]) => m >= ALT_LAKE_MIN_METERS).map(([id]) => id))
+}
+const portageMetersOf = (route: WaterRoute) => route.runs.reduce((t, run) => t + (run.kind === 'paddle' ? 0 : run.meters), 0)
+
+/** Middle of the longest stretch outside the penalized corridors, nudged onto water: where to bend the line. */
+function viaCell(r: Raster, cells: number[], penalty: Uint8Array): number {
+  let bestStart = 0, bestLen = 0
+  for (let k = 0; k < cells.length;) {
+    if (penalty[cells[k]]) { k++; continue }
+    let e = k
+    while (e < cells.length && !penalty[cells[e]]) e++
+    if (e - k > bestLen) { bestLen = e - k; bestStart = k }
+    k = e
+  }
+  const mid = bestStart + (bestLen >> 1)
+  for (let off = 0; off <= bestLen >> 1; off++) {
+    for (const k of [mid - off, mid + off]) if (k >= bestStart && k < bestStart + bestLen && isWater(r.kind[cells[k]])) return cells[k]
+  }
+  return cells[mid]
+}
+
+/**
+ * Routes through `points` in order (stops plus any bend points the user placed) over the water data in
+ * `entries`. Returns null when the area has no water data, so the caller can fall back to a straight line.
+ * With `alternatives`, also returns `options`: the best way from the first to the last stop (ignoring bend
+ * points) plus up to that many genuinely different ways, each with the bend point that selects it.
+ */
+export function routeOverWater(points: LL[], entries: PortagingOverlayEntry[], opts: { alternatives?: number } = {}): (WaterRoute & { options: WaterOption[] }) | null {
+  if (points.length < 2 || !entries.length) return null
+  const raster = buildRaster(entries, waterRouteBounds(points))
+  if (!raster) return null
+  const cellOf = (p: LL) => {
+    const [x, y] = raster.toCell(p)
+    return y * raster.w + x
+  }
+
+  const legs: WaterRun[][] = []
+  let directCells: number[] | null = null
+  for (let leg = 0; leg + 1 < points.length; leg++) {
+    const cells = searchCells(raster, cellOf(points[leg]), cellOf(points[leg + 1]))
+    if (!cells) return null
+    if (points.length === 2) directCells = cells
+    legs.push(legRuns(raster, cells, points[leg], points[leg + 1]))
+  }
+  const route = assemble(legs)
+
+  const options: WaterOption[] = []
+  const wanted = opts.alternatives ?? 0
+  if (wanted > 0) {
+    const from = points[0], to = points[points.length - 1]
+    const start = cellOf(from), goal = cellOf(to)
+    const best = directCells ?? searchCells(raster, start, goal)
+    if (best) {
+      const bestCost = pathCost(raster, best)
+      const penalty = new Uint8Array(raster.w * raster.h)
+      const found: { cells: number[]; lakes: Set<number>; route: WaterRoute }[] = [
+        { cells: best, lakes: lakesOf(raster, best), route: directCells ? route : assemble([legRuns(raster, best, from, to)]) },
+      ]
+      const differs = (a: { lakes: Set<number>; route: WaterRoute }, b: { lakes: Set<number>; route: WaterRoute }) =>
+        [...a.lakes].some((id) => !b.lakes.has(id)) || [...b.lakes].some((id) => !a.lakes.has(id)) ||
+        Math.abs(portageMetersOf(a.route) - portageMetersOf(b.route)) > ALT_PORTAGE_DIFF_METERS
+      markCorridor(raster, penalty, best, start, goal)
+      for (let k = 0; k < ALT_SEARCHES && found.length <= wanted; k++) {
+        const cells = searchCells(raster, start, goal, penalty)
+        if (!cells || pathCost(raster, cells) > bestCost * ALT_MAX_STRETCH) break
+        markCorridor(raster, penalty, cells, start, goal)
+        const candidate = { cells, lakes: lakesOf(raster, cells), route: assemble([legRuns(raster, cells, from, to)]) }
+        if (found.every((f) => differs(f, candidate))) found.push(candidate)
+      }
+      if (found.length > 1) {
+        const free = new Uint8Array(raster.w * raster.h)
+        found.forEach((f, k) => {
+          // Bend where this option leaves the others, so routing through the bend reproduces it.
+          free.fill(0)
+          found.forEach((o, j) => { if (j !== k) markCorridor(raster, free, o.cells, start, goal) })
+          const via = k === 0 ? null : viaCell(raster, f.cells, free)
+          options.push({ ...f.route, via: via == null ? null : raster.toLL(via % raster.w, (via / raster.w) | 0) })
+        })
+      }
+    }
+  }
+  return { ...route, options }
 }

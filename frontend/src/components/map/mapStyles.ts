@@ -45,6 +45,8 @@ export function mapStyleForMode(mode: string): MapStyle {
 }
 
 export const PORTAGE_CARRY_COLOR = '#8d6e63'
+/** Route options are labelled A, B, C by index; option i is drawn (and its chip tinted) with color i. */
+export const ROUTE_OPTION_COLORS = ['#d81b60', '#00897b', '#5e35b1']
 
 /** Normalizes the many transport-mode spellings used across trips (car/plane/train/walk/bike/...). */
 export function normalizeMapMode(raw: string): string {

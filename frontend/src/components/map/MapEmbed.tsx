@@ -11,7 +11,7 @@ import { latOf, lonOf, num, type PointMap, type RouteComputation } from '@/lib/r
 import { calculateRouteForSegment, normalizeSegmentRoutingTypeFor, segmentLatLngs, segmentRouteTimeoutMs, straightRoute } from '@/lib/routing/segmentRouter'
 import { emptyOverlays, type ModeOverlays } from '@/lib/routing/adventureOverlays'
 import { iconBadge, numberedIcon, viaDotIcon } from './markerIcons'
-import { mapStyleForMode, normalizeMapMode, standardRouteColor } from './mapStyles'
+import { mapStyleForMode, normalizeMapMode, ROUTE_OPTION_COLORS, standardRouteColor } from './mapStyles'
 import { OverlayManager, type MarkerDef, type PolyDef } from './overlays'
 import { ProjectionHelper } from './projection'
 import RouteComputingOverlay from './RouteComputingOverlay'
@@ -270,6 +270,10 @@ export default function MapEmbed(props: MapEmbedProps) {
       } else {
         defs.push({ id: `seg_${seg}`, path: r.path, color: r.color, width: r.width, zIndex: r.zIndex, geodesic: r.geodesic, dashed: r.dashed, opacity: r.opacity })
       }
+      // Other ways to paddle the leg, faded and dashed so the chosen one reads first.
+      r.options?.forEach((o, i) => {
+        if (!o.current && o.path.length >= 2) defs.push({ id: `seg_${seg}_option_${i}`, path: o.path, color: ROUTE_OPTION_COLORS[i % ROUTE_OPTION_COLORS.length], width: 5, zIndex: 36, opacity: 0.95, dashed: { dash: 14, gap: 8 } })
+      })
     }
     return defs
   }
@@ -406,6 +410,7 @@ export default function MapEmbed(props: MapEmbedProps) {
             segmentDetails.push({
               segmentIndex: seg, mode, distanceMeters: computed.distanceMeters, durationSeconds: computed.durationSeconds,
               steps: computed.stepDetails, ...(computed.arrivalStop ? { arrivalStop: computed.arrivalStop } : {}),
+              ...(computed.options ? { options: computed.options.map(({ path: _path, ...o }) => o) } : {}),
             })
           }
           if (computed.arrivalStop) lastArrival = computed.arrivalStop

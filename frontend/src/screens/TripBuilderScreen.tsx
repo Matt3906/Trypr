@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } from '@/backend/firestore'
 import { useNavigate } from 'react-router-dom'
 import {
-  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
+  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdExpandLess, MdExpandMore, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
   MdShare, MdTitle, MdTouchApp, MdTune, MdWaterDrop,
 } from 'react-icons/md'
 import { auth, db } from '@/backend'
@@ -10,6 +10,7 @@ import { useAuth } from '@/context/Auth'
 import { useFeedback } from '@/context/Feedback'
 import TopTaskbar from '@/components/TopTaskbar'
 import MapEmbed, { type MapFocusBounds } from '@/components/map/MapEmbed'
+import { ROUTE_OPTION_COLORS } from '@/components/map/mapStyles'
 import Globe3DEmbed from '@/components/Globe3DEmbed'
 import TransitLegTabsCard from '@/components/TransitLegTabsCard'
 import ShareTripDialog from '@/components/ShareTripDialog'
@@ -72,6 +73,8 @@ function useIsCompact(maxWidth = 980) {
   return compact
 }
 
+const GUIDE_EXPANDED_KEY = 'trypr.tripBuilder.buildFlowExpanded'
+
 export default function TripBuilderScreen() {
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -84,6 +87,14 @@ export default function TripBuilderScreen() {
   const [tripType, setTripType] = useState('road')
   const [experience, setExperience] = useState('beginner')
   const [renamingName, setRenamingName] = useState(false)
+  // Build Flow starts as a one-line header so the leg stats get the room; the choice is remembered per browser.
+  const [guideExpanded, setGuideExpanded] = useState(() => {
+    try { return localStorage.getItem(GUIDE_EXPANDED_KEY) === '1' } catch { return false }
+  })
+  const toggleGuide = () => setGuideExpanded((open) => {
+    try { localStorage.setItem(GUIDE_EXPANDED_KEY, open ? '0' : '1') } catch { /* private mode: just don't remember */ }
+    return !open
+  })
 
   // ---- plan (waypoints + per-leg config) ------------------------------------------------------
   const [plan, setPlanState] = useState<Plan>({ waypoints: [], segModes: [], segRouting: [], routeVia: [], transportMode: 'car', activeSeg: 0 })
@@ -1126,19 +1137,21 @@ export default function TripBuilderScreen() {
   )
 
   const guideCard = isAdventure && (
-    <div className="tb-guide tb-card" {...blockPointer}>
-      <div className="row between" style={{ alignItems: 'flex-start' }}>
-        <div className="row gap-sm" style={{ alignItems: 'flex-start' }}>
-          <div style={{ width: 30, height: 30, borderRadius: '50%', background: '#CCFBF1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <MdAltRoute size={17} color="#0F766E" />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 900, color: '#0F766E', letterSpacing: 0.3 }}>Build Flow</div>
-            <div style={{ fontSize: 14, fontWeight: 800, color: '#0F172A' }}>{guide.title}</div>
-          </div>
-        </div>
-        <span style={{ fontSize: 11, fontWeight: 800, color: '#0F766E' }}>{activeStepNumber}/{steps.length}</span>
-      </div>
+    <div className={cx('tb-guide tb-card', !guideExpanded && 'is-compact')} {...blockPointer}>
+      <button type="button" className="tb-guide-toggle" onClick={toggleGuide} aria-expanded={guideExpanded} title={guideExpanded ? 'Collapse Build Flow' : 'Show Build Flow steps'}>
+        <span className="row gap-sm" style={{ alignItems: 'center', minWidth: 0 }}>
+          <span className="tb-guide-icon"><MdAltRoute size={guideExpanded ? 17 : 15} color="#0F766E" /></span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ display: 'block', fontSize: 11, fontWeight: 900, color: '#0F766E', letterSpacing: 0.3 }}>Build Flow</span>
+            <span className="tb-guide-title">{guide.title}</span>
+          </span>
+        </span>
+        <span className="row" style={{ alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 800, color: '#0F766E', flex: 'none' }}>
+          {activeStepNumber}/{steps.length}
+          {guideExpanded ? <MdExpandLess size={18} /> : <MdExpandMore size={18} />}
+        </span>
+      </button>
+      {guideExpanded && <>
       <div style={{ fontSize: 11.5, color: '#475569', margin: '8px 0 12px', lineHeight: 1.32 }}>{guide.body}</div>
       {steps.map((s, i) => {
         const accent = s.active ? '#0F766E' : s.done ? '#0284C7' : '#94A3B8'
@@ -1182,6 +1195,7 @@ export default function TripBuilderScreen() {
             Map tip
           </Button>
       </div>
+      </>}
     </div>
   )
 
@@ -1197,29 +1211,70 @@ export default function TripBuilderScreen() {
     return km
   }
 
-  /** The leg as routed over the water network (distance and portages), once the map has computed it. */
-  const routedPaddleLeg = (i: number): { km: number; portages: number } | null => {
+  /** The leg as routed over the water network (paddle / portage split and route options), once the map has computed it. */
+  const routedPaddleLeg = (i: number): { km: number; paddleKm: number; portages: number; portageMeters: number; options: AnyMap[] } | null => {
     const d = routeSegmentDetails.find((x) => Number(x.segmentIndex) === i && normalizeBuilderMode(String(x.mode ?? '')) === 'portaging')
     const meters = Number(d?.distanceMeters)
     if (!d || !(meters > 0)) return null
-    const steps = Array.isArray(d.steps) ? (d.steps as AnyMap[]) : []
-    return { km: meters / 1000, portages: steps.filter((s) => s.mode === 'portage' || s.mode === 'carry').length }
+    const carries = (Array.isArray(d.steps) ? (d.steps as AnyMap[]) : []).filter((s) => s.mode === 'portage' || s.mode === 'carry')
+    const portageMeters = carries.reduce((t, s) => t + (Number(s.meters) || 0), 0)
+    return { km: meters / 1000, paddleKm: Math.max(0, meters - portageMeters) / 1000, portages: carries.length, portageMeters, options: Array.isArray(d.options) ? d.options : [] }
   }
   const paddleLegKm = (i: number) => routedPaddleLeg(i)?.km ?? drawnLegKm(i)
+  const formatLength = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`)
+  const portageSummary = (count: number, meters: number) => (count === 0 ? 'No portages' : `${count} portage${count === 1 ? '' : 's'} · ${formatLength(meters)}`)
+
+  /** Puts leg `i` on a route option: its bend point replaces the leg's own (the best option has none). */
+  const chooseLegRoute = (afterIndex: number, option: AnyMap) => {
+    const via = option.via && Number.isFinite(Number(option.via.lat)) ? [{ afterIndex, lat: Number(option.via.lat), lon: Number(option.via.lon) }] : []
+    setPlan((p) => ({ ...p, routeVia: [...p.routeVia.filter((v) => Math.trunc(Number(v.afterIndex ?? -1)) !== afterIndex), ...via] }))
+    resetComputed()
+    scheduleRouteCachePersist()
+  }
 
   const PADDLE_DIFFICULTY_COLOR: Record<string, string> = { 'Beginner-friendly': '#2E7D32', Intermediate: '#B26A00', Advanced: '#C62828' }
-  const paddleStats = (km: number, portages: number | null) => {
+  const paddleStats = (i: number, km: number) => {
+    const leg = routedPaddleLeg(i)
     const difficulty = adventureDifficultyForDistance(km, 'portaging')
     const warning = adventureWarning(km, 'portaging')
+    const options = leg?.options ?? []
+    const shortest = Math.min(...options.map((o) => Number(o.distanceMeters)))
+    const leastCarry = Math.min(...options.map((o) => Number(o.portageMeters)))
     return (
       <div>
-        <div className="row wrap gap-sm" style={{ alignItems: 'center', fontSize: 12.5 }}>
-          <span style={{ fontWeight: 800 }}>Paddle {km.toFixed(1)} km</span>
-          {portages != null && <span className="muted">· {portages === 0 ? 'no portages' : `${portages} portage${portages === 1 ? '' : 's'}`}</span>}
-          <span className="muted">· {adventureEstimatedTime(km, 'portaging')}</span>
-          <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>· {difficulty}</span>
+        <div className="tb-leg-stats">
+          <div><span className="tb-leg-stat-label">Paddle</span>{(leg?.paddleKm ?? km).toFixed(1)} km</div>
+          <div><span className="tb-leg-stat-label">Portage</span>{leg ? portageSummary(leg.portages, leg.portageMeters) : '—'}</div>
+          <div><span className="tb-leg-stat-label">Time</span>{adventureEstimatedTime(km, 'portaging')}</div>
+        </div>
+        <div style={{ fontSize: 12, marginTop: 4 }}>
+          <span className="muted">{km.toFixed(1)} km total · </span>
+          <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>{difficulty}</span>
         </div>
         {warning && <div style={{ fontSize: 11.5, color: '#8A5A00', marginTop: 4 }}>{warning}</div>}
+        {options.length > 1 && (
+          <div className="tb-route-options" onClick={(e) => e.stopPropagation()}>
+            <div className="muted" style={{ fontSize: 11.5, fontWeight: 700 }}>{options.length} ways to get there (others dashed on the map)</div>
+            {options.map((o, k) => {
+              const tags = [Number(o.distanceMeters) === shortest && 'Shortest', Number(o.portageMeters) === leastCarry && 'Least portaging'].filter(Boolean)
+              return (
+                <button key={k} type="button" className={cx('tb-route-option', o.current && 'is-current')} disabled={o.current} onClick={() => chooseLegRoute(i, o)}>
+                  <span className="tb-route-option-badge" style={{ background: ROUTE_OPTION_COLORS[k % ROUTE_OPTION_COLORS.length] }}>{String.fromCharCode(65 + k)}</span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontWeight: 800 }}>
+                      {formatLength(Number(o.distanceMeters))} · {adventureEstimatedTime(Number(o.distanceMeters) / 1000, 'portaging')}
+                      {o.current && <span className="tb-route-option-tag">Current</span>}
+                    </span>
+                    <span style={{ display: 'block' }} className="muted">
+                      Paddle {formatLength(Number(o.paddleMeters))} · {portageSummary(Number(o.portages), Number(o.portageMeters))}
+                    </span>
+                    {tags.length > 0 && <span style={{ display: 'block', fontSize: 11, color: '#0F766E', fontWeight: 700 }}>{tags.join(' · ')}</span>}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
     )
   }
@@ -1227,6 +1282,10 @@ export default function TripBuilderScreen() {
   const paddleLegKms = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [paddleLegKm(i)] : []))
   const paddleTotalKm = paddleLegKms.reduce((t, km) => t + km, 0)
   const longestPaddleKm = paddleLegKms.length ? Math.max(...paddleLegKms) : 0
+  const routedPaddleLegs = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [routedPaddleLeg(i)] : []))
+  const tripPortages = routedPaddleLegs.every(Boolean)
+    ? routedPaddleLegs.reduce((t, l) => ({ count: t.count + l!.portages, meters: t.meters + l!.portageMeters }), { count: 0, meters: 0 })
+    : null
 
   const stopItem = (i: number) => {
     const isFirst = i === 0
@@ -1292,7 +1351,7 @@ export default function TripBuilderScreen() {
 
             {isSegmentRow ? (
               <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                {paddleKm != null ? paddleStats(paddleKm, routedPaddleLeg(i)?.portages ?? null) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
+                {paddleKm != null ? paddleStats(i, paddleKm) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
                 <div className="row wrap gap-sm" style={{ alignItems: 'center', marginTop: 8 }}>
                   <span style={{ fontSize: 12, fontWeight: 700 }}>Mode:</span>
                   <select
@@ -1393,6 +1452,7 @@ export default function TripBuilderScreen() {
               <span style={{ fontWeight: 800 }}>Paddling: {paddleTotalKm.toFixed(1)} km</span>
               <span className="muted"> over {paddleLegKms.length} leg{paddleLegKms.length === 1 ? '' : 's'} · longest {longestPaddleKm.toFixed(1)} km</span>
             </div>
+            {tripPortages && <div style={{ marginTop: 2 }}><span style={{ fontWeight: 800 }}>Portaging:</span> {portageSummary(tripPortages.count, tripPortages.meters)}</div>}
             <div style={{ marginTop: 2 }}>
               Paddle difficulty: <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>{difficulty}</span>
               <span className="muted"> (based on your longest leg)</span>

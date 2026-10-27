@@ -39,3 +39,21 @@
 @media (max-width: 979px) {
   .tb-panel { flex: 1; }
 }
+.tb-guide.is-compact { padding: 8px 12px; }
+.tb-guide-toggle { all: unset; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; cursor: pointer; border-radius: 14px; }
+.tb-guide-toggle:focus-visible { outline: 2px solid #0F766E; outline-offset: 3px; }
+.tb-guide-icon { width: 30px; height: 30px; border-radius: 50%; background: #CCFBF1; display: flex; align-items: center; justify-content: center; flex: none; }
+.tb-guide.is-compact .tb-guide-icon { width: 24px; height: 24px; }
+.tb-guide-title { display: block; font-size: 14px; font-weight: 800; color: #0F172A; }
+.tb-guide.is-compact .tb-guide-title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-guide:not(.is-compact) .tb-guide-toggle + * { margin-top: 8px; }
+.tb-leg-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 13px; font-weight: 800; }
+.tb-leg-stats > div { padding: 5px 7px; border-radius: 10px; background: rgba(241, 248, 254, 0.9); line-height: 1.2; }
+.tb-leg-stat-label { display: block; font-size: 10.5px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; }
+.tb-route-options { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.tb-route-option { all: unset; box-sizing: border-box; display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 7px 9px; border-radius: 12px; border: 1px solid rgba(15, 23, 42, 0.12); background: rgba(255, 255, 255, 0.75); font-size: 12px; cursor: pointer; }
+.tb-route-option:hover:not(:disabled) { border-color: #0F766E; background: #fff; }
+.tb-route-option:focus-visible { outline: 2px solid #0F766E; outline-offset: 2px; }
+.tb-route-option.is-current { border-color: #0F766E; background: #F0FDFA; cursor: default; }
+.tb-route-option-badge { width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 900; display: flex; align-items: center; justify-content: center; flex: none; margin-top: 1px; }
+.tb-route-option-tag { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #0F766E; color: #fff; font-size: 10px; font-weight: 800; vertical-align: 1px; }
