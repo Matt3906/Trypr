@@ -11,13 +11,26 @@ export interface HikingOverlayEntry {
   trailheads: AnyMap[]
 }
 
+export interface Bounds { south: number; west: number; north: number; east: number }
+
+/** One lake/pond: its outer and inner (island) rings, filled even-odd. `key` is the OSM element id. */
+export interface WaterArea { key: string; rings: LL[][] }
+
 export interface PortagingOverlayEntry {
   fetchedAt: number
   waterLines: LL[][]
   waterPolygons: LL[][]
+  /** Lakes with multipolygon rings stitched together (big lakes split their shoreline across many ways). */
+  waterAreas: WaterArea[]
+  /** Rivers, canals and canoe-route ways (centerlines, not shorelines). Canoe-route relations are left out: their members include the portage trails. */
+  channelLines: LL[][]
+  /** Streams, drains and ditches: often too small to paddle, and often drawn straight through the bush between lakes. */
+  streamLines: LL[][]
   portageLines: LL[][]
   campsites: AnyMap[]
   accessPoints: AnyMap[]
+  /** Area the Overpass query covered; absent on merged entries. */
+  bounds?: Bounds
 }
 
 const hikingCache = new Map<string, HikingOverlayEntry>()
@@ -107,6 +120,43 @@ const centroidFromMembers = (members: any[]): LL | null => {
   return n ? { lat: la / n, lng: lo / n } : null
 }
 const lower = (v: unknown) => String(v ?? '').toLowerCase()
+
+/**
+ * Joins open member ways end-to-end into closed rings. A big lake's multipolygon usually splits its shoreline
+ * across several ways that only close once stitched; members that close on their own pass through unchanged.
+ */
+export function assembleRings(parts: LL[][], maxGapMeters = 400): LL[][] {
+  const touches = (a: LL, b: LL) => Math.abs(a.lat - b.lat) < 1e-6 && Math.abs(a.lng - b.lng) < 1e-6
+  const rings: LL[][] = []
+  const open: LL[][] = []
+  for (const p of parts) {
+    if (p.length < 2) continue
+    if (p.length >= 4 && touches(p[0], p[p.length - 1])) rings.push(p)
+    else open.push(p)
+  }
+  while (open.length) {
+    let ring = open.pop()!
+    for (let joined = true; joined && !touches(ring[0], ring[ring.length - 1]);) {
+      joined = false
+      const end = ring[ring.length - 1]
+      for (let i = 0; i < open.length; i++) {
+        const c = open[i]
+        if (touches(c[0], end)) ring = ring.concat(c.slice(1))
+        else if (touches(c[c.length - 1], end)) ring = ring.concat([...c].reverse().slice(1))
+        else continue
+        open.splice(i, 1)
+        joined = true
+        break
+      }
+    }
+    // A member missing from the response leaves a gap; close short gaps rather than dropping the lake.
+    if (ring.length >= 4 && haversineMeters(ring[0], ring[ring.length - 1]) <= maxGapMeters) {
+      if (!touches(ring[0], ring[ring.length - 1])) ring = [...ring, ring[0]]
+      rings.push(ring)
+    }
+  }
+  return rings
+}
 const isCampTags = (t: AnyMap) => ['camp_site', 'camp_pitch'].includes(lower(t.tourism))
 
 function campFrom(name: string, lat: number, lon: number, tags: AnyMap, sourceType: string): AnyMap {
@@ -240,6 +290,8 @@ async function fetchPortagingOverlayData(opts: { anchors: LL[]; focusPoint?: LL 
     south = minLat - padDegrees; west = minLon - padDegrees; north = maxLat + padDegrees; east = maxLon + padDegrees
   }
   const bb = snappedBbox(south, west, north, east)
+  const [bs, bw, bn, be] = bb.split(',').map(Number)
+  let bounds: Bounds = { south: bs, west: bw, north: bn, east: be }
   const campsiteQuery = includeCampsites ? `
   node["tourism"~"camp_site|camp_pitch"](${bb});
   way["tourism"~"camp_site|camp_pitch"](${bb});
@@ -277,6 +329,8 @@ out body geom;`
     } else {
       const lp = Math.min(padDegrees, 0.12)
       const lbb = snappedBbox(focusPoint.lat - lp, focusPoint.lng - lp, focusPoint.lat + lp, focusPoint.lng + lp)
+      const [ls, lw, ln, le] = lbb.split(',').map(Number)
+      bounds = { south: ls, west: lw, north: ln, east: le }
       const liteCamp = includeCampsites ? `\n  node["tourism"~"camp_site|camp_pitch"](${lbb});` : ''
       const lite = `[out:json][timeout:18];
 (
@@ -302,9 +356,16 @@ out body geom;`
     }
   }
   if (!data) return null
+  return parsePortagingOverlayData(data, bounds)
+}
 
+/** Converts an Overpass response for the portaging query into overlay + routing geometry. */
+export function parsePortagingOverlayData(data: any, bounds?: Bounds): PortagingOverlayEntry {
   const waterLines: LL[][] = []
   const waterPolygons: LL[][] = []
+  const waterAreas: WaterArea[] = []
+  const channelLines: LL[][] = []
+  const streamLines: LL[][] = []
   const portageLines: LL[][] = []
   const campsites: AnyMap[] = []
   const accessPoints: AnyMap[] = []
@@ -357,9 +418,15 @@ out body geom;`
       const line = geometryToLine(m.geometry)
       if (line.length < 2) continue
       if (isWaterTags(tags)) waterLines.push(line)
+      const waterway = lower(tags.waterway)
+      if (['stream', 'drain', 'ditch'].includes(waterway)) streamLines.push(line)
+      else if (waterway || lower(tags.route) === 'canoe') channelLines.push(line)
       if (isNaturalWater(tags)) {
         const ring = normalizeRing(line)
         if (ring) waterPolygons.push(ring)
+        // A lone way only counts as a lake when it closes on its own; open ones are pieces of a multipolygon.
+        const rings = assembleRings([line], 0)
+        if (rings.length) waterAreas.push({ key: `way/${m.id}`, rings })
       }
       if (isPortageTags(tags)) portageLines.push(line)
       const c = centroid(line)
@@ -369,12 +436,18 @@ out body geom;`
       const natural = lower(tags.natural), route = lower(tags.route)
       const members = m.members ?? []
       if (natural === 'water') {
+        const parts: LL[][] = []
         for (const mem of members) {
           const line = geometryToLine(mem.geometry)
-          if (line.length >= 2) waterLines.push(line)
+          if (line.length >= 2) {
+            waterLines.push(line)
+            parts.push(line)
+          }
           const ring = normalizeRing(line)
           if (ring) waterPolygons.push(ring)
         }
+        const rings = assembleRings(parts)
+        if (rings.length) waterAreas.push({ key: `relation/${m.id}`, rings })
       }
       if (route === 'canoe') {
         for (const mem of members) {
@@ -391,8 +464,8 @@ out body geom;`
       if (isAccessTags(tags)) addAccess(String(tags.name ?? 'Portage access'), m.lat, m.lon)
     }
   }
-  console.debug(`portagingOverpass converted water=${waterLines.length} polygons=${waterPolygons.length} portage=${portageLines.length} campsites=${campsites.length} access=${accessPoints.length}`)
-  return { fetchedAt: Date.now(), waterLines, waterPolygons, portageLines, campsites, accessPoints }
+  console.debug(`portagingOverpass converted water=${waterLines.length} polygons=${waterPolygons.length} areas=${waterAreas.length} channels=${channelLines.length} streams=${streamLines.length} portage=${portageLines.length} campsites=${campsites.length} access=${accessPoints.length}`)
+  return { fetchedAt: Date.now(), waterLines, waterPolygons, waterAreas, channelLines, streamLines, portageLines, campsites, accessPoints, bounds }
 }
 
 export async function getPortagingOverlayEntry(opts: { cacheKey: string; anchors: LL[]; focusPoint?: LL | null; padDegrees: number; includeCampsites?: boolean }): Promise<PortagingOverlayEntry | null> {
@@ -413,6 +486,9 @@ export async function getPortagingOverlayEntry(opts: { cacheKey: string; anchors
     if (portagingInFlight.get(opts.cacheKey) === p) portagingInFlight.delete(opts.cacheKey)
   }
 }
+
+/** Every portaging overlay entry fetched so far that knows the area it covers (the map's and the router's). */
+export const cachedPortagingEntries = (): PortagingOverlayEntry[] => [...portagingCache.values()].filter((e) => !!e.bounds)
 
 const lineMergeKey = (line: LL[], sample = 12) => {
   if (!line.length) return ''
@@ -462,20 +538,25 @@ export function portagingOverlayFocusPoints(opts: { routePath: LL[]; modeAnchors
 }
 
 export function mergePortagingOverlayEntries(entries: PortagingOverlayEntry[]): PortagingOverlayEntry {
-  if (!entries.length) return { fetchedAt: Date.now(), waterLines: [], waterPolygons: [], portageLines: [], campsites: [], accessPoints: [] }
-  const waterLines: LL[][] = [], waterPolygons: LL[][] = [], portageLines: LL[][] = []
+  if (!entries.length) return { fetchedAt: Date.now(), waterLines: [], waterPolygons: [], waterAreas: [], channelLines: [], streamLines: [], portageLines: [], campsites: [], accessPoints: [] }
+  const waterLines: LL[][] = [], waterPolygons: LL[][] = [], channelLines: LL[][] = [], streamLines: LL[][] = [], portageLines: LL[][] = []
+  const waterAreas: WaterArea[] = []
   const campsites: AnyMap[] = [], accessPoints: AnyMap[] = []
   const sw = new Set<string>(), sp = new Set<string>(), sg = new Set<string>(), sc = new Set<string>(), sa = new Set<string>()
+  const sarea = new Set<string>(), sch = new Set<string>(), sst = new Set<string>()
   let newest = entries[0].fetchedAt
   for (const e of entries) {
     newest = Math.max(newest, e.fetchedAt)
     for (const line of e.waterLines) { const k = lineMergeKey(line, 10); if (k && !sw.has(k)) { sw.add(k); waterLines.push(line) } }
     for (const poly of e.waterPolygons) { const k = lineMergeKey(poly, 10); if (k && !sp.has(k)) { sp.add(k); waterPolygons.push(poly) } }
+    for (const area of e.waterAreas ?? []) if (!sarea.has(area.key)) { sarea.add(area.key); waterAreas.push(area) }
+    for (const line of e.channelLines ?? []) { const k = lineMergeKey(line, 10); if (k && !sch.has(k)) { sch.add(k); channelLines.push(line) } }
+    for (const line of e.streamLines ?? []) { const k = lineMergeKey(line, 10); if (k && !sst.has(k)) { sst.add(k); streamLines.push(line) } }
     for (const line of e.portageLines) { const k = lineMergeKey(line, 10); if (k && !sg.has(k)) { sg.add(k); portageLines.push(line) } }
     for (const c of e.campsites) { const k = `${Number(c.lat).toFixed(5)},${Number(c.lon).toFixed(5)}`; if (!sc.has(k)) { sc.add(k); campsites.push({ ...c }) } }
     for (const a of e.accessPoints) { const k = `${Number(a.lat).toFixed(5)},${Number(a.lon).toFixed(5)}`; if (!sa.has(k)) { sa.add(k); accessPoints.push({ ...a }) } }
   }
-  return { fetchedAt: newest, waterLines, waterPolygons, portageLines, campsites, accessPoints }
+  return { fetchedAt: newest, waterLines, waterPolygons, waterAreas, channelLines, streamLines, portageLines, campsites, accessPoints }
 }
 
 export async function loadSegmentedPortagingOverlayEntry(opts: {

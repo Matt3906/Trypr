@@ -879,12 +879,12 @@ export default function MapEmbed(props: MapEmbedProps) {
   const hasPortage = adventure.canRenderPortage
   const hasHiking = adventure.canRenderHiking
   const headline =
-    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Drawing your paddle route'
+    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Tracing connected waterways'
     : modeMatchesAnySegment('hiking') ? 'Scanning trail network'
     : modeMatchesAnySegment('train') ? 'Linking transit segments'
     : 'Locking route geometry'
   const detail =
-    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Measuring each leg along the line you drew.'
+    modeMatchesAnySegment('portaging') && !modeMatchesAnySegment('hiking') ? 'Following mapped lakes, rivers and portages between your stops.'
     : modeMatchesAnySegment('hiking') ? 'Matching your stops to mapped trails, campsites, and realistic backcountry connectors.'
     : modeMatchesAnySegment('train') ? 'Resolving the cleanest sequence of stations, transfers, and arrival timing.'
     : 'Committing each leg, mode, and stop order into one continuous route.'

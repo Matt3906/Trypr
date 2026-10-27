@@ -53,7 +53,7 @@ export function normalizeSegmentRoutingType(raw: string, mode: string): string {
     case 'hiking':
       return 'trails'
     case 'portaging':
-      return 'drawn'
+      return 'waterway'
     default:
       return 'calculated'
   }
@@ -131,9 +131,11 @@ export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxSteps
     if (segmentIndex == null || segmentIndex < 0) continue
 
     const mode = normalizeRouteMode(String(item.mode ?? ''))
+    // A paddle leg lists every paddle and portage run; long legs need more room than transit's tabs.
+    const stepCap = mode === 'portaging' ? Math.max(maxStepsPerSegment, 40) : maxStepsPerSegment
     const steps: AnyMap[] = []
     if (Array.isArray(item.steps)) {
-      for (const step of item.steps.slice(0, maxStepsPerSegment)) {
+      for (const step of item.steps.slice(0, stepCap)) {
         if (!step || typeof step !== 'object') continue
         const tabLabel = String(step.tabLabel ?? '').trim()
         const headline = String(step.headline ?? '').trim()

@@ -1172,7 +1172,7 @@ export default function TripBuilderScreen() {
                 isPortageAccessStage
                   ? 'Tip: start your portage trip at an access point: search one by name, or click the map where you will put in.'
                   : isPortage
-                    ? 'Tip: click a campsite marker or anywhere on the map to add a campsite, then use Adjust route line to draw each paddle leg.'
+                    ? 'Tip: click a campsite marker or anywhere on the map to add a campsite, then use Adjust route line to drag a leg onto different lakes.'
                     : isAdventure
                       ? 'Tip: click the map to add a campsite, trail stop, or custom backcountry point.'
                       : 'Tip: click the map to drop a custom stop anywhere on your route.',
@@ -1197,14 +1197,25 @@ export default function TripBuilderScreen() {
     return km
   }
 
+  /** The leg as routed over the water network (distance and portages), once the map has computed it. */
+  const routedPaddleLeg = (i: number): { km: number; portages: number } | null => {
+    const d = routeSegmentDetails.find((x) => Number(x.segmentIndex) === i && normalizeBuilderMode(String(x.mode ?? '')) === 'portaging')
+    const meters = Number(d?.distanceMeters)
+    if (!d || !(meters > 0)) return null
+    const steps = Array.isArray(d.steps) ? (d.steps as AnyMap[]) : []
+    return { km: meters / 1000, portages: steps.filter((s) => s.mode === 'portage' || s.mode === 'carry').length }
+  }
+  const paddleLegKm = (i: number) => routedPaddleLeg(i)?.km ?? drawnLegKm(i)
+
   const PADDLE_DIFFICULTY_COLOR: Record<string, string> = { 'Beginner-friendly': '#2E7D32', Intermediate: '#B26A00', Advanced: '#C62828' }
-  const paddleStats = (km: number) => {
+  const paddleStats = (km: number, portages: number | null) => {
     const difficulty = adventureDifficultyForDistance(km, 'portaging')
     const warning = adventureWarning(km, 'portaging')
     return (
       <div>
         <div className="row wrap gap-sm" style={{ alignItems: 'center', fontSize: 12.5 }}>
           <span style={{ fontWeight: 800 }}>Paddle {km.toFixed(1)} km</span>
+          {portages != null && <span className="muted">· {portages === 0 ? 'no portages' : `${portages} portage${portages === 1 ? '' : 's'}`}</span>}
           <span className="muted">· {adventureEstimatedTime(km, 'portaging')}</span>
           <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>· {difficulty}</span>
         </div>
@@ -1213,7 +1224,7 @@ export default function TripBuilderScreen() {
     )
   }
 
-  const paddleLegKms = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [drawnLegKm(i)] : []))
+  const paddleLegKms = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [paddleLegKm(i)] : []))
   const paddleTotalKm = paddleLegKms.reduce((t, km) => t + km, 0)
   const longestPaddleKm = paddleLegKms.length ? Math.max(...paddleLegKms) : 0
 
@@ -1222,7 +1233,7 @@ export default function TripBuilderScreen() {
     const isLast = i === waypoints.length - 1
     const w = waypoints[i]
     const segKm = !isLast ? haversineKm(w.lat, w.lon, waypoints[i + 1].lat, waypoints[i + 1].lon) : 0
-    const paddleKm = !isLast && segModeAt(i, plan) === 'portaging' ? drawnLegKm(i) : null
+    const paddleKm = !isLast && segModeAt(i, plan) === 'portaging' ? paddleLegKm(i) : null
     const counts = countsTowardDays(i)
     const nights = effectiveNights(i)
     const display = formatLocationDisplay({ raw: w.name })
@@ -1281,7 +1292,7 @@ export default function TripBuilderScreen() {
 
             {isSegmentRow ? (
               <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                {paddleKm != null ? paddleStats(paddleKm) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
+                {paddleKm != null ? paddleStats(paddleKm, routedPaddleLeg(i)?.portages ?? null) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
                 <div className="row wrap gap-sm" style={{ alignItems: 'center', marginTop: 8 }}>
                   <span style={{ fontSize: 12, fontWeight: 700 }}>Mode:</span>
                   <select

@@ -77,7 +77,7 @@ export function normalizeBuilderMode(raw: string): string {
 export const defaultRoutingTypeForMode = (mode: string) => {
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'trails'
-    case 'portaging': return 'drawn'
+    case 'portaging': return 'waterway'
     default: return 'calculated'
   }
 }
@@ -90,7 +90,7 @@ export function normalizeBuilderRoutingType(raw: string, mode: string): string {
 export const primaryRoutingLabelForMode = (mode: string) => {
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'Trail'
-    case 'portaging': return 'Your line'
+    case 'portaging': return 'Waterway'
     default: return 'Calculated'
   }
 }
@@ -100,7 +100,7 @@ export function routingDescription(routingType: string, mode: string): string {
   if (type === 'direct') return 'Straight-line preview. Fast for rough planning, but it ignores mapped routes.'
   switch (normalizeBuilderMode(mode)) {
     case 'hiking': return 'Follows mapped trails and trail connectors for a more realistic hiking line.'
-    case 'portaging': return 'You draw this leg: turn on Adjust route line, then click or drag the line along the lakes and portages you will take.'
+    case 'portaging': return 'Follows mapped lakes, rivers and portages. To take a different way, turn on Adjust route line and drag the line through the lakes you want.'
     default: return 'Uses the normal routed path for this leg instead of a straight line.'
   }
 }
@@ -132,7 +132,7 @@ export const tripTypeSummary = (raw: string) =>
 
 export function modeSelectionHelperText(tripType: string): string {
   switch (normalizeTripType(tripType)) {
-    case 'portage': return 'Paddle legs follow the line you draw. Change a leg to Hiking if it follows a trail instead.'
+    case 'portage': return 'Paddle legs follow mapped lakes and portages. Drag a leg with Adjust route line to pick another way, or change it to Hiking if it follows a trail.'
     case 'hiking': return 'Hiking trips default to trail routing. Change the selected leg only if one segment needs a different surface.'
     case 'mixed': return 'Top pills set the selected leg. Use Mixed Mode when one itinerary genuinely combines road, rail, and backcountry travel.'
     default: return 'Top pills only set the selected leg. Tap a destination card to change which leg is active.'
@@ -152,7 +152,7 @@ export function tripTypeGuide(tripType: string, hasWaypoints: boolean): { title:
   switch (normalizeTripType(tripType)) {
     case 'portage':
       return hasWaypoints
-        ? { title: 'Step 2: Add your campsites', body: 'Click a campsite marker or anywhere on the map for each night. Then turn on Adjust route line and drag each leg along the lakes and portages you will paddle; distances and difficulty update as you go.' }
+        ? { title: 'Step 2: Add your campsites', body: 'Click a campsite marker or anywhere on the map for each night. Each leg follows the mapped lakes and portages; turn on Adjust route line and drag a leg to send it a different way. Distances, portages and difficulty update as you go.' }
         : { title: 'Step 1: Choose your access point', body: 'Portage trips usually begin at an access point or boat launch. Search one by name, search a lake to jump to it, or click the map.' }
     case 'hiking':
       return { title: 'Trail-first trip planning', body: 'Start with a trailhead or campsite, then add only the overnight stops that should use your trip nights.' }
@@ -171,7 +171,7 @@ export function guideSteps(tripType: string, waypointCount: number): GuideStep[]
       case 'portage': return [
         ['Pick an access point', 'Search a launch or a lake, or click the map.'],
         ['Add your campsites', 'Click campsite markers or the map for each night.'],
-        ['Draw your route', 'Turn on Adjust route line and drag each leg along your paddle route.'],
+        ['Shape your route', 'Legs follow lakes and portages; drag one with Adjust route line to change the way.'],
       ]
       case 'hiking': return [
         ['Start at a trailhead', 'Choose the first trail access or campsite anchor for the trip.'],
