@@ -14,4 +14,10 @@ export const config = {
   campsiteInfoMarkerId: str(env.VITE_CAMPSITE_INFO_MARKER_ID),
   /** Backend origin, e.g. https://api.tryprtravel.com. Empty = same origin (Vite proxies /api in dev). */
   apiBaseUrl: str(env.VITE_API_BASE_URL).replace(/\/+$/, ''),
+  /**
+   * Where transit platforms come from ('transitous' | 'none'). Transitous' usage policy rules out
+   * commercial / closed-source production use, so it only ever runs in dev builds; swap in a
+   * licensed source (DB API, self-hosted MOTIS) here before relying on platforms in prod.
+   */
+  transitPlatformProvider: (str(env.VITE_TRANSIT_PLATFORM_PROVIDER) || (env.DEV ? 'transitous' : 'none')) === 'transitous' && env.DEV ? 'transitous' : 'none',
 }

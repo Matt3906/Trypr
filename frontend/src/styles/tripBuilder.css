@@ -22,11 +22,11 @@
 .tb-guide { padding: 12px 14px; border-radius: 22px; background: linear-gradient(135deg, rgba(180, 225, 230, 0.55), rgba(255, 244, 228, 0.55)); border: 1px solid rgba(255, 255, 255, 0.75); box-shadow: var(--glass-hi); }
 .tb-step { display: flex; gap: 10px; margin-bottom: 10px; }
 .tb-step-badge { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; border: 1px solid; flex: none; }
-.tb-stop { display: flex; gap: 8px; margin-bottom: 10px; }
+.tb-stop { display: flex; gap: 8px; margin-bottom: 6px; }
 .tb-stop-rail { width: 26px; display: flex; flex-direction: column; align-items: center; flex: none; }
 .tb-stop-dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(42, 32, 26, 0.25); background: rgba(255, 255, 255, 0.9); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; margin-top: 2px; }
-.tb-stop-line { width: 2px; flex: 1; min-height: 88px; background: rgba(42, 32, 26, 0.12); margin-top: 2px; }
-.tb-stop-card { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 18px; background: var(--glass-bg); border: 1px solid var(--glass-border); box-shadow: var(--glass-hi); cursor: pointer; transition: background 0.2s, transform 0.25s var(--ease-spring); }
+.tb-stop-line { width: 2px; flex: 1; min-height: 30px; background: rgba(42, 32, 26, 0.12); margin-top: 2px; }
+.tb-stop-card { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); box-shadow: var(--glass-hi); cursor: pointer; transition: background 0.2s, transform 0.25s var(--ease-spring); }
 .tb-stop-card:hover { background: var(--glass-bg-strong); }
 .tb-stop-card.active { border-color: rgba(44, 156, 192, 0.7); background: rgba(44, 156, 192, 0.14); box-shadow: var(--glass-hi), 0 0 0 3px rgba(44, 156, 192, 0.14); }
 .tb-stop-controls { width: 122px; flex: none; display: flex; flex-direction: column; gap: 6px; }
@@ -47,13 +47,27 @@
 .tb-guide-title { display: block; font-size: 14px; font-weight: 800; color: #0F172A; }
 .tb-guide.is-compact .tb-guide-title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-guide:not(.is-compact) .tb-guide-toggle + * { margin-top: 8px; }
-.tb-leg-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; font-size: 13px; font-weight: 800; }
-.tb-leg-stats > div { padding: 5px 7px; border-radius: 10px; background: rgba(241, 248, 254, 0.9); line-height: 1.2; }
-.tb-leg-stat-label { display: block; font-size: 10.5px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; }
-.tb-route-options { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.tb-route-option { all: unset; box-sizing: border-box; display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 7px 9px; border-radius: 12px; border: 1px solid rgba(15, 23, 42, 0.12); background: rgba(255, 255, 255, 0.75); font-size: 12px; cursor: pointer; }
 .tb-route-option:hover:not(:disabled) { border-color: #0F766E; background: #fff; }
 .tb-route-option:focus-visible { outline: 2px solid #0F766E; outline-offset: 2px; }
 .tb-route-option.is-current { border-color: #0F766E; background: #F0FDFA; cursor: default; }
-.tb-route-option-badge { width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 900; display: flex; align-items: center; justify-content: center; flex: none; margin-top: 1px; }
-.tb-route-option-tag { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #0F766E; color: #fff; font-size: 10px; font-weight: 800; vertical-align: 1px; }
+
+.tb-stop-head { display: flex; align-items: center; gap: 6px; }
+.tb-stop-title { flex: 1; min-width: 0; font-weight: 800; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-stop-delete { flex: none; padding: 2px; }
+.tb-mini-select.tb-nights { width: 62px; flex: none; padding: 2px 4px; font-size: 12px; border-radius: 9px; }
+.tb-stop-meta { font-size: 11px; color: #757575; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.tb-leg-line { display: flex; flex-wrap: wrap; gap: 1px 10px; margin-top: 4px; font-size: 12px; line-height: 1.35; }
+.tb-leg-line b { font-weight: 800; }
+.tb-leg-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 5px; }
+.tb-mini-select.tb-leg-mode { width: auto; max-width: 128px; padding: 2px 6px; font-size: 12px; border-radius: 9px; }
+.tb-chip-sm { padding: 2px 9px !important; font-size: 11.5px !important; }
+.tb-route-options { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
+.tb-route-options-title { font-size: 10.5px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; }
+.tb-route-option { all: unset; box-sizing: border-box; display: flex; gap: 6px; align-items: center; width: 100%; padding: 3px 7px; border-radius: 10px; border: 1px solid rgba(15, 23, 42, 0.12); background: rgba(255, 255, 255, 0.75); font-size: 11.5px; line-height: 1.3; cursor: pointer; }
+.tb-route-option:hover:not(:disabled) { border-color: #0F766E; background: #fff; }
+.tb-route-option:focus-visible { outline: 2px solid #0F766E; outline-offset: 2px; }
+.tb-route-option.is-current { border-color: #0F766E; background: #F0FDFA; cursor: default; }
+.tb-route-option-badge { width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center; flex: none; }
+.tb-route-option-text { flex: 1; min-width: 0; }
+.tb-route-option-tags { color: #0F766E; font-weight: 700; }
+.tb-route-option-tag { flex: none; padding: 0 6px; border-radius: 999px; background: #0F766E; color: #fff; font-size: 10px; font-weight: 800; }

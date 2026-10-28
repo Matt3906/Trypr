@@ -3,7 +3,7 @@ import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } f
 import { useNavigate } from 'react-router-dom'
 import {
   MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdExpandLess, MdExpandMore, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
-  MdShare, MdTitle, MdTouchApp, MdTune, MdWaterDrop,
+  MdShare, MdTitle, MdTouchApp, MdTune, MdWarningAmber, MdWaterDrop,
 } from 'react-icons/md'
 import { auth, db } from '@/backend'
 import { useAuth } from '@/context/Auth'
@@ -12,7 +12,8 @@ import TopTaskbar from '@/components/TopTaskbar'
 import MapEmbed, { type MapFocusBounds } from '@/components/map/MapEmbed'
 import { ROUTE_OPTION_COLORS } from '@/components/map/mapStyles'
 import Globe3DEmbed from '@/components/Globe3DEmbed'
-import TransitLegTabsCard from '@/components/TransitLegTabsCard'
+import TransitLegCard from '@/components/TransitLegCard'
+import { MAX_TRANSIT_STEPS } from '@/services/directions'
 import ShareTripDialog from '@/components/ShareTripDialog'
 import ActivityFinderModal from '@/components/ActivityFinderModal'
 import { Button, Spinner, cx } from '@/components/ui'
@@ -553,23 +554,28 @@ export default function TripBuilderScreen() {
     scheduleRouteCachePersist()
   }
 
-  const setWaypointRole = (index: number, isStop: boolean) => {
-    if (isStop && range && totalNights <= 0) {
-      toast('Add at least one trip night before creating stay stops')
-      return
-    }
+  /**
+   * Removes a waypoint (a shaping point between stops) and merges its two segments into one. Other legs' bend
+   * points are kept, and the bend points of the merged legs stay in route order.
+   */
+  const removeInteriorWaypoint = (index: number) => {
+    if (index <= 0 || index >= planRef.current.waypoints.length - 1) return
     setPlan((p) => {
-      const wps = p.waypoints.map((w) => ({ ...w }))
-      const w = wps[index]
-      if (!w) return p
-      w.isStop = isStop
-      if (isStop) {
-        const used = wps.reduce((t, x, i) => t + (i === index ? 0 : x.isStop ? Math.max(1, x.nights) : 0), 0)
-        const max = !range ? Math.max(1, w.nights) : totalNights <= 0 ? 1 : Math.max(1, totalNights - used)
-        w.nights = Math.max(1, Math.min(w.nights, max))
-      }
-      return { ...p, waypoints: wps }
+      const merged = p.routeVia.filter((v) => [index - 1, index].includes(Math.trunc(Number(v.afterIndex ?? -1)))).sort((x, y) => Number(x.afterIndex) - Number(y.afterIndex)).map((v) => ({ ...v, afterIndex: index - 1 }))
+      const others = p.routeVia.filter((v) => ![index - 1, index].includes(Math.trunc(Number(v.afterIndex ?? -1)))).map((v) => (Math.trunc(Number(v.afterIndex ?? -1)) > index ? { ...v, afterIndex: Number(v.afterIndex) - 1 } : v))
+      return normalizeStructure({
+        ...p,
+        waypoints: p.waypoints.filter((_w, i) => i !== index),
+        // The merged leg keeps the mode of the segment before the waypoint.
+        segModes: p.segModes.filter((_m, s) => s !== index),
+        segRouting: p.segRouting.filter((_r, s) => s !== index),
+        routeVia: [...others, ...merged],
+        activeSeg: p.activeSeg > index ? p.activeSeg - 1 : p.activeSeg,
+      })
     })
+    resetComputed()
+    scheduleRouteCachePersist()
+    toast('Waypoint removed')
   }
 
   const setWaypointNights = (index: number, nights: number) =>
@@ -623,7 +629,7 @@ export default function TripBuilderScreen() {
   const setTransportModeTop = (mode: string) => {
     const m = normalizeBuilderMode(mode)
     if (selectedSeg != null) {
-      setSegmentMode(selectedSeg, m, true)
+      setLegMode(legStart(selectedSeg), m, true)
       return
     }
     setPlan((p) => ({ ...p, transportMode: m }))
@@ -812,13 +818,13 @@ export default function TripBuilderScreen() {
     })
   }
 
-  const smartFindStopBetween = (afterIndex: number) => {
+  const smartFindStopBetween = (afterIndex: number, endIndex = afterIndex + 1) => {
     const p = planRef.current
     if (!range) return toast('Select a trip date range first')
     if (p.waypoints.length < 2) return toast('Add at least two waypoints')
     if (afterIndex < 0 || afterIndex >= p.waypoints.length - 1) return
     const a = p.waypoints[afterIndex]
-    const b = p.waypoints[afterIndex + 1]
+    const b = p.waypoints[Math.min(endIndex, p.waypoints.length - 1)]
     const legMode = segModeAt(afterIndex, p)
     const aTitle = formatLocationDisplay({ raw: a.name }).title
     const bTitle = formatLocationDisplay({ raw: b.name }).title
@@ -831,7 +837,7 @@ export default function TripBuilderScreen() {
         if (!coords) return toast('Could not locate that stop')
         setFinder(null)
         await addWaypointWithPrompt(suggestionRaw(s), coords[0], coords[1], {
-          insertIndex: afterIndex + 1, segmentModeOverride: legMode, preferredRoutingType: segRoutingAt(afterIndex, p), preferStop: true,
+          insertIndex: Math.min(endIndex, p.waypoints.length - 1), segmentModeOverride: legMode, preferredRoutingType: segRoutingAt(afterIndex, p), preferStop: true,
         })
       },
     })
@@ -985,7 +991,7 @@ export default function TripBuilderScreen() {
         return { mode: 'transit', tabLabel: 'Train', headline: text }
       })
       .filter((s): s is AnyMap => !!s)
-      .slice(0, 6)
+      .slice(0, MAX_TRANSIT_STEPS)
 
   const transitDetailAt = (i: number): AnyMap | null => {
     for (const d of routeSegmentDetails) {
@@ -1008,9 +1014,12 @@ export default function TripBuilderScreen() {
     const arrivalName = arrival && typeof arrival === 'object' ? String(arrival.name ?? arrival.label ?? '') : ''
     return (
       <div style={{ paddingLeft: 34, marginBottom: 10 }}>
-        <TransitLegTabsCard
+        <TransitLegCard
           originName={waypoints[i].name}
           destinationName={waypoints[i + 1].name}
+          origin={{ lat: waypoints[i].lat, lon: waypoints[i].lon }}
+          destination={{ lat: waypoints[i + 1].lat, lon: waypoints[i + 1].lon }}
+          departureDate={range ? ymd(addDays(range.start, offsetDaysBefore(i + 1))) : undefined}
           arrivalStopName={arrivalName}
           steps={steps}
           onStepSelected={(step) => setFocusedStep({ ...step, requestId: ++focusRequestRef.current })}
@@ -1220,9 +1229,8 @@ export default function TripBuilderScreen() {
     const portageMeters = carries.reduce((t, s) => t + (Number(s.meters) || 0), 0)
     return { km: meters / 1000, paddleKm: Math.max(0, meters - portageMeters) / 1000, portages: carries.length, portageMeters, options: Array.isArray(d.options) ? d.options : [] }
   }
-  const paddleLegKm = (i: number) => routedPaddleLeg(i)?.km ?? drawnLegKm(i)
   const formatLength = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.max(10, Math.round(m / 10) * 10)} m`)
-  const portageSummary = (count: number, meters: number) => (count === 0 ? 'No portages' : `${count} portage${count === 1 ? '' : 's'} · ${formatLength(meters)}`)
+  const portageSummary = (count: number, meters: number) => (count === 0 ? 'no portages' : `${count} portage${count === 1 ? '' : 's'} · ${formatLength(meters)}`)
 
   /** Puts leg `i` on a route option: its bend point replaces the leg's own (the best option has none). */
   const chooseLegRoute = (afterIndex: number, option: AnyMap) => {
@@ -1232,67 +1240,98 @@ export default function TripBuilderScreen() {
     scheduleRouteCachePersist()
   }
 
+  // ---- legs: the sidebar lists the first stop, the last stop and every Stop; waypoints in between belong to the leg they shape ----
+  const visibleStops = waypoints.flatMap((w, i) => (i === 0 || i === waypoints.length - 1 || w.isStop ? [i] : []))
+  const legEnd = (i: number) => visibleStops.find((v) => v > i) ?? waypoints.length - 1
+  const legStart = (seg: number) => visibleStops.filter((v) => v <= seg).pop() ?? 0
+
+  /** Distance, portages and time of the leg starting at visible stop `i`, summed over the waypoint-to-waypoint segments inside it. */
+  const legStats = (i: number) => {
+    const end = legEnd(i)
+    const segs = Array.from({ length: Math.max(0, end - i) }, (_v, k) => i + k)
+    const paddle = segs.length > 0 && segs.every((s) => segModeAt(s, plan) === 'portaging')
+    let km = 0, portages = 0, portageMeters = 0, routed = true
+    for (const s of segs) {
+      const r = paddle ? routedPaddleLeg(s) : null
+      if (r) {
+        km += r.km
+        portages += r.portages
+        portageMeters += r.portageMeters
+      } else {
+        km += paddle ? drawnLegKm(s) : haversineKm(waypoints[s].lat, waypoints[s].lon, waypoints[s + 1].lat, waypoints[s + 1].lon)
+        routed = false
+      }
+    }
+    // Route options only make sense for a single computed segment; a leg shaped by waypoints is already your own choice.
+    const options = segs.length === 1 && paddle ? routedPaddleLeg(i)?.options ?? [] : []
+    return { end, segs, hidden: Math.max(0, end - i - 1), paddle, km, paddleKm: Math.max(0, km - portageMeters / 1000), portages, portageMeters, routed, options }
+  }
+
+  const legList = visibleStops.slice(0, -1).map(legStats)
+  const paddleLegs = legList.filter((l) => l.paddle)
+  const paddleLegKms = paddleLegs.map((l) => l.km)
+  const paddleTotalKm = paddleLegKms.reduce((t, km) => t + km, 0)
+  const longestPaddleKm = paddleLegKms.length ? Math.max(...paddleLegKms) : 0
+  const tripPortages = paddleLegs.every((l) => l.routed)
+    ? paddleLegs.reduce((t, l) => ({ count: t.count + l.portages, meters: t.meters + l.portageMeters }), { count: 0, meters: 0 })
+    : null
+
+  /** Sets the mode (or routing) of every segment inside the leg that starts at stop `i`. */
+  const setLegMode = (i: number, mode: string, updateDefaultMode = false) => {
+    for (let s = i; s < legEnd(i); s++) setSegmentMode(s, mode, updateDefaultMode)
+    setActiveSegment(i)
+  }
+  const setLegRoutingType = (i: number, routingType: string) => {
+    for (let s = i; s < legEnd(i); s++) setSegmentRoutingType(s, routingType)
+  }
+
   const PADDLE_DIFFICULTY_COLOR: Record<string, string> = { 'Beginner-friendly': '#2E7D32', Intermediate: '#B26A00', Advanced: '#C62828' }
-  const paddleStats = (i: number, km: number) => {
-    const leg = routedPaddleLeg(i)
-    const difficulty = adventureDifficultyForDistance(km, 'portaging')
-    const warning = adventureWarning(km, 'portaging')
-    const options = leg?.options ?? []
-    const shortest = Math.min(...options.map((o) => Number(o.distanceMeters)))
-    const leastCarry = Math.min(...options.map((o) => Number(o.portageMeters)))
+
+  /** One compact line: paddle distance, portages, time, difficulty (long-leg warning on hover). */
+  const paddleLine = (leg: ReturnType<typeof legStats>) => {
+    const difficulty = adventureDifficultyForDistance(leg.km, 'portaging')
+    const warning = adventureWarning(leg.km, 'portaging')
     return (
-      <div>
-        <div className="tb-leg-stats">
-          <div><span className="tb-leg-stat-label">Paddle</span>{(leg?.paddleKm ?? km).toFixed(1)} km</div>
-          <div><span className="tb-leg-stat-label">Portage</span>{leg ? portageSummary(leg.portages, leg.portageMeters) : '—'}</div>
-          <div><span className="tb-leg-stat-label">Time</span>{adventureEstimatedTime(km, 'portaging')}</div>
-        </div>
-        <div style={{ fontSize: 12, marginTop: 4 }}>
-          <span className="muted">{km.toFixed(1)} km total · </span>
-          <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }}>{difficulty}</span>
-        </div>
-        {warning && <div style={{ fontSize: 11.5, color: '#8A5A00', marginTop: 4 }}>{warning}</div>}
-        {options.length > 1 && (
-          <div className="tb-route-options" onClick={(e) => e.stopPropagation()}>
-            <div className="muted" style={{ fontSize: 11.5, fontWeight: 700 }}>{options.length} ways to get there (others dashed on the map)</div>
-            {options.map((o, k) => {
-              const tags = [Number(o.distanceMeters) === shortest && 'Shortest', Number(o.portageMeters) === leastCarry && 'Least portaging'].filter(Boolean)
-              return (
-                <button key={k} type="button" className={cx('tb-route-option', o.current && 'is-current')} disabled={o.current} onClick={() => chooseLegRoute(i, o)}>
-                  <span className="tb-route-option-badge" style={{ background: ROUTE_OPTION_COLORS[k % ROUTE_OPTION_COLORS.length] }}>{String.fromCharCode(65 + k)}</span>
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: 'block', fontWeight: 800 }}>
-                      {formatLength(Number(o.distanceMeters))} · {adventureEstimatedTime(Number(o.distanceMeters) / 1000, 'portaging')}
-                      {o.current && <span className="tb-route-option-tag">Current</span>}
-                    </span>
-                    <span style={{ display: 'block' }} className="muted">
-                      Paddle {formatLength(Number(o.paddleMeters))} · {portageSummary(Number(o.portages), Number(o.portageMeters))}
-                    </span>
-                    {tags.length > 0 && <span style={{ display: 'block', fontSize: 11, color: '#0F766E', fontWeight: 700 }}>{tags.join(' · ')}</span>}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        )}
+      <div className="tb-leg-line">
+        <span><b>{leg.paddleKm.toFixed(1)}</b> km paddle</span>
+        <span>{leg.routed ? (leg.portages === 0 ? 'no portages' : <><b>{leg.portages}</b> portage{leg.portages === 1 ? '' : 's'} <b>{formatLength(leg.portageMeters)}</b></>) : 'measuring portages…'}</span>
+        <span><b>{adventureEstimatedTime(leg.km, 'portaging')}</b></span>
+        <span style={{ fontWeight: 800, color: PADDLE_DIFFICULTY_COLOR[difficulty] ?? '#455A64' }} title={warning ?? undefined}>
+          {difficulty === 'Beginner-friendly' ? 'Beginner' : difficulty}{warning && <MdWarningAmber size={13} style={{ marginLeft: 2, verticalAlign: -2 }} />}
+        </span>
+        {leg.hidden > 0 && <span className="muted" title="Tap a waypoint on the map to remove it">via {leg.hidden} waypoint{leg.hidden === 1 ? '' : 's'}</span>}
       </div>
     )
   }
 
-  const paddleLegKms = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [paddleLegKm(i)] : []))
-  const paddleTotalKm = paddleLegKms.reduce((t, km) => t + km, 0)
-  const longestPaddleKm = paddleLegKms.length ? Math.max(...paddleLegKms) : 0
-  const routedPaddleLegs = waypoints.slice(0, -1).flatMap((_w, i) => (segModeAt(i, plan) === 'portaging' ? [routedPaddleLeg(i)] : []))
-  const tripPortages = routedPaddleLegs.every(Boolean)
-    ? routedPaddleLegs.reduce((t, l) => ({ count: t.count + l!.portages, meters: t.meters + l!.portageMeters }), { count: 0, meters: 0 })
-    : null
+  const routeOptionRows = (i: number, options: AnyMap[]) => {
+    const shortest = Math.min(...options.map((o) => Number(o.distanceMeters)))
+    const leastCarry = Math.min(...options.map((o) => Number(o.portageMeters)))
+    return (
+      <div className="tb-route-options" onClick={(e) => e.stopPropagation()}>
+        <div className="tb-route-options-title">{options.length} ways (others dashed on map)</div>
+        {options.map((o, k) => {
+          const tags = [Number(o.distanceMeters) === shortest && 'shortest', Number(o.portageMeters) === leastCarry && 'least portaging'].filter(Boolean).join(' · ')
+          return (
+            <button key={k} type="button" className={cx('tb-route-option', o.current && 'is-current')} disabled={o.current} onClick={() => chooseLegRoute(i, o)}>
+              <span className="tb-route-option-badge" style={{ background: ROUTE_OPTION_COLORS[k % ROUTE_OPTION_COLORS.length] }}>{String.fromCharCode(65 + k)}</span>
+              <span className="tb-route-option-text">
+                <b>{formatLength(Number(o.distanceMeters))}</b> · {adventureEstimatedTime(Number(o.distanceMeters) / 1000, 'portaging')} · {portageSummary(Number(o.portages), Number(o.portageMeters))}
+                {tags && <span className="tb-route-option-tags"> · {tags}</span>}
+              </span>
+              {o.current && <span className="tb-route-option-tag">Current</span>}
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
 
   const stopItem = (i: number) => {
     const isFirst = i === 0
     const isLast = i === waypoints.length - 1
     const w = waypoints[i]
-    const segKm = !isLast ? haversineKm(w.lat, w.lon, waypoints[i + 1].lat, waypoints[i + 1].lon) : 0
-    const paddleKm = !isLast && segModeAt(i, plan) === 'portaging' ? paddleLegKm(i) : null
+    const leg = isLast ? null : legStats(i)
     const counts = countsTowardDays(i)
     const nights = effectiveNights(i)
     const display = formatLocationDisplay({ raw: w.name })
@@ -1303,13 +1342,16 @@ export default function TripBuilderScreen() {
       const start = addDays(range.start, offsetDaysBefore(i))
       dateStr = `${ymd(start)} → ${ymd(addDays(start, Math.max(0, nights)))}`
     }
-    const staySummary = counts ? `${nights} night${nights === 1 ? '' : 's'}` : boundaryLabel ? `${boundaryLabel} · No stay` : 'Waypoint · No stay'
+    const meta = [
+      boundaryLabel,
+      counts ? `${nights} night${nights === 1 ? '' : 's'}${dateStr ? ` · ${dateStr}` : ''}` : boundaryLabel ? null : 'No stay',
+      display.subtitle.trim(),
+    ].filter(Boolean).join(' · ')
     const maxNights = range ? maxNightsFor(i) : 30
 
-    const isSegmentRow = !isLast
-    const isActive = isSegmentRow && selectedSeg === i
-    const carBlocked = isSegmentRow && isHikingTrailSegment(i, plan)
-    const segType = isSegmentRow ? segRoutingAt(i, plan) : 'calculated'
+    const isActive = !!leg && selectedSeg != null && selectedSeg >= i && selectedSeg < leg.end
+    const carBlocked = !!leg && leg.segs.some((s) => isHikingTrailSegment(s, plan))
+    const segType = leg ? segRoutingAt(i, plan) : 'calculated'
     const segMode = segModeAt(i, plan)
     const primaryRouting = defaultRoutingTypeForMode(segMode)
     const lastLegMode = waypoints.length >= 2 ? segModeAt(waypoints.length - 2, plan) : transportMode
@@ -1318,83 +1360,67 @@ export default function TripBuilderScreen() {
       <div key={i}>
         <div className="tb-stop">
           <div className="tb-stop-rail">
-            <div className="tb-stop-dot">{!counts ? <MdAltRoute size={11} color="#616161" /> : i + 1}</div>
+            <div className="tb-stop-dot">{!counts ? <MdAltRoute size={11} color="#616161" /> : visibleStops.filter((v) => v <= i && waypoints[v].isStop).length}</div>
             {!isLast && <div className="tb-stop-line" />}
           </div>
-          <div className={cx('tb-stop-card', isActive && 'active')} onClick={() => isSegmentRow && setActiveSegment(i)}>
-            <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
-              <div className="grow" style={{ fontWeight: 800, minWidth: 0 }}>{display.title}</div>
-              <div className="tb-stop-controls">
-                {boundaryLabel && <div className="tb-mini-box">{boundaryLabel}</div>}
-                <div>
-                  <div className="tb-mini-label">Type</div>
-                  <select className="tb-mini-select" value={w.isStop ? 'stop' : 'wp'} onClick={() => blockMapTapFor(2500)} onChange={(e) => { blockMapTapFor(); setWaypointRole(i, e.target.value === 'stop') }}>
-                    <option value="stop">Stop</option>
-                    <option value="wp">Waypoint</option>
-                  </select>
-                </div>
-                {w.isStop ? (
-                  <div>
-                    <div className="tb-mini-label">Nights</div>
-                    <select className="tb-mini-select" value={Math.max(1, Math.min(w.nights, maxNights))} onClick={() => blockMapTapFor(2500)} onChange={(e) => { blockMapTapFor(); setWaypointNights(i, Number(e.target.value)) }}>
-                      {Array.from({ length: maxNights }, (_v, k) => <option key={k} value={k + 1}>{k + 1}</option>)}
-                    </select>
-                  </div>
-                ) : (
-                  <div className="tb-mini-box">No stay</div>
-                )}
-              </div>
-              <button className="icon-btn" title="Remove destination" onClick={(e) => { e.stopPropagation(); removeWaypoint(i) }}><MdDeleteOutline size={20} /></button>
+          <div className={cx('tb-stop-card', isActive && 'active')} onClick={() => leg && setActiveSegment(i)}>
+            <div className="tb-stop-head">
+              <div className="tb-stop-title" title={display.title}>{display.title}</div>
+              {counts && (
+                <select
+                  className="tb-mini-select tb-nights" title="Nights" value={Math.max(1, Math.min(w.nights, maxNights))}
+                  onClick={(e) => { e.stopPropagation(); blockMapTapFor(2500) }} onChange={(e) => { blockMapTapFor(); setWaypointNights(i, Number(e.target.value)) }}
+                >
+                  {Array.from({ length: maxNights }, (_v, k) => <option key={k} value={k + 1}>{k + 1} nt</option>)}
+                </select>
+              )}
+              <button className="icon-btn tb-stop-delete" title="Remove destination" onClick={(e) => { e.stopPropagation(); removeWaypoint(i) }}><MdDeleteOutline size={18} /></button>
             </div>
-            {display.subtitle.trim() && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>{display.subtitle}</div>}
-            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>{dateStr ? `${staySummary} · ${dateStr}` : staySummary}</div>
+            {meta && <div className="tb-stop-meta" title={meta}>{meta}</div>}
 
-            {isSegmentRow ? (
-              <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                {paddleKm != null ? paddleStats(i, paddleKm) : <div className="muted" style={{ fontSize: 12 }}>{segKm.toFixed(2)} km to next</div>}
-                <div className="row wrap gap-sm" style={{ alignItems: 'center', marginTop: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700 }}>Mode:</span>
+            {leg ? (
+              <div onClick={(e) => e.stopPropagation()}>
+                {leg.paddle ? paddleLine(leg) : <div className="tb-leg-line muted"><span>{leg.km.toFixed(1)} km to next</span>{leg.hidden > 0 && <span title="Tap a waypoint on the map to remove it">via {leg.hidden} waypoint{leg.hidden === 1 ? '' : 's'}</span>}</div>}
+                {leg.options.length > 1 && routeOptionRows(i, leg.options)}
+                <div className="tb-leg-controls" title={routingDescription(segType.trim().toLowerCase(), segMode)}>
                   <select
-                    className="tb-mini-select" style={{ width: 150 }} value={segMode}
+                    className="tb-mini-select tb-leg-mode" value={segMode} aria-label="Leg mode"
                     onFocus={() => { setActiveSegment(i); blockMapTapFor(2500) }}
-                    onChange={(e) => { setActiveSegment(i); blockMapTapFor(); setSegmentMode(i, e.target.value) }}
+                    onChange={(e) => { setActiveSegment(i); blockMapTapFor(); setLegMode(i, e.target.value) }}
                   >
                     {availableTransportOptionsForTripType(normalizedTripType).map((o) => (
                       <option key={o.mode} value={o.mode} disabled={carBlocked && o.mode === 'car'}>{o.emoji} {o.label}</option>
                     ))}
                   </select>
-                  {paddleKm == null && (
+                  {!leg.paddle && (
                     <>
-                      <span style={{ fontSize: 12, fontWeight: 700 }}>Routing:</span>
-                      <button className={cx('chip', segType.trim().toLowerCase() === primaryRouting && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, primaryRouting) }}>
+                      <button className={cx('chip', 'tb-chip-sm', segType.trim().toLowerCase() === primaryRouting && 'selected')} onClick={() => { setActiveSegment(i); setLegRoutingType(i, primaryRouting) }}>
                         {primaryRoutingLabelForMode(segMode)}
                       </button>
-                      <button className={cx('chip', segType.trim().toLowerCase() === 'direct' && 'selected')} onClick={() => { setActiveSegment(i); setSegmentRoutingType(i, 'direct') }}>Direct</button>
+                      <button className={cx('chip', 'tb-chip-sm', segType.trim().toLowerCase() === 'direct' && 'selected')} onClick={() => { setActiveSegment(i); setLegRoutingType(i, 'direct') }}>Direct</button>
                     </>
                   )}
-                  <Button variant="text" size="sm" className="tb-teal-btn" icon={<MdAutoAwesome size={14} />} onClick={() => { setActiveSegment(i); smartFindStopBetween(i) }}>
+                  <Button variant="text" size="sm" className="tb-teal-btn" icon={<MdAutoAwesome size={13} />} onClick={() => { setActiveSegment(i); smartFindStopBetween(i, leg.end) }}>
                     {isAdventureMode(segMode) ? 'Find Campsite' : 'Find Stay Stop'}
                   </Button>
                 </div>
-                <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>{routingDescription(segType.trim().toLowerCase(), segMode)}</div>
               </div>
             ) : (
-              <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                <div className="muted" style={{ fontSize: 12 }}>Last destination</div>
-                <Button variant="text" size="sm" className="tb-teal-btn" icon={<MdAutoAwesome size={14} />} onClick={smartSuggestNextStop}>
+              <div className="tb-leg-controls" onClick={(e) => e.stopPropagation()}>
+                <Button variant="text" size="sm" className="tb-teal-btn" icon={<MdAutoAwesome size={13} />} onClick={smartSuggestNextStop}>
                   {isAdventureMode(lastLegMode) ? 'Suggest Next Campsite' : 'Suggest Next Stay Stop'}
                 </Button>
               </div>
             )}
           </div>
         </div>
-        {!isLast && transitLegCard(i)}
+        {!isLast && legStart(i) === i && transitLegCard(i)}
       </div>
     )
   }
 
   const selectedLegMode = selectedSeg == null ? normalizeBuilderMode(transportMode) : segModeAt(selectedSeg, plan)
-  const selectedLegLabel = selectedSeg == null ? 'No leg selected yet' : `Leg ${selectedSeg + 1}`
+  const selectedLegLabel = selectedSeg == null ? 'No leg selected yet' : `Leg ${visibleStops.filter((v) => v <= selectedSeg).length}`
   const nameMsg = tripNameValidationMessage(tripName) ?? waypointValidationMessage(waypoints)
 
   const itineraryPanel = (
@@ -1470,7 +1496,7 @@ export default function TripBuilderScreen() {
             : 'No destinations yet. Search above or click the map to add.'}
         </div>
       ) : (
-        waypoints.map((_w, i) => stopItem(i))
+        visibleStops.map((i) => stopItem(i))
       )}
       {waypoints.length >= 2 && (
         isLoopClosed(waypoints) ? (
@@ -1535,6 +1561,7 @@ export default function TripBuilderScreen() {
         onRouteTapAddVia={adjustRoute ? (a, lat, lon) => { if (!isMapTapBlocked()) void onRouteTapped(a, lat, lon) } : undefined}
         onViaDragEnd={adjustRoute ? (v, lat, lon) => { if (!isMapTapBlocked()) moveVia(v, lat, lon) } : undefined}
         onViaTapDelete={adjustRoute ? (v) => { if (!isMapTapBlocked()) deleteVia(v) } : undefined}
+        onWaypointTap={(index) => { if (!isMapTapBlocked()) removeInteriorWaypoint(index) }}
         routeComputingBannerTop={compact ? 148 : 108}
         activeStopIndex={(selectedSeg ?? 0) + 1}
         portageExperienceLevel={experience}

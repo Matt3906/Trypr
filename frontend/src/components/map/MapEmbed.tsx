@@ -44,6 +44,8 @@ export interface MapEmbedProps {
   onRouteTapAddVia?: (afterIndex: number, lat: number, lon: number) => void
   onViaDragEnd?: (viaIndex: number, lat: number, lon: number) => void
   onViaTapDelete?: (viaIndex: number) => void
+  /** Called with the point index when the user taps a waypoint (a non-stop point between the first and last). */
+  onWaypointTap?: (pointIndex: number) => void
   onHikingCampsiteTap?: (campsite: PointMap) => void
   onPortageAccessTap?: (accessPoint: PointMap) => void
   disableDefaultUi?: boolean
@@ -585,6 +587,17 @@ export default function MapEmbed(props: MapEmbedProps) {
       const ll = toLL(pt)
       const n = stopNumbers[i]
       const name = String(pt.name ?? '').trim()
+      // Waypoints only shape the route and are not listed in the sidebar, so tapping one removes it.
+      if (n == null && i > 0 && i < points.length - 1 && p.onWaypointTap) {
+        return {
+          id: `main_${i}`, position: ll, icon: viaDotIcon(), title: 'Waypoint (tap to remove)', zIndex: 10,
+          onClick: () => {
+            suppressTapUntil.current = Date.now() + 900
+            p.onWaypointTap?.(i)
+            hidePreview()
+          },
+        }
+      }
       return {
         id: `main_${i}`, position: ll, icon: n == null ? viaDotIcon() : numberedIcon(n, primary),
         title: name || (n != null ? `Stop ${n}` : 'Waypoint'), onClick: mkTap(pt, ll), zIndex: 10,

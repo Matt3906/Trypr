@@ -9,7 +9,8 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { auth, db } from '@/backend'
 import MapEmbed from '@/components/map/MapEmbed'
 import Globe3DEmbed from '@/components/Globe3DEmbed'
-import TransitLegTabsCard from '@/components/TransitLegTabsCard'
+import TransitLegCard from '@/components/TransitLegCard'
+import { MAX_TRANSIT_STEPS } from '@/services/directions'
 import ShareTripDialog from '@/components/ShareTripDialog'
 import TripChatDialog from '@/components/TripChatDialog'
 import TripExpensesDialog from '@/components/TripExpensesDialog'
@@ -520,7 +521,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
         if (lower.startsWith('walk')) return { mode: 'walking', tabLabel: 'Walk', headline: text }
         if (lower.startsWith('bike')) return { mode: 'biking', tabLabel: 'Bike', headline: text }
         return { mode: 'transit', tabLabel: 'Train', headline: text }
-      }).filter(Boolean).slice(0, 6)
+      }).filter(Boolean).slice(0, MAX_TRANSIT_STEPS)
       return { segmentIndex, mode: 'transit', steps, ...(transitArrivalStop ? { arrivalStop: transitArrivalStop } : {}) }
     }
     return null
@@ -536,8 +537,11 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
     const arrivalName = arr && typeof arr === 'object' ? String(arr.name ?? arr.label ?? '') : ''
     return (
       <div style={{ padding: '0 0 6px 44px' }}>
-        <TransitLegTabsCard
+        <TransitLegCard
           originName={String(waypoints[i].name ?? `Stop ${i + 1}`)} destinationName={String(waypoints[i + 1].name ?? `Stop ${i + 2}`)} arrivalStopName={arrivalName} steps={steps}
+          origin={{ lat: Number(waypoints[i].lat), lon: Number(waypoints[i].lon ?? waypoints[i].lng) }}
+          destination={{ lat: Number(waypoints[i + 1].lat), lon: Number(waypoints[i + 1].lon ?? waypoints[i + 1].lng) }}
+          departureDate={String(waypoints[i].checkoutDate ?? '') || undefined}
           onStepSelected={(step) => setFocusedStep({ ...step, requestId: ++stepReq.current })}
         />
       </div>

@@ -106,7 +106,7 @@ export function readRouteInstructions(raw: unknown, maxItems = 8): string[] {
     .slice(0, maxItems)
 }
 
-export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxStepsPerSegment = 8): AnyMap[] {
+export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxStepsPerSegment = 12): AnyMap[] {
   if (!Array.isArray(raw)) return []
   const out: AnyMap[] = []
 
@@ -149,6 +149,12 @@ export function readRouteSegmentDetails(raw: unknown, maxSegments = 24, maxSteps
         if (detail) stepMap.detail = detail
         if (caption) stepMap.caption = caption
         if (lineColor) stepMap.lineColor = lineColor
+        for (const k of ['vehicleType', 'lineShortName', 'headsign', 'departureStop', 'arrivalStop', 'durationText']) {
+          const v = String(step[k] ?? '').trim()
+          if (v) stepMap[k] = v
+        }
+        const numStops = toNum(step.numStops)
+        if (Number.isFinite(numStops) && numStops > 0) stepMap.numStops = Math.round(numStops)
         const focusLat = toNum(step.focusLat ?? step.lat)
         const focusLon = toNum(step.focusLon ?? step.lon ?? step.lng)
         if (Number.isFinite(focusLat) && Number.isFinite(focusLon)) {

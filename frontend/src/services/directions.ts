@@ -20,7 +20,18 @@ export interface StepDetail {
   path?: PathPoint[]
   /** Length of this step, where known (paddle / portage runs). */
   meters?: number
+  // Structured transit fields, so the leg card can explain each step without re-parsing headlines.
+  vehicleType?: string
+  lineShortName?: string
+  headsign?: string
+  departureStop?: string
+  arrivalStop?: string
+  numStops?: number
+  durationText?: string
 }
+
+/** Most steps a transit leg keeps; dropping the tail of a journey strands the traveller. */
+export const MAX_TRANSIT_STEPS = 12
 
 export interface DirectionsResult {
   polylinePoints: [number, number][] // [lat, lng]
@@ -34,16 +45,17 @@ export interface DirectionsResult {
 
 let directionsService: google.maps.DirectionsService | null = null
 
-async function ensureDirectionsService(): Promise<void> {
+export async function ensureDirectionsService(): Promise<boolean> {
   await Promise.race([ensureGoogleMapsLoaded(), new Promise((r) => setTimeout(r, 8000))])
-  if (!mapsReady()) return
-  if (directionsService) return
+  if (!mapsReady()) return false
+  if (directionsService) return true
   try {
     await Promise.race([(google.maps as any).importLibrary?.('routes'), new Promise((r) => setTimeout(r, 4000))])
   } catch {
     /* ignore */
   }
   if (google.maps.DirectionsService) directionsService = new google.maps.DirectionsService()
+  return !!directionsService
 }
 
 function tabLabelForStep(travelMode: string, shortName = '', vehicleName = ''): string {
@@ -76,10 +88,14 @@ function stepDetail(s: StepDetail): StepDetail {
   }
   if (s.focusZoom != null && Number.isFinite(s.focusZoom)) out.focusZoom = s.focusZoom
   if (s.path?.length) out.path = s.path
+  for (const k of ['vehicleType', 'lineShortName', 'headsign', 'departureStop', 'arrivalStop', 'durationText'] as const) {
+    if (s[k]?.trim()) out[k] = s[k]!.trim()
+  }
+  if (s.numStops != null && s.numStops > 0) out.numStops = s.numStops
   return out
 }
 
-function pointFromLocation(loc?: google.maps.LatLng | null): PathPoint | null {
+export function pointFromLocation(loc?: google.maps.LatLng | null): PathPoint | null {
   if (!loc) return null
   const lat = loc.lat()
   const lon = loc.lng()
@@ -94,7 +110,7 @@ function appendDistinct(out: PathPoint[], p: PathPoint | null) {
   out.push(p)
 }
 
-function pathFromStep(step: google.maps.DirectionsStep, start: PathPoint | null, end: PathPoint | null): PathPoint[] {
+export function pathFromStep(step: google.maps.DirectionsStep, start: PathPoint | null, end: PathPoint | null): PathPoint[] {
   const out: PathPoint[] = []
   appendDistinct(out, start)
   for (const pt of step.path ?? []) appendDistinct(out, pointFromLocation(pt))
@@ -102,10 +118,10 @@ function pathFromStep(step: google.maps.DirectionsStep, start: PathPoint | null,
   return out
 }
 
-const focusPoint = (path: PathPoint[]): PathPoint | null =>
+export const focusPoint = (path: PathPoint[]): PathPoint | null =>
   path.length === 0 ? null : path.length === 1 ? path[0] : path[Math.floor(path.length / 2)]
 
-function focusZoomForMode(mode: string): number {
+export function focusZoomForMode(mode: string): number {
   switch (mode.trim().toUpperCase()) {
     case 'WALKING':
       return 15.4
@@ -118,7 +134,7 @@ function focusZoomForMode(mode: string): number {
   }
 }
 
-const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+export const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 
 export interface DirectionsArgs {
   originLat: number
@@ -167,11 +183,29 @@ export function decodePolyline(encoded: string): [number, number][] {
   return points
 }
 
+/** Run one DirectionsService request; null on any non-OK status or after 15s. */
+export async function requestDirections(request: google.maps.DirectionsRequest): Promise<google.maps.DirectionsResult | null> {
+  await ensureDirectionsService()
+  const svc = directionsService
+  if (!svc) return null
+  return Promise.race([
+    new Promise<google.maps.DirectionsResult | null>((resolve) => {
+      svc.route(request, (result, status) => {
+        if (status !== 'OK' || !result) {
+          console.debug(`googleDirections status=${status} mode=${request.travelMode}`)
+          resolve(null)
+          return
+        }
+        resolve(result)
+      })
+    }),
+    new Promise<null>((r) => setTimeout(() => r(null), 15000)),
+  ])
+}
+
 export async function getDirections(a: DirectionsArgs): Promise<DirectionsResult | null> {
   try {
-    await ensureDirectionsService()
-    const svc = directionsService
-    if (!svc) return null
+    if (!(await ensureDirectionsService())) return null
 
     const originQ = a.originQuery?.trim() ?? ''
     const destQ = a.destQuery?.trim() ?? ''
@@ -206,19 +240,7 @@ export async function getDirections(a: DirectionsArgs): Promise<DirectionsResult
       request.transitOptions = transitOptions
     }
 
-    const response = await Promise.race([
-      new Promise<google.maps.DirectionsResult | null>((resolve) => {
-        svc.route(request, (result, status) => {
-          if (status !== 'OK' || !result) {
-            console.debug(`googleDirections status=${status} mode=${a.mode}`)
-            resolve(null)
-            return
-          }
-          resolve(result)
-        })
-      }),
-      new Promise<null>((r) => setTimeout(() => r(null), 15000)),
-    ])
+    const response = await requestDirections(request)
     if (!response) return null
     const route = response.routes?.[0]
     if (!route) return null
@@ -286,6 +308,13 @@ export async function getDirections(a: DirectionsArgs): Promise<DirectionsResult
                   focusLon: focus?.lon,
                   focusZoom: focusZoomForMode(travelMode),
                   path: stepPath,
+                  vehicleType: line.vehicle?.type ?? '',
+                  lineShortName: shortName || lineName,
+                  headsign,
+                  departureStop: depName,
+                  arrivalStop: arrName,
+                  numStops: transit.num_stops,
+                  durationText: step.duration?.text ?? '',
                 }),
               )
             }
@@ -307,6 +336,7 @@ export async function getDirections(a: DirectionsArgs): Promise<DirectionsResult
                   tabLabel: tabLabelForStep(tm),
                   headline: clean,
                   detail: distText,
+                  durationText: step.duration?.text ?? '',
                   focusLat: focus?.lat,
                   focusLon: focus?.lon,
                   focusZoom: focusZoomForMode(tm),
@@ -332,8 +362,8 @@ export async function getDirections(a: DirectionsArgs): Promise<DirectionsResult
       polylinePoints: polyPoints,
       distanceMeters: totalDist,
       durationSeconds: totalDur,
-      instructions: instructions.slice(0, 6),
-      stepDetails: stepDetails.slice(0, 6),
+      instructions: instructions.slice(0, MAX_TRANSIT_STEPS),
+      stepDetails: stepDetails.slice(0, MAX_TRANSIT_STEPS),
       transitArrivalStop,
       transitLineColor,
     }
