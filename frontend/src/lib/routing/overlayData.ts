@@ -5,10 +5,14 @@ import { ceilToStep, floorToStep, haversineMeters, pathSignature, roundToStep, s
 export type AnyMap = Record<string, any>
 
 export interface HikingOverlayEntry {
+  /** Identifies the set of grid tiles merged into this entry. */
+  key: string
   fetchedAt: number
   trailLines: LL[][]
   campsites: AnyMap[]
   trailheads: AnyMap[]
+  /** Tiles of the requested area that could not be loaded. */
+  missingTiles: number
 }
 
 export interface Bounds { south: number; west: number; north: number; east: number }
@@ -33,9 +37,7 @@ export interface PortagingOverlayEntry {
   bounds?: Bounds
 }
 
-const hikingCache = new Map<string, HikingOverlayEntry>()
 const portagingCache = new Map<string, PortagingOverlayEntry>()
-const hikingInFlight = new Map<string, Promise<HikingOverlayEntry | null>>()
 const portagingInFlight = new Map<string, Promise<PortagingOverlayEntry | null>>()
 
 // ---------- cache key helpers ----------
@@ -58,32 +60,6 @@ export function portagingFocusCacheKey(focus: LL, padDegrees = 0.18): string {
   const q = quantizedOverlayPadDegrees(padDegrees)
   const bucket = Math.max(0.02, q / 4)
   return `focus:${roundToStep(focus.lat, bucket).toFixed(3)},${roundToStep(focus.lng, bucket).toFixed(3)}:${q.toFixed(2)}`
-}
-
-export function routeBoundsCenter(anchors: LL[]): LL {
-  if (!anchors.length) return { lat: 0, lng: 0 }
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
-  for (const p of anchors) {
-    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
-    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
-  }
-  return { lat: (minLat + maxLat) / 2, lng: (minLon + maxLon) / 2 }
-}
-
-export function routeFocusPadDegrees(anchors: LL[], opts: { minPad: number; maxPad: number; edgePadding: number }): number {
-  if (!anchors.length) return opts.minPad
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
-  for (const p of anchors) {
-    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
-    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
-  }
-  const span = Math.max(maxLat - minLat, maxLon - minLon)
-  return Math.min(opts.maxPad, Math.max(opts.minPad, opts.edgePadding + span / 2))
-}
-
-export function trailRoutePadDegreesForMode(mode: string, expanded = false): number {
-  if (mode === 'portaging') return expanded ? 0.16 : 0.1
-  return expanded ? 0.14 : 0.08
 }
 
 /**
@@ -172,101 +148,168 @@ function campFrom(name: string, lat: number, lon: number, tags: AnyMap, sourceTy
 }
 
 // ---------- hiking ----------
-async function fetchHikingOverlayData(routePath: LL[], padDegrees = 0.08): Promise<HikingOverlayEntry | null> {
-  if (!routePath.length) return null
-  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity
-  for (const p of routePath) {
-    minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat)
-    minLon = Math.min(minLon, p.lng); maxLon = Math.max(maxLon, p.lng)
+/**
+ * Hiking data is fetched in fixed grid tiles, so the map overlay, the trail router and every pan of the map send
+ * identical queries and share the backend's Overpass cache. Free-form boxes almost never repeated, and a cold
+ * query can keep the mirrors busy for 30-60 s.
+ */
+const HIKING_TILE_DEGREES = 0.2
+const MAX_HIKING_TILES = 12
+const HIKING_TILE_CONCURRENCY = 4
+
+interface HikingTile {
+  fetchedAt: number
+  /** Trail geometry keyed by OSM way id: ways crossing a tile edge come back in both tiles, and hiking relations repeat their member ways. */
+  trails: Map<string, LL[]>
+  campsites: AnyMap[]
+  trailheads: AnyMap[]
+}
+
+const hikingTileCache = new Map<string, HikingTile>()
+const hikingTileInFlight = new Map<string, Promise<HikingTile | null>>()
+
+export function boundsAround(points: LL[], padDegrees: number): Bounds | null {
+  if (!points.length) return null
+  let south = Infinity, north = -Infinity, west = Infinity, east = -Infinity
+  for (const p of points) {
+    south = Math.min(south, p.lat); north = Math.max(north, p.lat)
+    west = Math.min(west, p.lng); east = Math.max(east, p.lng)
   }
-  const bb = snappedBbox(minLat - padDegrees, minLon - padDegrees, maxLat + padDegrees, maxLon + padDegrees)
+  return { south: south - padDegrees, west: west - padDegrees, north: north + padDegrees, east: east + padDegrees }
+}
+
+/** Grid tiles ("south,west") covering `b`, nearest the middle first (the order they load in), capped so a wide view stays affordable. */
+export function hikingTileKeys(b: Bounds): string[] {
+  const t = HIKING_TILE_DEGREES
+  const mid = { lat: (b.south + b.north) / 2, lng: (b.west + b.east) / 2 }
+  const tiles: { key: string; d: number }[] = []
+  for (let s = floorToStep(b.south, t); s < b.north - 1e-9; s += t) {
+    for (let w = floorToStep(b.west, t); w < b.east - 1e-9; w += t) {
+      const key = `${s.toFixed(2)},${w.toFixed(2)}`
+      tiles.push({ key, d: Math.abs(s + t / 2 - mid.lat) + Math.abs(w + t / 2 - mid.lng) })
+    }
+  }
+  return tiles.sort((x, y) => x.d - y.d || (x.key < y.key ? -1 : 1)).slice(0, MAX_HIKING_TILES).map((x) => x.key)
+}
+
+async function fetchHikingTile(key: string): Promise<HikingTile | null> {
+  const [south, west] = key.split(',').map(Number)
+  const bb = [south, west, south + HIKING_TILE_DEGREES, west + HIKING_TILE_DEGREES].map((v) => v.toFixed(2)).join(',')
   const query = `[out:json][timeout:25];
 (
-  way["highway"="path"](${bb});
-  way["highway"="footway"](${bb});
+  way["highway"~"^(path|footway)$"](${bb});
   way["route"="hiking"](${bb});
   relation["route"="hiking"](${bb});
-  node["tourism"~"camp_site|camp_pitch"](${bb});
-  way["tourism"~"camp_site|camp_pitch"](${bb});
-  relation["tourism"~"camp_site|camp_pitch"](${bb});
-  node["tourism"="information"]["information"~"trailhead|guidepost"](${bb});
-  way["tourism"="information"]["information"~"trailhead|guidepost"](${bb});
-  relation["tourism"="information"]["information"~"trailhead|guidepost"](${bb});
-  node["trailhead"="yes"](${bb});
-  way["trailhead"="yes"](${bb});
-  relation["trailhead"="yes"](${bb});
+  nwr["tourism"~"^(camp_site|camp_pitch)$"](${bb});
+  nwr["tourism"="information"]["information"~"^(trailhead|guidepost)$"](${bb});
+  nwr["trailhead"="yes"](${bb});
 );
 out body geom;`
   const data = await fetchOverpassData({ query, logPrefix: 'hikingOverpass', requestTimeoutMs: 11000 })
   if (!data) return null
 
-  const trails: LL[][] = []
+  const trails = new Map<string, LL[]>()
   const campsites: AnyMap[] = []
   const trailheads: AnyMap[] = []
-  const seenCamp = new Set<string>()
-  const seenHead = new Set<string>()
   const isTrailhead = (t: AnyMap) => lower(t.trailhead) === 'yes' || (lower(t.tourism) === 'information' && ['trailhead', 'guidepost'].includes(lower(t.information)))
   const isTrail = (t: AnyMap) => ['path', 'footway'].includes(lower(t.highway)) || lower(t.route) === 'hiking'
-  const addCamp = (name: string, lat: number, lon: number, tags: AnyMap, sourceType: string) => {
-    const key = `${lat.toFixed(5)},${lon.toFixed(5)}`
-    if (seenCamp.has(key)) return
-    seenCamp.add(key)
-    campsites.push(campFrom(name, lat, lon, tags, sourceType))
+  const addTrail = (id: unknown, line: LL[]) => {
+    const k = `way/${id}`
+    if (line.length >= 2 && !trails.has(k)) trails.set(k, line)
   }
-  const addHead = (name: string, lat: number, lon: number) => {
-    const key = `${lat.toFixed(5)},${lon.toFixed(5)}`
-    if (seenHead.has(key)) return
-    seenHead.add(key)
-    trailheads.push({ name, lat, lon })
+  const addPoint = (name: string, lat: number, lon: number, tags: AnyMap, sourceType: string) => {
+    if (isCampTags(tags)) campsites.push(campFrom(name || 'Campsite', lat, lon, tags, sourceType))
+    else if (isTrailhead(tags)) trailheads.push({ name: name || 'Trailhead', lat, lon })
   }
 
   for (const m of data.elements ?? []) {
     const type = String(m.type ?? '')
     const tags: AnyMap = m.tags ?? {}
+    const name = String(tags.name ?? '').trim()
     if (type === 'way') {
       const line = geometryToLine(m.geometry)
-      if (line.length >= 2 && isTrail(tags)) trails.push(line)
+      if (isTrail(tags)) addTrail(m.id, line)
       const c = centroid(line)
-      if (c && isCampTags(tags)) addCamp(String(tags.name ?? 'Campsite'), c.lat, c.lng, tags, type)
-      if (c && isTrailhead(tags)) addHead(String(tags.name ?? 'Trailhead'), c.lat, c.lng)
+      if (c) addPoint(name, c.lat, c.lng, tags, type)
     } else if (type === 'relation') {
       const members = m.members ?? []
-      if (isTrail(tags)) for (const mem of members) {
-        const line = geometryToLine(mem.geometry)
-        if (line.length >= 2) trails.push(line)
-      }
+      if (isTrail(tags)) for (const mem of members) if (mem?.type === 'way') addTrail(mem.ref, geometryToLine(mem.geometry))
       const c = centroidFromMembers(members)
-      if (c && isCampTags(tags)) addCamp(String(tags.name ?? 'Campsite'), c.lat, c.lng, tags, type)
-      if (c && isTrailhead(tags)) addHead(String(tags.name ?? 'Trailhead'), c.lat, c.lng)
+      if (c) addPoint(name, c.lat, c.lng, tags, type)
     } else if (type === 'node') {
-      if (typeof m.lat !== 'number' || typeof m.lon !== 'number') continue
-      if (isCampTags(tags)) addCamp(String(tags.name ?? 'Campsite'), m.lat, m.lon, tags, type)
-      else if (isTrailhead(tags)) addHead(String(tags.name ?? 'Trailhead'), m.lat, m.lon)
+      if (typeof m.lat === 'number' && typeof m.lon === 'number') addPoint(name, m.lat, m.lon, tags, type)
     }
   }
-  console.debug(`hikingOverpass converted trails=${trails.length} campsites=${campsites.length} trailheads=${trailheads.length}`)
-  return { fetchedAt: Date.now(), trailLines: trails, campsites, trailheads }
+  console.debug(`hikingOverpass tile=${key} trails=${trails.size} campsites=${campsites.length} trailheads=${trailheads.length}`)
+  return { fetchedAt: Date.now(), trails, campsites, trailheads }
 }
 
-export async function getHikingOverlayEntry(opts: { cacheKey: string; routePath: LL[]; padDegrees?: number }): Promise<HikingOverlayEntry | null> {
-  const cached = hikingCache.get(opts.cacheKey)
-  if (cached && isFresh(cached.fetchedAt, OVERLAY_CACHE_TTL_MS)) return cached
-  const pending = hikingInFlight.get(opts.cacheKey)
-  if (pending) return cached ?? pending
-  const p = fetchHikingOverlayData(opts.routePath, opts.padDegrees)
-  hikingInFlight.set(opts.cacheKey, p)
-  try {
-    const entry = await p
-    if (entry) {
-      hikingCache.set(opts.cacheKey, entry)
-      return entry
-    }
-    return cached ?? null
-  } finally {
-    if (hikingInFlight.get(opts.cacheKey) === p) hikingInFlight.delete(opts.cacheKey)
+function getHikingTile(key: string): Promise<HikingTile | null> {
+  const cached = hikingTileCache.get(key)
+  if (cached && isFresh(cached.fetchedAt, OVERLAY_CACHE_TTL_MS)) return Promise.resolve(cached)
+  let pending = hikingTileInFlight.get(key)
+  if (!pending) {
+    pending = fetchHikingTile(key)
+      .then((tile) => {
+        if (tile) hikingTileCache.set(key, tile)
+        return tile ?? cached ?? null
+      })
+      .finally(() => hikingTileInFlight.delete(key))
+    hikingTileInFlight.set(key, pending)
   }
+  return pending
 }
-export const peekHikingCache = (key: string) => hikingCache.get(key)
+
+const mergedHikingCache = new Map<string, { tiles: HikingTile[]; entry: HikingOverlayEntry }>()
+
+function mergeHikingTiles(keys: string[], tiles: (HikingTile | null)[]): HikingOverlayEntry | null {
+  const loaded = tiles.filter((t): t is HikingTile => !!t)
+  if (!loaded.length) return null
+  // Same tiles, same merged arrays: keeps the router's graph cache (keyed by `key`) valid between legs.
+  const key = keys.filter((_, i) => tiles[i]).sort().join(';')
+  const missingTiles = keys.length - loaded.length
+  const prior = mergedHikingCache.get(key)
+  if (prior && prior.tiles.length === loaded.length && prior.tiles.every((t, i) => t === loaded[i])) return { ...prior.entry, missingTiles }
+
+  const trails = new Map<string, LL[]>()
+  const campsites: AnyMap[] = [], trailheads: AnyMap[] = []
+  const seenCamp = new Set<string>(), seenHead = new Set<string>()
+  for (const t of loaded) {
+    for (const [k, line] of t.trails) if (!trails.has(k)) trails.set(k, line)
+    for (const c of t.campsites) { const k = latLngMergeKey({ lat: c.lat, lng: c.lon }); if (!seenCamp.has(k)) { seenCamp.add(k); campsites.push(c) } }
+    for (const h of t.trailheads) { const k = latLngMergeKey({ lat: h.lat, lng: h.lon }); if (!seenHead.has(k)) { seenHead.add(k); trailheads.push(h) } }
+  }
+  const entry: HikingOverlayEntry = {
+    key, fetchedAt: Math.min(...loaded.map((t) => t.fetchedAt)), trailLines: [...trails.values()], campsites, trailheads, missingTiles,
+  }
+  mergedHikingCache.set(key, { tiles: loaded, entry })
+  return entry
+}
+
+/**
+ * Trails, campsites and trailheads for an area, merged from the grid tiles that cover it. `missingTiles` counts
+ * tiles that could not be loaded (the rest is still returned); null only when nothing loaded at all.
+ * `onProgress` receives the merged data each time another tile arrives while others are still loading, so cached
+ * tiles can be drawn without waiting on a cold one.
+ */
+export async function loadHikingArea(bounds: Bounds, onProgress?: (partial: HikingOverlayEntry) => void): Promise<HikingOverlayEntry | null> {
+  const keys = hikingTileKeys(bounds)
+  const tiles: (HikingTile | null)[] = new Array(keys.length).fill(null)
+  let next = 0, settled = 0
+  const worker = async () => {
+    while (next < keys.length) {
+      const i = next++
+      tiles[i] = await getHikingTile(keys[i])
+      settled++
+      if (onProgress && tiles[i] && settled < keys.length) {
+        const partial = mergeHikingTiles(keys, tiles)
+        if (partial) onProgress(partial)
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(HIKING_TILE_CONCURRENCY, keys.length) }, worker))
+  return mergeHikingTiles(keys, tiles)
+}
 
 // ---------- portaging ----------
 const ACCESS_NAME_RE = 'access point|put[ -]?in|take[ -]?out|boat launch|canoe launch|landing'

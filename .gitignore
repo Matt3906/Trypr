@@ -66,3 +66,6 @@ __pycache__/
 
 # --- Frontend build output ---
 frontend/dist/
+
+# Archive of the marketing folder (over GitHub's 100 MB limit; the folder itself is tracked)
+marketing.zip

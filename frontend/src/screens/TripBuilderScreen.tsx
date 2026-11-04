@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { addDoc, collection, serverTimestamp, setDoc, type DocumentReference } from '@/backend/firestore'
 import { useNavigate } from 'react-router-dom'
 import {
-  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdExpandLess, MdExpandMore, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
+  MdAdd, MdAltRoute, MdAutoAwesome, MdCheck, MdDateRange, MdDeleteOutline, MdExpandLess, MdExpandMore, MdHotel, MdLoop, MdOutlineBackpack, MdSave, MdSchool, MdSearch,
   MdShare, MdTitle, MdTouchApp, MdTune, MdWarningAmber, MdWaterDrop,
 } from 'react-icons/md'
 import { auth, db } from '@/backend'
@@ -16,6 +16,8 @@ import TransitLegCard from '@/components/TransitLegCard'
 import { MAX_TRANSIT_STEPS } from '@/services/directions'
 import ShareTripDialog from '@/components/ShareTripDialog'
 import ActivityFinderModal from '@/components/ActivityFinderModal'
+import StaysCompareSheet from '@/components/StaysCompareSheet'
+import { stayPlaceName, type StayStop } from '@/lib/stays'
 import { Button, Spinner, cx } from '@/components/ui'
 import { formatLocationDisplay } from '@/lib/locationDisplay'
 import { buildRouteCacheKey, readRouteSegmentDetails, simplifyRouteGeometry, type AnyMap } from '@/lib/routeCache'
@@ -131,6 +133,8 @@ export default function TripBuilderScreen() {
   const [dlg, setDlg] = useState<Dlg | null>(null)
   const dlgOpenRef = useRef(false)
   const [finder, setFinder] = useState<FinderState | null>(null)
+  // Index into stayChoices.stops of the stay being compared, or null when the hotel sheet is closed.
+  const [staysAt, setStaysAt] = useState<number | null>(null)
 
   const savedRef = useRef<DocumentReference | null>(null)
   const lastSigRef = useRef('')
@@ -786,6 +790,8 @@ export default function TripBuilderScreen() {
 
   // ---- smart suggestions ----------------------------------------------------------------------
   const geocodeSuggestion = async (s: Record<string, any>): Promise<[number, number] | null> => {
+    // Priced hotels carry exact coordinates from the provider; AI suggestions may not, so they get a name lookup.
+    if (s.exact === true && Number.isFinite(s.lat) && Number.isFinite(s.lon)) return [s.lat, s.lon]
     const query = [s.name, s.address].map((x) => String(x ?? '').trim()).filter(Boolean).join(' ')
     if (!query) return null
     const res = await searchNominatim(query)
@@ -1327,6 +1333,25 @@ export default function TripBuilderScreen() {
     )
   }
 
+  // Every stay stop with its nights, as hotel searches (needs trip dates).
+  const stayChoices: { stops: StayStop[]; waypointIndexes: number[] } = { stops: [], waypointIndexes: [] }
+  if (range) {
+    waypoints.forEach((w, i) => {
+      if (!countsTowardDays(i)) return
+      const start = addDays(range.start, offsetDaysBefore(i))
+      stayChoices.stops.push({
+        name: stayPlaceName(w.name), lat: w.lat, lon: w.lon,
+        checkIn: ymd(start), checkOut: ymd(addDays(start, Math.max(1, effectiveNights(i)))),
+      })
+      stayChoices.waypointIndexes.push(i)
+    })
+  }
+  const openStays = (stayIdx = 0) => {
+    if (!range) return toast('Select your trip dates first to compare hotel prices')
+    if (!stayChoices.stops.length) return toast('Mark a destination as a Stop to compare hotels there')
+    setStaysAt(stayIdx)
+  }
+
   const stopItem = (i: number) => {
     const isFirst = i === 0
     const isLast = i === waypoints.length - 1
@@ -1377,6 +1402,13 @@ export default function TripBuilderScreen() {
               <button className="icon-btn tb-stop-delete" title="Remove destination" onClick={(e) => { e.stopPropagation(); removeWaypoint(i) }}><MdDeleteOutline size={18} /></button>
             </div>
             {meta && <div className="tb-stop-meta" title={meta}>{meta}</div>}
+            {counts && range && (
+              <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+                <Button variant="solid" size="sm" icon={<MdHotel size={15} />} style={{ background: '#00897b' }} onClick={() => openStays(stayChoices.waypointIndexes.indexOf(i))}>
+                  Find hotels
+                </Button>
+              </div>
+            )}
 
             {leg ? (
               <div onClick={(e) => e.stopPropagation()}>
@@ -1487,6 +1519,21 @@ export default function TripBuilderScreen() {
         )
       })()}
       {durationMin != null && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Estimated time: {durationMin.toFixed(0)} min</div>}
+
+      {waypoints.length > 0 && (
+        <button
+          onClick={() => openStays(0)}
+          style={{ width: '100%', margin: '14px 0 0', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', color: '#fff', background: 'linear-gradient(135deg, #00897b, #2c9cc0)', boxShadow: '0 6px 16px rgba(0,137,123,.28)' }}
+        >
+          <MdHotel size={26} />
+          <span style={{ flex: 1 }}>
+            <span style={{ display: 'block', fontWeight: 800, fontSize: 14 }}>Compare hotel prices</span>
+            <span style={{ display: 'block', fontSize: 12, opacity: 0.92 }}>
+              {range && stayChoices.stops.length ? 'Find the cheapest place to book for your stays' : 'Pick trip dates and mark a Stop to see prices'}
+            </span>
+          </span>
+        </button>
+      )}
 
       <div style={{ fontWeight: 900, margin: '14px 0 10px' }}>Destinations</div>
       {waypoints.length === 0 ? (
@@ -1602,6 +1649,10 @@ export default function TripBuilderScreen() {
       {dlg?.kind === 'dest' && <DestinationDialog {...dlg.props} />}
       {dlg?.kind === 'access' && <AccessPointDialog {...dlg.props} />}
       {dlg?.kind === 'route' && <RouteOptionsDialog {...dlg.props} />}
+
+      {staysAt != null && stayChoices.stops.length > 0 && (
+        <StaysCompareSheet open onClose={() => setStaysAt(null)} stops={stayChoices.stops} initialStop={staysAt} />
+      )}
 
       {finder && (
         <ActivityFinderModal

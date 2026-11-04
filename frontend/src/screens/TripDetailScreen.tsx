@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { deleteField, doc, getDoc, onSnapshot, setDoc, updateDoc } from '@/backend/firestore'
 import {
   MdAltRoute, MdArrowBack, MdCheck, MdChat, MdClear, MdClose, MdDelete, MdDirections, MdDragHandle, MdEdit, MdEditNote, MdHotel, MdList,
-  MdListAlt, MdLocalActivity, MdLocationCity, MdLockOutline, MdLogin, MdOutlineMap, MdMoreHoriz, MdPieChart, MdPlace, MdPublic, MdSave,
+  MdChevronRight, MdListAlt, MdLocalActivity, MdLocationCity, MdLockOutline, MdLogin, MdOutlineMap, MdMoreHoriz, MdPieChart, MdPlace, MdPublic, MdSave,
   MdSearch, MdShare, MdTerrain, MdShowChart, MdAutoAwesome, MdArrowUpward, MdArrowDownward,
 } from 'react-icons/md'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -15,6 +15,10 @@ import ShareTripDialog from '@/components/ShareTripDialog'
 import TripChatDialog from '@/components/TripChatDialog'
 import TripExpensesDialog from '@/components/TripExpensesDialog'
 import PackingListDialog from '@/components/PackingListDialog'
+import StaysCompareSheet from '@/components/StaysCompareSheet'
+import TripEssentialsCard from '@/components/TripEssentialsCard'
+import { essentialsContext } from '@/lib/tripEssentials'
+import { stayChoicesForTrip } from '@/lib/stays'
 import { Dialog } from '@/components/Dialog'
 import { Button, cx, Menu, MenuItem, Spinner } from '@/components/ui'
 import { useAuth } from '@/context/Auth'
@@ -40,7 +44,7 @@ interface Props {
 
 const asWaypoints = (raw: unknown): WP[] => (Array.isArray(raw) ? raw.map((e) => (e && typeof e === 'object' ? { ...e } : {})) : [])
 
-type QuickAction = 'plan' | 'packing' | 'expenses' | 'chat' | 'share'
+type QuickAction = 'plan' | 'stays' | 'packing' | 'expenses' | 'chat' | 'share'
 
 export default function TripDetailScreen({ docId, data, readOnly = false }: Props) {
   const navigate = useNavigate()
@@ -70,6 +74,8 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
   const [suggestions, setSuggestions] = useState<PlaceResult[]>([])
   const [searching, setSearching] = useState(false)
 
+  // Index into stayChoices.stops of the stay being compared, or null when the hotel sheet is closed.
+  const [staysAt, setStaysAt] = useState<number | null>(null)
   const [dialog, setDialog] = useState<null | 'share' | 'chat' | 'expenses' | 'packing' | 'directions' | 'segments'>(null)
   const [editWpIndex, setEditWpIndex] = useState<number | null>(null)
   const [w, setW] = useState(window.innerWidth)
@@ -410,6 +416,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
 
   const handleQuickAction = (a: QuickAction) => {
     if (a === 'plan') openPlanning()
+    else if (a === 'stays') setStaysAt(0)
     else if (a === 'packing') setDialog('packing')
     else if (a === 'expenses') setDialog('expenses')
     else if (a === 'chat') setDialog('chat')
@@ -417,6 +424,11 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
   }
 
   // ---------- map data ----------
+  const stayChoices = useMemo(
+    () => stayChoicesForTrip(waypoints, liveData.startDate, liveData.endDate),
+    [waypoints, liveData.startDate, liveData.endDate],
+  )
+
   const mapPoints = useMemo(() => mapRoutePoints(waypoints), [waypoints])
   const secondaryPoints = useMemo(
     () => mapSecondaryPoints(waypoints, [liveData.tripItinerary, liveData.itinerary, data.tripItinerary, data.itinerary]),
@@ -556,6 +568,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
     const accs = Array.isArray(wp.accommodations) ? wp.accommodations.length : 0
     const clickable = !readOnly && !editing
     const roleChip = (label: string) => <span className="td-chip">{label}</span>
+    const stayIdx = stayChoices.waypointIndexes.indexOf(i)
     return (
       <div
         key={`wp-${i}`}
@@ -588,6 +601,11 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
                 )}
               </Menu>
             ) : roleChip(roleLabel)}
+            {stayIdx >= 0 && !editing && (
+              <button className="chip" style={{ background: '#00897b', borderColor: '#00897b', color: '#fff', fontWeight: 700 }} onClick={() => setStaysAt(stayIdx)}>
+                <MdHotel size={14} /> Find hotels
+              </button>
+            )}
           </div>
           {editing && (
             <div className="row wrap gap-sm" style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
@@ -602,6 +620,25 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
       </div>
     )
   }
+
+  const nStays = stayChoices.stops.length
+  const essentialsCtx = useMemo(
+    () => essentialsContext(waypoints, segmentTransportModes.map(normalizeDetailMode), normalizeDetailMode(transportMode), nStays),
+    [waypoints, segmentTransportModes, transportMode, nStays],
+  )
+  const staysCta = nStays > 0 && (
+    <button
+      onClick={() => setStaysAt(0)}
+      style={{ width: '100%', marginTop: 8, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 16, border: 'none', cursor: 'pointer', textAlign: 'left', color: '#fff', background: 'linear-gradient(135deg, #00897b, #2c9cc0)', boxShadow: '0 6px 16px rgba(0,137,123,.28)' }}
+    >
+      <MdHotel size={26} />
+      <span style={{ flex: 1 }}>
+        <span style={{ display: 'block', fontWeight: 800, fontSize: 14 }}>Compare hotel prices</span>
+        <span style={{ display: 'block', fontSize: 12, opacity: 0.92 }}>{nStays} stay{nStays === 1 ? '' : 's'} on this trip · find the cheapest place to book</span>
+      </span>
+      <MdChevronRight size={22} />
+    </button>
+  )
 
   const routeControls = (
     <div className="col" style={{ gap: 4 }}>
@@ -726,6 +763,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
   const quickActionButtons = (
     <div className="td-glass row" style={{ borderRadius: 999, padding: '2px 6px' }}>
       <button className="icon-btn" title="Plan trip" onClick={() => openPlanning()}><MdEditNote size={22} /></button>
+      {nStays > 0 && <button className="icon-btn" title="Compare hotel prices" style={{ color: '#00897b' }} onClick={() => setStaysAt(0)}><MdHotel size={22} /></button>}
       <button className="icon-btn" title="Packing list" onClick={() => setDialog('packing')}><MdList size={22} /></button>
       <button className="icon-btn" title="Expenses" onClick={() => setDialog('expenses')}><MdPieChart size={22} /></button>
       <button className="icon-btn" title="Chat" onClick={() => setDialog('chat')}><MdChat size={22} /></button>
@@ -819,7 +857,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
                 <Menu trigger={<button className="icon-btn" title="Trip actions"><MdMoreHoriz size={22} /></button>}>
                   {(close) => (
                     <>
-                      {([['plan', 'Plan trip'], ['packing', 'Packing list'], ['expenses', 'Expenses'], ['chat', 'Chat'], ['share', 'Share trip']] as [QuickAction, string][]).map(([a, l]) => (
+                      {([['plan', 'Plan trip'], ...(nStays > 0 ? [['stays', 'Compare hotel prices']] : []), ['packing', 'Packing list'], ['expenses', 'Expenses'], ['chat', 'Chat'], ['share', 'Share trip']] as [QuickAction, string][]).map(([a, l]) => (
                         <MenuItem key={a} onClick={() => { close(); handleQuickAction(a) }}>{l}</MenuItem>
                       ))}
                     </>
@@ -846,6 +884,8 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
       {!isNarrow ? (
         <div className="td-dock td-glass col" style={{ padding: '10px 12px 12px' }}>
           {routeHeader}
+          {staysCta}
+          <TripEssentialsCard ctx={essentialsCtx} placement="trip-detail" />
           <div style={{ marginTop: 8 }}>{routeControls}</div>
           <div style={{ marginTop: 8 }}>{insightCard}</div>
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginTop: 8, borderRadius: 12 }}>{stopList}</div>
@@ -857,6 +897,8 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
           </div>
           <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {routeHeader}
+            {staysCta}
+            <TripEssentialsCard ctx={essentialsCtx} placement="trip-detail" />
             <div style={{ marginTop: 8 }}>{routeControls}</div>
             <div style={{ margin: '8px 0' }}>{insightCard}</div>
             {stopList}
@@ -874,6 +916,7 @@ export default function TripDetailScreen({ docId, data, readOnly = false }: Prop
       {readOnly && !isNarrow && null}
 
       {/* dialogs */}
+      {staysAt != null && nStays > 0 && <StaysCompareSheet open onClose={() => setStaysAt(null)} stops={stayChoices.stops} initialStop={staysAt} />}
       {dialog === 'share' && <ShareTripDialog open onClose={() => setDialog(null)} tripRefPath={tripRefPath} tripId={docId} tripName={String(liveData.name ?? data.name ?? '')} />}
       {dialog === 'chat' && <TripChatDialog open onClose={() => setDialog(null)} tripRefPath={tripRefPath} />}
       {dialog === 'expenses' && user && <TripExpensesDialog open onClose={() => setDialog(null)} tripRefPath={tripRefPath} currentUid={user.uid} participants={collectParticipants()} />}

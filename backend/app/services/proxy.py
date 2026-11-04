@@ -29,8 +29,12 @@ OVERPASS_HEADERS = {"User-Agent": "Trypr/1.0 (+https://tryprtravel.com)", "Accep
 # Public mirrors are often slow or overloaded: rather than waiting for each one to time out in turn,
 # start the next mirror after a short stagger and take whichever answers first.
 _OVERPASS_STAGGER_S = 4.0
-_OVERPASS_REQUEST_TIMEOUT_S = 35.0
+_OVERPASS_REQUEST_TIMEOUT_S = 75.0
+# How long a request waits on a fresh fetch before answering 504 OVERPASS_PENDING. The fetch keeps going
+# and is cached, so asking again shortly afterwards returns it: cold queries often take mirrors 30-60 s.
 _OVERPASS_DEADLINE_S = 40.0
+# Upper bound on one upstream fetch, including the part that runs after the request was answered.
+_OVERPASS_FETCH_BUDGET_S = 120.0
 _overpass_in_flight: dict[str, "asyncio.Task[tuple[int, str | dict]]"] = {}
 
 # Mirror operators rate-limit per client IP (overpass-api.de allows ~2 concurrent queries) and ban IPs
@@ -236,7 +240,7 @@ async def _overpass_fetch(query: str) -> tuple[int, str | dict]:
         pending = set(attempts)
         try:
             while pending:
-                remaining = _OVERPASS_DEADLINE_S - (time.monotonic() - started)
+                remaining = _OVERPASS_FETCH_BUDGET_S - (time.monotonic() - started)
                 if remaining <= 0:
                     break
                 done, pending = await asyncio.wait(pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
@@ -277,5 +281,8 @@ async def overpass(query: str) -> tuple[int, str | dict, str]:
             _overpass_fetch_shared(query)
             return 200, cached.text, "STALE"
         return 200, cached.text, "HIT"
-    status, payload = await asyncio.shield(_overpass_fetch_shared(query))
+    try:
+        status, payload = await asyncio.wait_for(asyncio.shield(_overpass_fetch_shared(query)), _OVERPASS_DEADLINE_S)
+    except asyncio.TimeoutError:
+        return 504, {"error": "OVERPASS_PENDING", "message": "Still fetching map data; ask again shortly."}, "PENDING"
     return status, payload, "MISS"

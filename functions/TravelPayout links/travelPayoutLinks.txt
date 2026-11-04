@@ -1,0 +1,101 @@
+Klook: https://klook.tp.st/kbIoHgS2
+
+    Widgets: <script async src="https://tpemb.com/content?currency=USD&trs=595446&shmarker=800312&locale=en&city_id=4&category=4&amount=3&powered_by=true&campaign_id=137&promo_id=4497" charset="utf-8"></script>
+
+Yesim: https://yesim.tp.st/0gIsyvu3
+Kiwitaxi: https://kiwitaxi.tp.st/tfJYSEin
+
+    Widgets: <script async src="https://tpemb.com/content?currency=USD&trs=595446&shmarker=800312&locale=en&powered_by=true&transfer_options_limit=10&transfer_options=MCR&disable_currency_selector=true&hide_form_extras=true&hide_external_links=true&campaign_id=1&promo_id=3879" charset="utf-8" async="true"></script>
+
+Localrent.com: https://localrent.tp.st/OdcmGBXW
+
+    Widget: <script async src="//tpemb.com/content?trs=595446&shmarker=800312&locale=en&country=153&city=68511&powered_by=true&campaign_id=87&promo_id=2466" charset="utf-8"></script>
+Welcome Pickups: https://tp.st/QXBtjigi
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&city=68511&show_header=true&powered_by=true&campaign_id=627&promo_id=8951" charset="utf-8"></script>
+Tiqets: https://tiqets.tp.st/U14gZqLf
+    Widgets:
+        Tours: <script async src="https://tpemb.com/content?currency=USD&trs=595446&shmarker=800312&language=en&locale=en&layout=horizontal&cards=4&powered_by=true&campaign_id=89&promo_id=3947" charset="utf-8"></script>
+        Availibility Calendar: <script async src="https://tpemb.com/content?currency=USD&trs=595446&shmarker=800312&language=en&layout=horizontal&orientation=vertical&powered_by=true&campaign_id=89&promo_id=3984" charset="utf-8"></script>
+
+Kiwi.com: https://tp.media/click?shmarker=800312&promo_id=3673&source_type=link&type=click&campaign_id=111&sub_id=trypr
+
+    Widget: <script async src="https://tpemb.com/content?currency=usd&trs=595446&shmarker=800312&locale=en&powered_by=true&limit=4&primary_color=00AE98&results_background_color=FFFFFF&form_background_color=FFFFFF&promo_id=4563&campaign_id=111" charset="utf-8"></script>
+
+GigSky: https://tp.media/click?shmarker=800312&promo_id=9150&source_type=link&type=click&campaign_id=636&sub_id=trypr
+Airalo: https://airalo.tp.st/Sa5Ye3vW
+
+    Widgets: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&color_button=%23f2685f&color_focused=%23f2685f&secondary=%23FFFFFF&dark=%2311100f&light=%23FFFFFF&special=%23C4C4C4&border_radius=5&plain=false&no_labels=true&promo_id=8588&campaign_id=541" charset="utf-8"></script>
+
+GetTransfer.com: https://gettransfer.tp.st/9gInoss1
+Drimsim: https://drimsim.tp.st/TvnvH7Yx
+GetRentacar.com: https://getrentacar.tp.st/fugpZBpa
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&color_button=%23f2685f&color_focused=%23f2685f&secondary=%23FFFFFF&dark=%2311100f&light=%23FFFFFF&special=%23C4C4C4&border_radius=5&plain=false&no_labels=true&promo_id=8588&campaign_id=541" charset="utf-8"></script>
+
+AirHelp: https://airhelp.tp.st/QqDv5FR5
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&lang=en&powered_by=true&campaign_id=120&promo_id=8679" charset="utf-8"></script>
+
+Go City: https://gocity.tp.st/d8D2lOZI
+Economybookings.com: https://economybookings.tp.st/KUFWPxfz
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&border_radius=5&plain=true&show_logo=true&color_background=%23ffca28&color_button=%2355a539&color_text=%23000000&color_input_text=%23000000&color_button_text=%23ffffff&promo_id=4480&campaign_id=10" charset="utf-8"></script>
+
+BikesBooking.com: https://bikesbooking.tp.st/zItKiIlv
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&border_radius=5&plain=true&color_background=%23ffca28&color_button=%2355a539&promo_id=5472&campaign_id=57" charset="utf-8"></script>
+
+QEEQ: https://qeeq.tp.st/17kD6E1r
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&campaign_id=172&promo_id=4850" charset="utf-8"></script>
+
+WeGoTrip: https://wegotrip.tp.st/i1Zt9HBs
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&tours=3&powered_by=true&campaign_id=150&promo_id=4489" charset="utf-8"></script>
+
+AutoEurope (EU,UK): https://autoeurope.tp.st/zDsAEsEe
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&powered_by=true&border_radius=5&plain=true&show_logo=true&color_background=%230b2033&color_button=%23e8b917&promo_id=4362&campaign_id=143" charset="utf-8"></script>
+Radical Storage: https://radicalstorage.tp.st/YDYwJVEC
+Aviasales: https://aviasales.tp.st/u4TJYAuI
+
+Widget: <script async src="https://tpemb.com/content?currency=usd&trs=595446&shmarker=800312&show_hotels=true&powered_by=true&locale=en&searchUrl=www.aviasales.com%2Fsearch&primary_override=%2332a8dd&color_button=%23e8b917&color_icons=%2332a8dd&dark=%23262626&light=%23FFFFFF&secondary=%23FFFFFF&special=%23C4C4C4&color_focused=%2332a8dd&border_radius=5&plain=false&promo_id=7879&campaign_id=100" charset="utf-8"></script>
+
+intui.travel: https://intui.tp.st/lHjMQOUz
+
+    Widget: <script async src="//tpemb.com/content?trs=595446&shmarker=800312&locale=en&header=Airport%20transfers%20executed%20by%20local%20Professional%20companies&powered_by=true&color_scheme=bg&b_counter=true&b_benefit=true&b_descr=true&b_about=true&b_map=true&b_reviews=true&b_breadcrumbs=true&b_poweredby=true&b_numbers=true&b_trustpilot=true&b_assortment=true&b_reliable=true&b_extended=true&b_how=true&b_faq=true&b_why=true&b_easybook=true&campaign_id=22&promo_id=1504" charset="utf-8"></script>
+
+Compensair: https://compensair.tp.st/Cp5ac0i2
+
+    Widget: <script async src="https://tpemb.com/content?trs=595446&shmarker=800312&locale=en&border_radius=5&plain=true&powered_by=true&promo_id=3408&campaign_id=86" charset="utf-8"></script>
+    
+Saily: https://saily.tp.st/AZvx1B2e
+KKday: https://kkday.tp.st/L9aEcfnL
+
+
+Klook: Tours, attractions, activities and local experiences booking, mainly strong in Asia.
+Yesim: eSIM provider for mobile data when traveling abroad.
+Kiwitaxi: Prebooked airport transfers and private rides worldwide.
+Localrent.com: Car rental aggregator, especially strong in Europe and local suppliers.
+Welcome Pickups: Prebooked airport pickups with a meet-and-greet driver, plus sightseeing rides.
+Tiqets: Tickets for museums, attractions and city sights, with instant mobile delivery.
+Kiwi.com: Flight search and booking, known for creative multi-airline routes.
+GigSky: Travel eSIM and data plans for use in many countries.
+Airalo: One of the biggest eSIM marketplaces, with local, regional and global data plans.
+GetTransfer.com: A marketplace where drivers bid on your transfer or ride request.
+Drimsim: A travel SIM that works across countries with one number and global roaming.
+GetRentacar.com: Car rental comparison and booking platform.
+AirHelp: Claims service for delayed, cancelled or overbooked flights. They take a cut of the compensation.
+Go City: City sightseeing passes that bundle many attractions into one ticket.
+Economybookings.com: Car rental comparison focused on low prices.
+BikesBooking.com: Motorcycle, scooter and bike rentals worldwide.
+QEEQ: Car rental booking site with a membership tied to savings.
+WeGoTrip: Audio tours and guided experiences you can use on your phone.
+AutoEurope (EU,UK): Car rentals in Europe and the UK, including luxury cars and promotions.
+Radical Storage: Luggage storage in shops and hotels near tourist spots, so you can explore hands-free.
+Aviasales: Flight search engine and the program with the highest reward (40%).
+intui.travel: Transfer and taxi booking marketplace.
+Compensair: Flight compensation claims for delays and cancellations, similar to AirHelp. You earn a fixed fee per claim.
+Saily: eSIM and data plans for travelers, from the makers of NordVPN.
+KKday: Tours, activities and tickets, popular in Asia.

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -89,6 +90,23 @@ async def test_overpass_reports_upstream_failure_without_caching(monkeypatch):
     status, body, _ = await proxy.overpass("[out:json];node(2);out;")
     assert status == 502 and body["error"] == "OVERPASS_UPSTREAM_FAILED"
     assert await get_pool().fetchval("SELECT count(*) FROM overpass_cache") == 0
+
+
+async def test_overpass_slow_fetch_answers_pending_and_caches(monkeypatch):
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return httpx.Response(200, json={"elements": [{"type": "node", "id": 9}]})
+
+    _mock_upstream(monkeypatch, slow)
+    monkeypatch.setattr(proxy, "_OVERPASS_DEADLINE_S", 0.05)
+    query = "[out:json];node(9);out;"
+    status, body, cache = await proxy.overpass(query)
+    assert (status, cache) == (504, "PENDING") and body["error"] == "OVERPASS_PENDING"
+
+    await proxy._overpass_in_flight[query]  # the fetch outlives the request
+    status, body, cache = await proxy.overpass(query)
+    assert (status, cache) == (200, "HIT")
+    assert _elements(body) == [{"type": "node", "id": 9}]
 
 
 async def test_overpass_backs_off_after_rate_limit(monkeypatch):

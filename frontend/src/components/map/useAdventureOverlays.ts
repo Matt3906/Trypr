@@ -4,8 +4,8 @@ import {
 } from '@/lib/routing/geo'
 import { hasAvailableOverpassEndpoint } from '@/lib/routing/overpass'
 import {
-  getHikingOverlayEntry, getPortagingOverlayEntry, hikingCacheKey, loadSegmentedPortagingOverlayEntry, nearestCachedPortagingFocusEntry,
-  portagingFocusCacheKey, portagingRouteCacheKey, quantizedOverlayPadDegrees, type PortagingOverlayEntry,
+  boundsAround, getPortagingOverlayEntry, hikingTileKeys, loadHikingArea, loadSegmentedPortagingOverlayEntry, nearestCachedPortagingFocusEntry,
+  portagingFocusCacheKey, portagingRouteCacheKey, quantizedOverlayPadDegrees, type Bounds, type HikingOverlayEntry, type PortagingOverlayEntry,
 } from '@/lib/routing/overlayData'
 import { isFresh, OVERLAY_CACHE_TTL_MS } from '@/lib/routing/graph'
 import { latOf, lonOf, type PointMap, type RouteComputation } from '@/lib/routing/types'
@@ -45,7 +45,8 @@ const RENDER = {
   /** Distance from the routed path a campsite may be, for the normal / widened / widest pass. */
   campRouteMeters: [25000, 35000, 50000],
   maxCampsites: 1200,
-  hikingFetchPad: 0.12,
+  /** Pad around the routed hiking line; data loads in 0.2° grid tiles, so this only pulls in tiles the line runs close to. */
+  hikingFetchPad: 0.04,
   maxTrailheads: 60,
   trailheadSoftCap: 24,
   trailheadFarKm: 6,
@@ -64,7 +65,7 @@ const toLL = (p: PointMap): LL => ({ lat: latOf(p), lng: lonOf(p) })
 const infoHtml = (title: string, snippet: string) =>
   `<div style="font-family:Inter,sans-serif"><div style="font-weight:700">${title.replace(/</g, '&lt;')}</div><div style="color:#555;font-size:12px">${snippet.replace(/</g, '&lt;')}</div></div>`
 
-interface Viewport { center: LL; hikingAnchors: LL[]; portagingPadDegrees: number; signature: string }
+interface Viewport { center: LL; hikingBounds: Bounds; portagingPadDegrees: number; signature: string }
 
 interface Args {
   mapRef: MutableRefObject<google.maps.Map | null>
@@ -141,26 +142,25 @@ export function useAdventureOverlays(a: Args) {
   }, [mapRef, a.suppressTapUntil])
 
   // ---- hiking overlay ----
-  const buildHiking = useCallback(async (geo: Map<number, LL[]>, overlayAnchors?: LL[]) => {
-    const routePath = overlayAnchors?.length ? overlayAnchors : hikingAnchorPath(geo)
-    if (!routePath.length) return { polys: [] as PolyDef[], markers: [] as MarkerDef[] }
-    const entry = await getHikingOverlayEntry({ cacheKey: hikingCacheKey(routePath, RENDER.hikingFetchPad), routePath, padDegrees: RENDER.hikingFetchPad })
-    if (!entry) return { polys: [] as PolyDef[], markers: [] as MarkerDef[], failed: true }
+  const renderHiking = useCallback((entry: HikingOverlayEntry, routePath: LL[]) => {
+    const kmFromRoute = (p: LL) => (routePath.length ? distanceMetersToPath(p, routePath) / 1000 : 0)
+    // Ids come from coordinates, not list order, so a layer redrawn as more tiles arrive only adds what is new.
+    const llId = (p: LL) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`
 
     const polys: PolyDef[] = []
-    entry.trailLines.forEach((line, i) => {
+    entry.trailLines.forEach((line) => {
       if (line.length < 2) return
       const rendered = downsampleLine(line, 280)
-      if (rendered.length >= 2) polys.push({ id: `trail_${i}`, path: rendered, width: 4, color: '#2e7d32', zIndex: 40 })
+      if (rendered.length >= 2) polys.push({ id: `trail_${llId(line[0])}_${llId(line[line.length - 1])}_${line.length}`, path: rendered, width: 4, color: '#2e7d32', zIndex: 40 })
     })
     const camps = entry.campsites
       .map((camp) => {
         const point = { lat: Number(camp.lat), lng: Number(camp.lon) }
-        return { camp, point, km: distanceMetersToPath(point, routePath) / 1000 }
+        return { camp, point, km: kmFromRoute(point) }
       })
       .sort((x, y) => x.km - y.km)
-    const markers: MarkerDef[] = camps.map(({ camp, point, km }, i) => ({
-      id: `camp_${i}`, position: point, icon: campsiteTriangleIcon(), infoHtml: infoHtml(String(camp.name ?? 'Campsite'), `${km.toFixed(1)} km from route`),
+    const markers: MarkerDef[] = camps.map(({ camp, point, km }) => ({
+      id: `camp_${llId(point)}`, position: point, icon: campsiteTriangleIcon(), infoHtml: infoHtml(String(camp.name ?? 'Campsite'), `${km.toFixed(1)} km from route`),
       onClick: () => {
         focusOn(point)
         propsRef.current.onHikingCampsiteTap?.({ ...camp, name: String(camp.name ?? 'Campsite'), lat: point.lat, lon: point.lng, distanceKmFromRoute: km, mode: 'hiking' })
@@ -169,18 +169,29 @@ export function useAdventureOverlays(a: Args) {
     const heads = entry.trailheads
       .map((head) => {
         const point = { lat: Number(head.lat), lng: Number(head.lon) }
-        return { head, point, km: distanceMetersToPath(point, routePath) / 1000 }
+        return { head, point, km: kmFromRoute(point) }
       })
       .sort((x, y) => x.km - y.km)
     let headCount = 0
-    heads.forEach(({ head, point, km }, i) => {
+    heads.forEach(({ head, point, km }) => {
       if (headCount >= RENDER.maxTrailheads) return
       if (headCount >= RENDER.trailheadSoftCap && km > RENDER.trailheadFarKm) return
       headCount++
-      markers.push({ id: `trailhead_${i}`, position: point, icon: trailheadIcon(), infoHtml: infoHtml(String(head.name ?? 'Trailhead'), `${km.toFixed(1)} km from route`) })
+      markers.push({ id: `trailhead_${llId(point)}`, position: point, icon: trailheadIcon(), infoHtml: infoHtml(String(head.name ?? 'Trailhead'), `${km.toFixed(1)} km from route`) })
     })
     return { polys, markers }
-  }, [hikingAnchorPath, focusOn, propsRef])
+  }, [focusOn, propsRef])
+
+  const buildHiking = useCallback(async (geo: Map<number, LL[]>, opts: { viewBounds?: Bounds; onPartial?: (r: { polys: PolyDef[]; markers: MarkerDef[] }) => void } = {}) => {
+    const routePath = hikingAnchorPath(geo)
+    const bounds = opts.viewBounds ?? boundsAround(routePath, RENDER.hikingFetchPad)
+    if (!bounds) return { polys: [] as PolyDef[], markers: [] as MarkerDef[] }
+    const onPartial = opts.onPartial
+    const entry = await loadHikingArea(bounds, onPartial && ((partial) => onPartial(renderHiking(partial, routePath))))
+    if (!entry) return { polys: [] as PolyDef[], markers: [] as MarkerDef[], failed: true }
+    // Tiles that failed to load leave holes: draw what loaded, but report it so the load button is offered again.
+    return { ...renderHiking(entry, routePath), failed: entry.missingTiles > 0 }
+  }, [hikingAnchorPath, renderHiking])
 
   // ---- portaging overlay ----
   const buildPortaging = useCallback(async (geo: Map<number, LL[]>, opts: { focusPointOverride?: LL; focusPadDegreesOverride?: number; preferFocusOnly?: boolean } = {}) => {
@@ -395,10 +406,10 @@ export function useAdventureOverlays(a: Args) {
     const map = mapRef.current
     const bounds = map?.getBounds()
     const fallback = overlays.current?.markerPositions(['main'])[0] ?? null
-    const fb = (f: LL): Viewport => ({
-      center: f, hikingAnchors: [f], portagingPadDegrees: 0.12,
-      signature: `${hikingCacheKey([f])}|${portagingFocusCacheKey(f, 0.12)}`,
-    })
+    const fb = (f: LL): Viewport => {
+      const hikingBounds = boundsAround([f], 0.08)!
+      return { center: f, hikingBounds, portagingPadDegrees: 0.12, signature: `${hikingTileKeys(hikingBounds).sort().join(';')}|${portagingFocusCacheKey(f, 0.12)}` }
+    }
     if (!bounds) return fallback ? fb(fallback) : null
     const sw = bounds.getSouthWest(), ne = bounds.getNorthEast()
     const center = { lat: (sw.lat() + ne.lat()) / 2, lng: (sw.lng() + ne.lng()) / 2 }
@@ -406,8 +417,8 @@ export function useAdventureOverlays(a: Args) {
     let lonSpan = Math.abs(ne.lng() - sw.lng())
     if (lonSpan > 180) lonSpan = 360 - lonSpan
     const pad = quantizedOverlayPadDegrees(Math.min(RENDER.viewportPadMax, Math.max(RENDER.viewportPadMin, Math.max(latSpan, lonSpan) * 0.75)))
-    const hikingAnchors = [{ lat: sw.lat(), lng: sw.lng() }, center, { lat: ne.lat(), lng: ne.lng() }]
-    return { center, hikingAnchors, portagingPadDegrees: pad, signature: `${hikingCacheKey(hikingAnchors)}|${portagingFocusCacheKey(center, pad)}` }
+    const hikingBounds = { south: sw.lat(), west: sw.lng(), north: ne.lat(), east: ne.lng() }
+    return { center, hikingBounds, portagingPadDegrees: pad, signature: `${hikingTileKeys(hikingBounds).sort().join(';')}|${portagingFocusCacheKey(center, pad)}` }
   }, [mapRef, overlays])
 
   const existingNonAdventure = () => undefined
@@ -436,7 +447,14 @@ export function useAdventureOverlays(a: Args) {
 
     if (showHiking && viewport) {
       try {
-        const h = await buildHiking(segGeometry.current, viewport.hikingAnchors)
+        const h = await buildHiking(segGeometry.current, {
+          viewBounds: viewport.hikingBounds,
+          onPartial: (part) => {
+            if (seq !== a.seqRef.current) return
+            ov.syncPolylines('trail', part.polys)
+            ov.syncMarkers('trail', part.markers)
+          },
+        })
         if (seq !== a.seqRef.current) return
         if ('failed' in h && h.failed) fetchFailed = true
         if (h.polys.length || h.markers.length) {
@@ -547,7 +565,7 @@ export function useAdventureOverlays(a: Args) {
       if (!ov) return
       if (modeMatchesAnySegment('hiking')) {
         try {
-          const h = await buildHiking(geo)
+          const h = await buildHiking(geo, { onPartial: (part) => { ov.syncPolylines('trail', part.polys); ov.syncMarkers('trail', part.markers) } })
           if (h.polys.length || h.markers.length) { ov.syncPolylines('trail', h.polys); ov.syncMarkers('trail', h.markers) }
         } catch (e) { console.debug('hikingOverlays route_refresh_failed', e) }
       } else ov.clearLayer('trail')

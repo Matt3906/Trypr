@@ -1,51 +1,11 @@
 import { standardRouteColor } from '@/components/map/mapStyles'
 import {
-  diversifyTrailCandidatesByComponent, graphComponents, graphForLines, nearestProjectionOnLine, nearestTrailCandidatesAdaptive,
-  reconstructNodePath, selectGraphLinesForAnchors, shortestTrailPath, shortestTrailTreeFromSource, sliceLineBetweenProjections,
-  type TrailCandidate,
+  diversifyTrailCandidatesByComponent, graphComponents, graphForLines, nearestTrailCandidatesAdaptive, reconstructNodePath,
+  selectGraphLinesForAnchors, shortestTrailPath, shortestTrailTreeFromSource, type TrailCandidate,
 } from './graph'
-import { distanceLineToPathMeters, haversineMeters, pathDistanceMeters, type LL } from './geo'
-import { getHikingOverlayEntry, hikingCacheKey, routeBoundsCenter, routeFocusPadDegrees, trailRoutePadDegreesForMode, type HikingOverlayEntry } from './overlayData'
+import { haversineMeters, pathSignature, type LL } from './geo'
+import { boundsAround, loadHikingArea, type HikingOverlayEntry } from './overlayData'
 import { latOf, lonOf, type PointMap, type RouteComputation } from './types'
-
-export function fastTrailRouteAlongSameLine(opts: {
-  start: LL; end: LL; trailLines: LL[][]; maxAnchorMeters?: number; maxLineDistanceMeters?: number; maxTotalMeters?: number
-}): { path: LL[]; distanceMeters: number } | null {
-  const maxAnchor = opts.maxAnchorMeters ?? 1200
-  const maxLineDist = opts.maxLineDistanceMeters ?? 1600
-  const maxTotal = opts.maxTotalMeters ?? 36000
-  const direct = haversineMeters(opts.start, opts.end)
-  if (!Number.isFinite(direct) || direct <= 0) return null
-
-  let best: { path: LL[]; distanceMeters: number } | null = null
-  for (const line of opts.trailLines) {
-    if (line.length < 2) continue
-    const lineDistance = distanceLineToPathMeters(line, [opts.start, opts.end], 8)
-    if (!Number.isFinite(lineDistance) || lineDistance > maxLineDist) continue
-    const sp = nearestProjectionOnLine(opts.start, line, maxAnchor)
-    if (!sp) continue
-    const ep = nearestProjectionOnLine(opts.end, line, maxAnchor)
-    if (!ep) continue
-    const linePath = sliceLineBetweenProjections(line, sp, ep)
-    if (linePath.length < 2) continue
-
-    const full: LL[] = []
-    const add = (p: LL) => {
-      const last = full[full.length - 1]
-      if (last && Math.abs(last.lat - p.lat) < 1e-7 && Math.abs(last.lng - p.lng) < 1e-7) return
-      full.push(p)
-    }
-    add(opts.start)
-    linePath.forEach(add)
-    add(opts.end)
-    const total = pathDistanceMeters(full)
-    if (!Number.isFinite(total) || total <= 0) continue
-    if (total > maxTotal) continue
-    if (total > Math.max(direct * 4.5, direct + 5000)) continue
-    if (!best || total < best.distanceMeters) best = { path: full, distanceMeters: total }
-  }
-  return best
-}
 
 export function anchorConnectorLimitMeters(mode: string): number {
   switch (mode) {
@@ -70,25 +30,21 @@ interface LegSolution {
   start: LL; end: LL; startCandidate: TrailCandidate; endCandidate: TrailCandidate; nodePath: number[]; graphMeters: number
 }
 
-function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry, graphCacheKey: string): RouteComputation | null {
+/**
+ * Off-trail meters (stop to trail) count this many times trail meters when choosing where a leg joins the
+ * network, so it walks the trail to the point nearest the stop instead of cutting through the bush to save distance.
+ */
+const OFF_TRAIL_WEIGHT = 3
+
+function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry): RouteComputation | null {
   if (!entry.trailLines.length) return null
   const routeTrailLines = selectGraphLinesForAnchors(entry.trailLines, anchors, {
     maxLines: mode === 'portaging' ? 900 : 700, bboxPadDegrees: mode === 'portaging' ? 0.06 : 0.04, debugLabel: 'trailRoute',
   })
   if (!routeTrailLines.length) return null
-
-  if (anchors.length === 2) {
-    const same = fastTrailRouteAlongSameLine({
-      start: anchors[0], end: anchors[1], trailLines: routeTrailLines,
-      maxAnchorMeters: mode === 'portaging' ? 1600 : 1200, maxLineDistanceMeters: mode === 'portaging' ? 2200 : 1600, maxTotalMeters: mode === 'portaging' ? 42000 : 36000,
-    })
-    if (same) {
-      return {
-        path: same.path, distanceMeters: same.distanceMeters, durationSeconds: same.distanceMeters / 1.2, color: standardRouteColor(mode),
-        width: 6, zIndex: 26, instructions: [`Trail-aligned route (${(same.distanceMeters / 1000).toFixed(1)} km)`], stepDetails: [],
-      }
-    }
-  }
+  // The selection depends on the stops only when the area has more trails than the graph takes.
+  const selection = routeTrailLines.length === entry.trailLines.length ? 'all' : pathSignature(anchors, anchors.length)
+  const graphCacheKey = `trail_route:${mode}:${entry.key}:${selection}`
 
   const graph = graphForLines(routeTrailLines, { cacheKey: graphCacheKey, bridgeToleranceMeters: mode === 'portaging' ? 280 : 180 })
   const { nodes, adjacency, spatialIndex } = graph
@@ -124,6 +80,7 @@ function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry, 
     let bestStart: TrailCandidate | null = null
     let bestEnd: TrailCandidate | null = null
     let bestScore = Infinity
+    let bestMeters = Infinity
     const treeCache = new Map<number, { dist: number[]; prev: number[] }>()
     const consider = (starts: TrailCandidate[], ends: TrailCandidate[]) => {
       if (!starts.length || !ends.length) return
@@ -135,9 +92,10 @@ function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry, 
           if (!Number.isFinite(gm)) continue
           const nodePath = reconstructNodePath(s.index, e.index, tree.prev)
           if (!nodePath || !nodePath.length) continue
-          const score = s.meters + gm + e.meters
+          const score = (s.meters + e.meters) * OFF_TRAIL_WEIGHT + gm
           if (score < bestScore) {
             bestScore = score
+            bestMeters = s.meters + gm + e.meters
             bestPath = { nodePath, meters: gm }
             bestStart = s
             bestEnd = e
@@ -147,7 +105,7 @@ function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry, 
     }
     consider(startC, endC)
     const directMeters = haversineMeters(start, end)
-    if (!bestPath || (directMeters > 1200 && bestScore > directMeters * detourRetry)) {
+    if (!bestPath || (directMeters > 1200 && bestMeters > directMeters * detourRetry)) {
       const es = candidatesFor(start, 14, expandedRadii, expandedGlobalCap, expandedNearbyComp, 5)
       const ee = candidatesFor(end, 14, expandedRadii, expandedGlobalCap, expandedNearbyComp, 5)
       if (es.length && ee.length) consider(es, ee)
@@ -199,38 +157,21 @@ function solveWithEntry(anchors: LL[], mode: string, entry: HikingOverlayEntry, 
   }
 }
 
+/** Pads (degrees) around a leg's stops for the trails it may use; the wider one is tried when the closer trails don't connect. */
+const TRAIL_ROUTE_PADS = [0.04, 0.12]
+
 export async function routeViaTrailGraph(segPoints: PointMap[], modeContext = 'hiking'): Promise<RouteComputation | null> {
   if (segPoints.length < 2) return null
   const anchors: LL[] = segPoints.map((p) => ({ lat: latOf(p), lng: lonOf(p) }))
   const mode = modeContext === 'portaging' ? 'portaging' : 'hiking'
-
-  const attempted = new Set<string>()
-  const pads = [trailRoutePadDegreesForMode(mode), trailRoutePadDegreesForMode(mode, true)]
-  for (let i = 0; i < pads.length; i++) {
-    const pad = pads[i]
-    const cacheKey = hikingCacheKey(anchors, pad)
-    if (!attempted.add(cacheKey)) continue
-    const entry = await getHikingOverlayEntry({ cacheKey, routePath: anchors, padDegrees: pad })
-    const solved = entry ? solveWithEntry(anchors, mode, entry, `trail_route:${mode}:${cacheKey}:pad=${pad.toFixed(2)}`) : null
-    if (solved) {
-      if (i > 0) console.debug(`trailRoute expanded_bbox_success mode=${mode} pad=${pad.toFixed(2)}`)
-      return solved
-    }
-  }
-
-  const focusPad = routeFocusPadDegrees(anchors, {
-    minPad: mode === 'portaging' ? 0.12 : 0.1, maxPad: mode === 'portaging' ? 0.24 : 0.2, edgePadding: mode === 'portaging' ? 0.08 : 0.06,
-  })
-  const attemptedFocus = new Set<string>()
-  for (const focus of [routeBoundsCenter(anchors), anchors[anchors.length - 1], anchors[0]]) {
-    const cacheKey = hikingCacheKey([focus], focusPad)
-    if (!attemptedFocus.add(cacheKey)) continue
-    const entry = await getHikingOverlayEntry({ cacheKey, routePath: [focus], padDegrees: focusPad })
-    const solved = entry ? solveWithEntry(anchors, mode, entry, `trail_route:${mode}:${cacheKey}:focus=${focusPad.toFixed(2)}`) : null
-    if (solved) {
-      console.debug(`trailRoute focus_bbox_success mode=${mode}`)
-      return solved
-    }
+  let triedKey = ''
+  for (const pad of TRAIL_ROUTE_PADS) {
+    const entry = await loadHikingArea(boundsAround(anchors, pad)!)
+    if (!entry || entry.key === triedKey) continue
+    triedKey = entry.key
+    const solved = solveWithEntry(anchors, mode, entry)
+    if (solved) return solved
+    console.debug(`trailRoute unsolved mode=${mode} pad=${pad} tiles=${entry.key} missing=${entry.missingTiles}`)
   }
   return null
 }

@@ -277,8 +277,9 @@ async function calculateUncached(segPoints: PointMap[], mode: string, segType: s
     // 'trails' prefers the in-app Overpass trail graph so the route snaps to the trails drawn on the map;
     // if the graph can't connect the anchors, fall through to a real foot-routing engine.
     if (segType === 'trails') {
-      // Bounded so a slow Overpass still leaves time for the routing engines below.
-      const trail = await withTimeout(routeViaTrailGraph(segPoints, mode), 50000, null)
+      // Bounded so a slow Overpass still leaves time for the routing engines below. A cold trail tile can take
+      // one 40 s proxy wait plus a retry; once loaded it is cached for every leg and later trip in the area.
+      const trail = await withTimeout(routeViaTrailGraph(segPoints, mode), 95000, null)
       if (trail) return trail
       console.debug(`hikingRoute trail_graph_null falling_back_to_engine points=${segPoints.length}`)
     }
@@ -338,7 +339,7 @@ export function segmentRouteTimeoutMs(mode: string): number {
   switch (normalizeMapMode(mode)) {
     // Adventure modes wait on Overpass, whose public mirrors can take 30s+ to answer.
     case 'portaging': return 75000
-    case 'hiking': return 75000
+    case 'hiking': return 120000
     case 'train': return 14000
     case 'walk':
     case 'bike': return 12000

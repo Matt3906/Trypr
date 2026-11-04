@@ -65,3 +65,28 @@ CREATE TABLE IF NOT EXISTS files (
     uploaded_by     text,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- Outbound clicks on stay offers (affiliate revenue reconciliation); written by /api/stays/out.
+CREATE TABLE IF NOT EXISTS stay_clicks (
+    id          bigserial PRIMARY KEY,
+    at          timestamptz NOT NULL DEFAULT now(),
+    uid         text,
+    provider    text NOT NULL,
+    hotel       text NOT NULL,
+    total_cents integer NOT NULL,
+    currency    text NOT NULL,
+    check_in    date NOT NULL,
+    check_out   date NOT NULL
+);
+CREATE INDEX IF NOT EXISTS stay_clicks_at_idx ON stay_clicks (at);
+
+-- Outbound clicks on affiliate partner links (/api/go/<id>); for revenue reconciliation.
+CREATE TABLE IF NOT EXISTS partner_clicks (
+    id        bigserial PRIMARY KEY,
+    at        timestamptz NOT NULL DEFAULT now(),
+    uid       text,
+    partner   text NOT NULL,
+    category  text NOT NULL,
+    placement text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS partner_clicks_at_idx ON partner_clicks (at);

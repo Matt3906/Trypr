@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     openrouteservice_api_key: str = ""
     graphhopper_api_key: str = ""
 
+    # --- Stay price comparison ---------------------------------------------
+    # Travelpayouts (Hotellook) affiliate credentials; without a token that provider stays off.
+    travelpayouts_token: str = ""
+    travelpayouts_marker: str = ""
+    # HMAC key for click-out links. Required in production (search answers 503 without it).
+    stays_signing_secret: str = ""
+    # Serve clearly-labelled sample offers from three fake providers. Ignored in production.
+    stays_demo: bool = False
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"

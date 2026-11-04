@@ -60,9 +60,10 @@ const coolDown = (e: string, ms: number) => {
 }
 
 function cooldownForStatus(endpoint: string, status: number, isProxy: boolean): number {
-  if (isProxy && (status === 404 || status === 405)) {
-    markUnavailable(endpoint)
-    return 0
+  if (isProxy) {
+    if (status === 404 || status === 405) markUnavailable(endpoint)
+    // Other proxy errors are about the mirrors behind it, which the direct fallbacks below would hit too.
+    return status === 429 ? 30_000 : 0
   }
   if (endpoint.toLowerCase().includes('maps.mail.ru') && status === 403) {
     markUnavailable(endpoint)
@@ -95,6 +96,11 @@ function cooldownForError(endpoint: string, err: unknown, isProxy: boolean): num
  * generous budget of its own; the direct-mirror fallbacks share the shorter deadline after it.
  */
 const PROXY_TIMEOUT_MS = 45_000
+/**
+ * The proxy answers 504 (502 on older backends) when a cold query outlives its deadline; the backend keeps
+ * fetching and caches the result, so asking again picks it up instead of starting over on a direct mirror.
+ */
+const PROXY_PENDING_RETRIES = 2
 
 export async function fetchOverpassData(opts: { query: string; logPrefix: string; requestTimeoutMs?: number; ignoreCooldown?: boolean }): Promise<any | null> {
   const requestTimeout = opts.requestTimeoutMs ?? 9000
@@ -102,7 +108,10 @@ export async function fetchOverpassData(opts: { query: string; logPrefix: string
   let deadline = 0
   let attemptedAny = false
 
-  for (const c of overpassEndpointConfigs()) {
+  const configs = overpassEndpointConfigs()
+  let proxyRetries = 0
+  for (let ci = 0; ci < configs.length; ci++) {
+    const c = configs[ci]
     const endpoint = c.endpoint.trim()
     if (!endpoint) continue
     if (unavailable.has(endpoint)) continue
@@ -126,6 +135,10 @@ export async function fetchOverpassData(opts: { query: string; logPrefix: string
       if (!resp.ok) {
         coolDown(endpoint, cooldownForStatus(endpoint, resp.status, c.isProxy))
         console.debug(`${opts.logPrefix} endpoint_failed endpoint=${endpoint} status=${resp.status} elapsed_ms=${Date.now() - started}`)
+        if (c.isProxy && (resp.status === 502 || resp.status === 504) && proxyRetries < PROXY_PENDING_RETRIES) {
+          proxyRetries++
+          ci--
+        }
         continue
       }
       const decoded = await resp.json()

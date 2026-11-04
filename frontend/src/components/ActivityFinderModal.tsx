@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  MdAddCircleOutline, MdAdd, MdAutoAwesome, MdBed, MdClose, MdForest, MdHotel, MdMuseum,
+  MdAddCircleOutline, MdAdd, MdAutoAwesome, MdBed, MdClose, MdCompareArrows, MdForest, MdHotel, MdMuseum,
   MdNightlife, MdOutlineAttractions, MdOutlineCameraAlt, MdOutlineRemoveCircleOutline, MdRestaurant, MdSpa,
   MdSupportAgent, MdTerrain,
 } from 'react-icons/md'
 import { Dialog } from './Dialog'
+import StaysCompareSheet from './StaysCompareSheet'
 import { Button, SoftCard, cx } from './ui'
 import { PremiumRequiredError, suggestAccommodations, suggestItinerary, type Suggestion } from '@/services/aiSuggestions'
 import { usePremiumUpsell } from '@/hooks/usePremiumUpsell'
@@ -107,6 +108,7 @@ export default function ActivityFinderModal(p: ActivityFinderProps) {
   const [errorDialog, setErrorDialog] = useState<{ title: string; message: string; details?: string } | null>(null)
   const [pickDayFor, setPickDayFor] = useState<Suggestion | null>(null)
   const [pickedDay, setPickedDay] = useState(0)
+  const [comparing, setComparing] = useState(false)
 
   useEffect(() => {
     if (!p.open) return
@@ -234,6 +236,13 @@ export default function ActivityFinderModal(p: ActivityFinderProps) {
                 {loading ? 'Generating...' : 'Generate'}
               </Button>
             </div>
+            {isRoute && p.startDate && p.endDate && (
+              <div style={{ marginTop: 8 }}>
+                <Button variant="outlined" block onClick={() => setComparing(true)} icon={<MdCompareArrows size={18} />}>
+                  Compare live hotel prices
+                </Button>
+              </div>
+            )}
             {error && <div style={{ color: 'var(--error)', fontSize: 12, marginTop: 10 }}>{error}</div>}
           </SoftCard>
 
@@ -288,6 +297,16 @@ export default function ActivityFinderModal(p: ActivityFinderProps) {
           <pre style={{ marginTop: 12, padding: 10, borderRadius: 10, background: 'rgba(0,0,0,0.04)', fontSize: 12, whiteSpace: 'pre-wrap' }}>{errorDialog.details}</pre>
         )}
       </Dialog>
+
+      {comparing && (
+        <StaysCompareSheet
+          open
+          onClose={() => setComparing(false)}
+          stops={[{ name: p.routeToName?.trim() || p.destinationName, lat: p.lat, lon: p.lon, checkIn: p.startDate, checkOut: p.endDate }]}
+          groupSize={groupSize}
+          onAddStop={p.onAddStop && (async (h) => { setComparing(false); await p.onAddStop!(h) })}
+        />
+      )}
 
       <Dialog
         open={!!pickDayFor}

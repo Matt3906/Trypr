@@ -29,6 +29,7 @@ export default function TopTaskbar({ dockProgress = 1, overlay = false }: { dock
   const items: { label: string; path: string }[] = [
     { label: 'My Trips', path: '/my-trips' },
     { label: 'Trip Builder', path: '/trip-builder' },
+    { label: 'Book', path: '/book' },
     { label: 'Verified Trips', path: '/verified-trips' },
     { label: 'About', path: '/about' },
   ]

@@ -9,6 +9,7 @@ const ResetPasswordScreen = lazy(() => import('@/screens/ResetPasswordScreen'))
 const CompleteProfileScreen = lazy(() => import('@/screens/CompleteProfileScreen'))
 const FriendsScreen = lazy(() => import('@/screens/FriendsScreen'))
 const AboutScreen = lazy(() => import('@/screens/AboutScreen'))
+const BookScreen = lazy(() => import('@/screens/BookScreen'))
 const PremiumScreen = lazy(() => import('@/screens/PremiumScreen'))
 const MyTripsScreen = lazy(() => import('@/screens/MyTripsScreen'))
 const TripBuilderScreen = lazy(() => import('@/screens/TripBuilderScreen'))
@@ -59,6 +60,7 @@ export default function App() {
         <Route path="/complete-profile" element={<CompleteProfileScreen />} />
         <Route path="/friends" element={<FriendsScreen />} />
         <Route path="/about" element={<AboutScreen />} />
+        <Route path="/book" element={<BookScreen />} />
         <Route path="/premium" element={<PremiumScreen />} />
         <Route path="/verified-trips" element={<VerifiedTripsScreen />} />
         <Route path="/verified-trips/new" element={<VerifiedTripBuilderRoute />} />
